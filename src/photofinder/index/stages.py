@@ -14,7 +14,7 @@ from photofinder.memory import AdaptiveBatcher
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MANIFEST_NAME = "manifest.sqlite"
-EXIF_IFD, DATETIME_ORIGINAL, MODEL = 0x8769, 0x9003, 0x0110
+EXIF_IFD, DATETIME_ORIGINAL, MODEL, ORIENTATION = 0x8769, 0x9003, 0x0110, 0x0112
 COMMIT_EVERY = 200
 DETECT_BATCH, EMBED_BATCH = 8, 64
 
@@ -62,10 +62,11 @@ def read_exif(img: Image.Image) -> tuple:
 
 
 def scan(db: sqlite3.Connection, collection: Path) -> dict:
+    files = find_images(collection)
     manifest = load_manifest(collection)
     existing = {r for (r,) in db.execute("select relpath from photos")}
     counts = {"new": 0, "existing": 0, "errors": 0}
-    for relpath in find_images(collection):
+    for relpath in files:
         if relpath in existing:
             counts["existing"] += 1
             continue
@@ -79,6 +80,8 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
         try:
             with Image.open(collection / relpath) as img:
                 width, height = img.size
+                if img.getexif().get(ORIENTATION) in (5, 6, 7, 8):
+                    width, height = height, width
                 taken_at, taken_ts, camera = read_exif(img)
         except Exception as e:
             status, error = "error", f"{type(e).__name__}: {e}"

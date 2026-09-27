@@ -239,6 +239,28 @@ def test_cli_excludes_query_given_as_symlink_target(tmp_path, monkeypatch, capsy
     assert " 4.jpg " not in out
 
 
+def test_find_photo_matches_case_variant_of_indexed_path(tmp_path):
+    c, conn, _ = make_index(tmp_path, [])
+    Image.new("RGB", (20, 30), "red").save(c / "x.jpg", "JPEG")
+    scan(conn, c)
+    query = c / "X.JPG"
+    if not query.exists():
+        pytest.skip("case-sensitive filesystem")
+    assert search.find_photo(conn, c, query)[1] == "x.jpg"
+    assert search.find_photo(conn, c, c / "1.jpg")[1] == "1.jpg"
+    assert search.find_photo(conn, c, tmp_path / "missing.jpg") is None
+
+
+def test_contact_sheet_scales_wide_tile_to_fit(tmp_path):
+    pano = Image.new("RGB", (4000, 400), (255, 0, 0))
+    pano.paste((0, 0, 255), (3800, 0, 4000, 400))
+    out = tmp_path / "s.jpg"
+    search.contact_sheet([(pano, "pano")], out)
+    with Image.open(out) as sheet:
+        r, g, b = sheet.convert("RGB").getpixel((sheet.width - 10, 40))
+    assert b > 200 and r < 60
+
+
 def test_cli_missing_index_does_not_create_one(tmp_path, monkeypatch, capsys):
     c = tmp_path / "coll"
     c.mkdir()

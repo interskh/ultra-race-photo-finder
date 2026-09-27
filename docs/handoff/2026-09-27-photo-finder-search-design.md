@@ -118,3 +118,32 @@ Slice 1 SLICE_BASE=ffe232d
 - Modified: `src/photofinder/cli.py` (`search` subparser, `cmd_search`, `query_box`, `default_out`, `area`, `fmt_box`).
 - Writes `data/exports/*.jpg` (gitignored).
 - Mutations: 8/8 caught (dedupe, best-first order, renormalization, max→mean, self-exclusion, box sort, box range, default out path). Restored and checksum-verified.
+
+## S1-gate fixes — whole-run gate round (4 defects)
+
+**Decisions**
+- Upright size: scan reads EXIF Orientation (0x0112) from the already-open header and swaps width/height for 5–8. This is the same rule as `ImageOps.exif_transpose` and needs no pixel decode.
+- Manifest race: `find_images` runs first, then `load_manifest` does one short `mode=ro` read. Every file seen in the walk has its manifest row, because the downloader upserts rows before files.
+- The "manifest closed" guarantee is now asserted at each `Image.open` (header read) instead of at walk start. The walk no longer follows the read, so the old premise did not hold.
+- Contact sheet: after height normalization, any tile wider than the sheet is scaled down to the sheet width, so its height becomes less than 256. Row layout is unchanged.
+- Self-exclusion: the basename prefilter is casefolded, and the candidate match uses `Path.samefile` (st_dev+st_ino). A new `same_file` helper returns False on OSError when an indexed file is missing.
+
+**Rejected**
+- Decoding plus `exif_transpose` in scan: correct, but it decodes every image and would break the header-only speed.
+- Re-reading the manifest per file, or repairing NULL-join rows on rerun: more code and more manifest opens. Enumerate-then-read closes the race for everything that was walked.
+- `os.path.normcase` for the case check: it is a no-op on macOS/posix.
+- Comparing `resolve()` strings with a casefold: that would give false matches on case-sensitive volumes. Inode identity is exact.
+
+**Assumptions**
+- The downloader always commits a page's manifest rows before writing that page's files. A file written without any row stays NULL-joined, same as before.
+
+**Deferred**
+- Per orchestrator, the real first2000 subset has 0 rotated photos, so there was no reindex. Models and the real index were not rerun.
+- Rows already scanned with raw (unrotated) dims or NULL joins are not backfilled, because rerun skips existing relpaths. This only matters for indexes built before this fix. The current subset is unaffected.
+- A malformed EXIF block now makes scan mark the photo `error`, where before it recorded width/height only. `load_image`'s `exif_transpose` would fail on the same block at detect anyway.
+
+**Touches**
+- `src/photofinder/index/stages.py` (`scan`, `ORIENTATION` const) and `src/photofinder/search.py` (`contact_sheet`, `find_photo`, new `same_file`).
+- `tests/test_scan.py`: the manifest test was renamed to `..._closed_before_image_reads`. Added `test_manifest_rows_added_during_walk_are_joined` and `test_exif_rotated_photo_stores_upright_size`.
+- `tests/test_search.py`: added `test_find_photo_matches_case_variant_of_indexed_path` (skips on case-sensitive fs) and `test_contact_sheet_scales_wide_tile_to_fit`.
+- Mutations: 5/5 caught (orientation swap, manifest order, width cap, casefold prefilter, samefile→resolve). Restored and sha256-verified.

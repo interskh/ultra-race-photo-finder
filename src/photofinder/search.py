@@ -114,6 +114,8 @@ def search(db: sqlite3.Connection, refs: dict, top: int = 24, exclude=(), weight
 
 def contact_sheet(tiles: list[tuple[Image.Image, str]], out: Path, height=256, width=1800, label=22):
     tiles = [(img.resize((max(1, round(img.width * height / img.height)), height)), text) for img, text in tiles]
+    tiles = [(img.resize((width, max(1, round(img.height * width / img.width)))) if img.width > width else img, text)
+             for img, text in tiles]
     rows, row, x = [], [], 0
     for img, text in tiles:
         if row and x + img.width > width:
@@ -135,9 +137,15 @@ def contact_sheet(tiles: list[tuple[Image.Image, str]], out: Path, height=256, w
 
 
 def find_photo(db: sqlite3.Connection, collection: Path, path: Path) -> tuple[int, str] | None:
-    target = path.resolve()
-    names = {path.name, target.name}
+    names = {path.name.casefold(), path.resolve().name.casefold()}
     for photo_id, relpath in db.execute("select id, relpath from photos"):
-        if relpath.rsplit("/", 1)[-1] in names and (collection / relpath).resolve() == target:
+        if relpath.rsplit("/", 1)[-1].casefold() in names and same_file(collection / relpath, path):
             return photo_id, relpath
     return None
+
+
+def same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.samefile(b)
+    except OSError:
+        return False

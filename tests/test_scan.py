@@ -120,9 +120,9 @@ def test_index_files_are_not_scanned(tmp_path):
     assert set(rows(conn)) == {"1.jpg"}
 
 
-def test_manifest_is_read_only_and_closed_before_walk(tmp_path, monkeypatch):
+def test_manifest_is_read_only_and_closed_before_image_reads(tmp_path, monkeypatch):
     c = make_collection(tmp_path)
-    opened = []
+    opened, reads = [], []
     real_connect = sqlite3.connect
 
     def spy(target, *a, **kw):
@@ -131,18 +131,57 @@ def test_manifest_is_read_only_and_closed_before_walk(tmp_path, monkeypatch):
             opened.append((str(target), conn))
         return conn
 
-    real_find = stages.find_images
+    real_open = stages.Image.open
 
-    def find_checking(collection):
+    def open_checking(path, *a, **kw):
         (uri, conn), = opened
         assert uri.startswith("file:") and uri.endswith("?mode=ro")
         with pytest.raises(sqlite3.ProgrammingError):
             conn.execute("select 1")
-        return real_find(collection)
+        reads.append(path)
+        return real_open(path, *a, **kw)
 
     monkeypatch.setattr(sqlite3, "connect", spy)
-    monkeypatch.setattr(stages, "find_images", find_checking)
+    monkeypatch.setattr(stages.Image, "open", open_checking)
     assert scan(db.connect(c), c)["new"] == 5
+    assert len(reads) == 5
+
+
+def test_manifest_rows_added_during_walk_are_joined(tmp_path, monkeypatch):
+    c = tmp_path / "coll"
+    jpeg(c / "photos" / "101.jpg")
+    manifest(c, [(101, 7, "u1")], tags=[(7, "finish line"), (8, "mountain")], photographers=[("u1", "cam-a")])
+    real_find = stages.find_images
+
+    def find_while_downloading(collection):
+        m = sqlite3.connect(collection / "manifest.sqlite")
+        m.execute("insert into photos(photo_id, tag_id, uid) values (201, 8, 'u1')")
+        m.commit()
+        m.close()
+        jpeg(collection / "photos" / "201.jpg")
+        return real_find(collection)
+
+    monkeypatch.setattr(stages, "find_images", find_while_downloading)
+    conn = db.connect(c)
+    scan(conn, c)
+    got = rows(conn)
+    assert (got["photos/201.jpg"]["photographer"], got["photos/201.jpg"]["album"]) == ("cam-a", "mountain")
+    assert got["photos/101.jpg"]["album"] == "finish line"
+
+
+def test_exif_rotated_photo_stores_upright_size(tmp_path):
+    c = tmp_path / "coll"
+    for orientation in (3, 6, 8):
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        jpeg(c / f"{orientation}.jpg", exif, size=(400, 300))
+    conn = db.connect(c)
+    scan(conn, c)
+    got = rows(conn)
+    assert (got["3.jpg"]["width"], got["3.jpg"]["height"]) == (400, 300)
+    for name in ("6.jpg", "8.jpg"):
+        assert (got[name]["width"], got[name]["height"]) == (300, 400)
+        assert stages.models.load_image(c / name).size == (300, 400)
 
 
 def test_cli_missing_collection_exits_nonzero(tmp_path, capsys):
