@@ -223,3 +223,63 @@ Race subset `data/subsets/race925/`: 5,745 file symlinks (album 9.25 赛事, tag
 - `src/photofinder/{config,models,search,cli}.py`, `src/photofinder/index/stages.py` (`embed_scenes`, `SCENE_BATCH`), `pyproject.toml` + `uv.lock` (transformers).
 - Tests: new `tests/test_config.py`; `tests/test_search.py` (+10 test cases, `Fakes.encode`), `tests/test_detect_embed.py` (+5 tests, index-rerun test fakes `embed_images`), `tests/test_scan.py` (fakes `embed_images`).
 - Public API: `models.embed_images`, `models.encode_text`, `models.tokenizer`, `search.load_scenes`, `search.term_scores`, `search.SOURCES`, `Persons.scene`, `WEIGHTS` keys `text`/`scene`, `config.hf_cached/SIGLIP_REPO/SIGLIP_FILES`.
+
+## S2-T2 — `ocr_bibs` stage, filters (time/photographer/album/bib), CLI flags, index lockfile
+
+**Decisions**
+- OCR: `ocrmac` 1.0.1 Vision backend, `recognition_level="accurate"`, `language_preference=["en-US"]`, one pass per person. `models.read_text(img) -> [(text, conf)]` imports ocrmac lazily.
+- Crop policy (`stages.read_bibs`): below 200 px tall, skip OCR but still stamp `ocr_at`. Below 700 px, upscale ×2 with LANCZOS. At 700 px and above, use ×1.
+- Token rule: `(?<!\w)[0-9]{3,5}(?!\w)`, deduped per person with the max conf. Leading zeros are kept. "No.1685"/"#8038"/"15/817" → the digits. Letter-glued runs ("-l2100", "157H1E7", "i1111", "109g"), runs over 5 digits and fullwidth digits are dropped.
+- Stage mirrors `embed_persons`: a per-chunk image cache, one `with db:` per batch (error updates + bibs + `ocr_at`), `OCR_BATCH=64` AdaptiveBatcher, injectable `reader`. It runs after `embed_scenes` in the CLI loop.
+- Filters: `search.Filters(start, end, photographers, albums, bib)`. `filter_mask` builds one SQL query and `np.isin`s it into a person mask. `search()` scores all persons, then `best_per_photo` runs over `flatnonzero(mask)`. Time bounds are inclusive text comparisons, so NULL `taken_at` drops out only when a bound is set. Photographer matches `photographer` or `photographer_uid`. Album is exact. Bib uses `instr` (substring) on any of the person's bibs rows.
+- Filters are AND-combined; repeated `--photographer`/`--album` values are OR-ed within a flag. `--to 10:00` means ≤ 10:00:00.
+- `check_filters` raises `MissingEmbeddings` naming `ocr_bibs` when `--bib` is used and no person has `ocr_at`. The CLI calls it right after `load_persons`, before any model load.
+- CLI: `--from/--to` accept `YYYY-MM-DD HH:MM[:SS]`, normalized to `:SS`. A bad value exits with one line before the index check. An empty result prints "no photos match the filters" (or "no results" with no filters), writes no sheet, and exits 0.
+- Lock: `cmd_index` holds `fcntl.flock(LOCK_EX|LOCK_NB)` on `<collection>/index.lock` before `db.connect`. If held, it exits 1 with one line; no stage runs and no index is created. `.lock` is not in the scan suffix whitelist. The file is left in place (0 B), and flock releases on process exit.
+- Dependency: the `uv add ocrmac` lock diff was additive only (ocrmac 1.0.1, pyobjc-core and pyobjc-framework-{cocoa,coreml,quartz,vision} 12.2.2). `uv sync --inexact` ran while the orchestrator's race925 index was active; it only added packages and re-linked the editable photofinder. The running process had already imported its modules.
+
+**OCR probe** (race925, read-only; random persons by height bin; tokens are "crop has ≥1 3–5 digit run")
+- Probe 1, ×1 vision vs livetext: <400 px 0/42 for both. 400+ px 3/14 for both, and each missed one the other got. Livetext is not better and cannot set a level. Conf is not always 1.0: 0.3/0.5/1.0 were seen.
+- Probe 2/3, ×1 vs ×2:
+  - 200–300 px: 0/20 vs 0/20.
+  - 250–400 px: 1/40 vs 2/40. 300–400 px: 1/20 vs 3/20.
+  - 400–700 px: 4/40 vs 7/40. Every gain was checked visually as a real bib (8004, 8001, 8014, 8041, 8030, 8015), with no losses.
+  - 700+ px: 17/40 vs 20/40, at ×3 the time. ×2 degraded real reads there (8016→016, 8040→040, 8013 lost) and added watermark garbage.
+- 96–200 px: 1/30 at both scales, and that one was watermark garbage (贡嘎100 → 15100).
+- Height distribution of race925's 26,783 persons: <200: 3,220; 200–700: 15,628; 700+: 7,935.
+- Real `photofinder index` on a 10-photo, 88-person copy (markers preset so no torch model loads): 24 bibs on 23 persons, including all 9 seeded bibs (8006, 8036, 8017, 8004, 8041, 8043, 8015, 8030, 8040) plus 8038.
+  - Timing: cold 11.3 s (Vision first load), warm 3.3 s = 38 ms/person, peak RSS 296 MB. Estimate for race925: about 17 min.
+  - Rerun: `ocr_bibs: 0 pending`. A second concurrent `photofinder index` was refused (exit 1), and the first run finished with no duplicate bibs.
+
+**Rejected**
+- Livetext: no gain in probe 1, and it cannot take `recognition_level`.
+- Two passes (×1 + ×2, union): 2–3× cost, and at 700+ the ×2 pass adds garbage. A single height-dependent scale captured the ×2 gains.
+- A plain `(?<!\d)` digit boundary: it keeps letter-glued watermark garbage ("157H1"→157, "-l2100"→2100). A whitespace-split rule would have dropped "No.1685".
+- argparse `type=` for times: it prints usage plus an error (2 lines), unlike the other one-line exits.
+- `lockf`/`F_SETLK`: POSIX locks are per process, so a second fd in the same process would not conflict.
+
+**Assumptions**
+- Watermark digit runs stay as false positives for the `--bib` substring filter (e.g. "80001", "80002" from 传棋越7/贡嘎100). Check: `select text, count(*) from bibs group by text order by 2 desc` after the full run.
+- `/Volumes/Ext1TB` is APFS (checked with `mount`), so flock behaves as on tmp_path.
+
+**Deferred**
+- bib_bonus: soft boost for a known own bib, deferred to slice 3 UI.
+- `ocr_bibs` was not run on race925; the orchestrator's next `index` does it (~17 min).
+- ocrmac PNG-encodes every crop (~12 ms/call, about 30% of warm time). Acceptable at this scale.
+- `ocrmac` (pyobjc) is an unconditional dependency, so the project now installs only on macOS. This matches the design's Apple Vision choice.
+- The race925 `index` process that was running during this task started from pre-lock code, so it holds no `index.lock`. Only runs started from this commit on exclude each other.
+
+**Touches**
+- `src/photofinder/models.py` (`read_text`), `index/stages.py` (`bib_tokens`, `read_bibs`, `ocr_bibs`, `OCR_*`, `BIB_TOKEN`), `search.py` (`Filters`, `check_filters`, `filter_mask`, `search(filters=)`), `cli.py` (`lock_index`, `LOCK_NAME`, `parse_time`, `--from/--to/--photographer/--album/--bib`, `ocr_bibs` in the loop), `pyproject.toml` + `uv.lock`.
+- Tests: new `tests/test_ocr_bibs.py` (21, incl. one real Vision read of rendered "0887"); `tests/test_search.py` +14; `tests/test_scan.py` +2 lock tests (second fd, subprocess holder); both index CLI tests now fake `read_text`.
+- Writes `<collection>/index.lock` on every `index` run.
+- Mutations: 14/14 caught. They were: NULL-time kept, bib exact, photographer uid ignored, photographer nickname ignored, lock blocking (hung → timeout), lock never taken, `ocr_at` only with tokens, digits {3,6}, digits {4,5}, digit-only boundary, no min height, no upscale, no empty-result guard, CLI bib check removed. Files were restored from saved copies and sha256-verified.
+
+### S2-T2 fix round (review findings)
+- `--to 'YYYY-MM-DD HH:MM'` now means `:59`, so it includes the whole minute; `--from` stays at `:00`. An explicit `:SS` is used as given. This supersedes "`--to 10:00` means ≤ 10:00:00" above.
+- `--bib ""` or whitespace-only → one-line error. Other `--bib` values are stripped.
+- `check_filters` now returns a warning, `"ocr_bibs incomplete: N of M persons not read yet; rerun `photofinder index`"`, when some persons in `ok` photos have NULL `ocr_at`. The CLI prints it and continues. It still raises when no person has been read. Only persons in `status='ok'` photos are counted (before this round: any person).
+- The CLI filter test was replaced by a parametrized per-flag test. Each of `--from`, `--to`, `--photographer`, `--album` and `--bib` alone changes the result on the fixture, plus one combined case. Added tests for the whole-minute rule, empty bib and partial-OCR warning.
+- Rejected: logging the warning inside `filter_mask`. The CLI calls both `check_filters` and `search`, so it would print twice; returning the string lets the slice 3 web app show it too.
+- Mutations: 9/9 caught. They were: each of `--from`/`--to`/`--photographer`/`--album` replaced by an empty value (the reviewer's exact mutation), empty bib accepted, warning never built, warning not printed, `--to` keeps `:00`, `--from` also gets `:59`. Restored and sha256-verified.
+- `uv run pytest`: 127 passed.

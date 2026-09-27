@@ -1,20 +1,34 @@
 import argparse
+import fcntl
 import logging
 import sys
 import time
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 from photofinder import config, db, models, search
 from photofinder.index import stages
 
 log = logging.getLogger("photofinder")
+LOCK_NAME = "index.lock"
+TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
+
+
+def lock_index(collection: Path):
+    f = open(collection / LOCK_NAME, "a")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.close()
+        sys.exit(f"another `photofinder index` run is active on {collection}")
+    return f
 
 
 def cmd_index(args):
     t0 = time.monotonic()
-    with closing(db.connect(args.collection)) as conn:
-        for stage in (stages.scan, stages.detect, stages.embed_persons, stages.embed_scenes):
+    with lock_index(args.collection), closing(db.connect(args.collection)) as conn:
+        for stage in (stages.scan, stages.detect, stages.embed_persons, stages.embed_scenes, stages.ocr_bibs):
             t = time.monotonic()
             counts = stage(conn, args.collection)
             models.unload()
@@ -49,9 +63,27 @@ def query_box(args, img) -> tuple:
     return boxes[args.box][:4]
 
 
+def parse_time(flag: str, value: str | None, minute_end=False) -> str | None:
+    if value is None:
+        return None
+    for fmt in TIME_FORMATS:
+        try:
+            t = datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+        return t.replace(second=59).strftime(TIME_FORMATS[0]) if minute_end and fmt == TIME_FORMATS[1] \
+            else t.strftime(TIME_FORMATS[0])
+    sys.exit(f"{flag} {value!r} is not a time; use 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD HH:MM:SS'")
+
+
 def cmd_search(args):
     if not (args.photo or args.text or args.scene):
         sys.exit("give at least one of --photo, --text, --scene")
+    if args.bib is not None and not args.bib.strip():
+        sys.exit("--bib needs a number, e.g. --bib 8038")
+    filters = search.Filters(parse_time("--from", args.start), parse_time("--to", args.end, minute_end=True),
+                             tuple(args.photographer or ()), tuple(args.album or ()),
+                             args.bib.strip() if args.bib else None)
     if not (args.collection / db.INDEX_NAME).is_file():
         sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
     if args.photo and not args.photo.is_file():
@@ -69,8 +101,11 @@ def cmd_search(args):
             persons = search.load_persons(conn)
             if args.scene:
                 search.load_scenes(conn, persons)
+            warning = search.check_filters(conn, filters)
         except search.MissingEmbeddings as e:
             sys.exit(str(e))
+        if warning:
+            print(warning)
         refs, exclude = {}, []
         if img is not None:
             query = models.crop(img, query_box(args, img))
@@ -83,7 +118,10 @@ def cmd_search(args):
         if args.photo and (found := search.find_photo(conn, args.collection, args.photo)):
             exclude.append(found[0])
             print(f"query photo is indexed as {found[1]}; excluded from results")
-        results = search.search(conn, refs, args.top, exclude, persons=persons)
+        results = search.search(conn, refs, args.top, exclude, persons=persons, filters=filters)
+    if not results:
+        print("no photos match the filters" if filters else "no results")
+        return
     for r in results:
         print(f"{r.rank:>3} {r.score:.4f} {r.relpath} box={fmt_box(r.box)} {r.taken_at or '-'} "
               f"{r.photographer or '-'} {r.album or '-'}")
@@ -99,7 +137,7 @@ def cmd_search(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="photofinder", description="Find your own photos in a race photo collection")
     sub = ap.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("index", help="scan, detect and embed a collection into <collection>/index.sqlite")
+    p = sub.add_parser("index", help="scan, detect, embed and OCR bibs of a collection into <collection>/index.sqlite")
     p.add_argument("collection", type=Path)
     p.set_defaults(func=cmd_index)
     p = sub.add_parser("search", help="rank indexed photos by a query photo, person text and/or scene text")
@@ -111,6 +149,11 @@ def main(argv=None):
     g.add_argument("--box", type=int, default=0,
                    help="detected person to search for; boxes are numbered by area, largest first (default 0)")
     g.add_argument("--whole", action="store_true", help="skip detection and use the whole image as the query")
+    p.add_argument("--from", dest="start", help="earliest camera-local time, 'YYYY-MM-DD HH:MM[:SS]'")
+    p.add_argument("--to", dest="end", help="latest camera-local time, 'YYYY-MM-DD HH:MM[:SS]'")
+    p.add_argument("--photographer", action="append", help="photographer nickname or uid (repeatable)")
+    p.add_argument("--album", action="append", help="album name (repeatable)")
+    p.add_argument("--bib", help="only persons whose OCR'd bib contains this text")
     p.add_argument("--top", type=int, default=24, help="number of photos to return (default 24)")
     p.add_argument("--out", type=Path, help="contact sheet JPEG (default data/exports/<collection>-search-<time>.jpg)")
     p.set_defaults(func=cmd_search)

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sqlite3
 import time
 from contextlib import closing
@@ -16,7 +17,9 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MANIFEST_NAME = "manifest.sqlite"
 EXIF_IFD, DATETIME_ORIGINAL, MODEL, ORIENTATION = 0x8769, 0x9003, 0x0110, 0x0112
 COMMIT_EVERY = 200
-DETECT_BATCH, EMBED_BATCH, SCENE_BATCH = 8, 64, 16
+DETECT_BATCH, EMBED_BATCH, SCENE_BATCH, OCR_BATCH = 8, 64, 16, 64
+OCR_MIN_HEIGHT, OCR_UPSCALE_BELOW = 200, 700
+BIB_TOKEN = re.compile(r"(?<!\w)[0-9]{3,5}(?!\w)")
 
 log = logging.getLogger("index")
 
@@ -206,4 +209,57 @@ def embed_scenes(db: sqlite3.Connection, collection: Path, embedder=None, batche
         counts["photos"] += len(ids)
         counts["errors"] += len(errors)
     log.info("embed_scenes: %d photos embedded, %d errors", counts["photos"], counts["errors"])
+    return counts
+
+
+def bib_tokens(found) -> dict[str, float]:
+    tokens = {}
+    for text, conf in found:
+        for token in BIB_TOKEN.findall(text):
+            tokens[token] = max(conf, tokens.get(token, conf))
+    return tokens
+
+
+def read_bibs(crop: Image.Image, reader) -> dict[str, float]:
+    if crop.height < OCR_MIN_HEIGHT:
+        return {}
+    if crop.height < OCR_UPSCALE_BELOW:
+        crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+    return bib_tokens(reader(crop))
+
+
+def ocr_bibs(db: sqlite3.Connection, collection: Path, reader=None, batcher=None) -> dict:
+    pending = db.execute("""select p.id, p.photo_id, ph.relpath, p.x1, p.y1, p.x2, p.y2 from persons p
+                            join photos ph on ph.id = p.photo_id
+                            where p.ocr_at is null and ph.status = 'ok'
+                            order by p.photo_id, p.id""").fetchall()
+    counts = {"pending": len(pending), "persons": 0, "bibs": 0, "errors": 0}
+    log.info("ocr_bibs: %d pending", len(pending))
+    if not pending:
+        return counts
+    reader = reader or models.read_text
+    batcher = batcher or AdaptiveBatcher(OCR_BATCH)
+    for chunk in batcher.chunks(pending):
+        images, bad = {}, {}
+        for _, photo_id, relpath, *_ in chunk:
+            if photo_id not in images and photo_id not in bad:
+                try:
+                    images[photo_id] = models.load_image(collection / relpath)
+                except Exception as e:
+                    bad[photo_id] = error_text(e)
+                    log.warning("unreadable image %s: %s", relpath, bad[photo_id])
+        done = [(pid, read_bibs(models.crop(images[photo_id], box), reader)) for pid, photo_id, _, *box in chunk
+                if photo_id in images]
+        stamp = now()
+        with db:
+            db.executemany("update photos set status = 'error', error = ? where id = ?",
+                           [(e, photo_id) for photo_id, e in bad.items()])
+            for pid, bibs in done:
+                db.executemany("insert into bibs(person_id, text, conf) values (?,?,?)",
+                               [(pid, text, conf) for text, conf in bibs.items()])
+                db.execute("update persons set ocr_at = ? where id = ?", (stamp, pid))
+        counts["persons"] += len(done)
+        counts["bibs"] += sum(len(b) for _, b in done)
+        counts["errors"] += len(bad)
+    log.info("ocr_bibs: %d persons read, %d bibs, %d photo errors", counts["persons"], counts["bibs"], counts["errors"])
     return counts

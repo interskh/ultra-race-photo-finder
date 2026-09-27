@@ -1,4 +1,7 @@
+import fcntl
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime
 
 import numpy as np
@@ -196,7 +199,53 @@ def test_cli_index_runs_scan(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
     monkeypatch.setattr(cli.models, "detect_persons", lambda images: [[] for _ in images])
     monkeypatch.setattr(cli.models, "embed_images", lambda images: np.ones((len(images), 4), np.float32))
+    monkeypatch.setattr(cli.models, "read_text", lambda img: [])
     c = tmp_path / "coll"
     jpeg(c / "1.jpg")
     cli.main(["index", str(c)])
     assert set(rows(sqlite3.connect(c / "index.sqlite"))) == {"1.jpg"}
+
+
+def held_lock(c):
+    f = open(c / "index.lock", "a")
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return f
+
+
+def test_cli_index_refuses_while_another_run_holds_the_lock(tmp_path, monkeypatch):
+    c = tmp_path / "coll"
+    jpeg(c / "1.jpg")
+    ran = []
+    monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
+    monkeypatch.setattr(stages, "scan", lambda *a: ran.append("scan"))
+    with held_lock(c):
+        with pytest.raises(SystemExit) as e:
+            cli.main(["index", str(c)])
+    msg = str(e.value.code)
+    assert "another `photofinder index` run is active" in msg and str(c) in msg and "\n" not in msg
+    assert ran == []
+    assert not (c / "index.sqlite").exists()
+
+
+def test_cli_index_lock_held_by_other_process_blocks_and_is_released_after_run(tmp_path, monkeypatch):
+    c = tmp_path / "coll"
+    jpeg(c / "1.jpg")
+    monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
+    monkeypatch.setattr(cli.models, "detect_persons", lambda images: [[] for _ in images])
+    monkeypatch.setattr(cli.models, "embed_images", lambda images: np.ones((len(images), 4), np.float32))
+    holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys; f = open(sys.argv[1], 'a'); "
+                               "fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()",
+                               str(c / "index.lock")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline() == "held\n"
+        with pytest.raises(SystemExit) as e:
+            cli.main(["index", str(c)])
+        assert "another `photofinder index` run is active" in str(e.value.code)
+        assert not (c / "index.sqlite").exists()
+    finally:
+        holder.communicate("")
+    cli.main(["index", str(c)])
+    assert set(rows(sqlite3.connect(c / "index.sqlite"))) == {"1.jpg"}
+    with held_lock(c):
+        pass
+    assert "index.lock" not in " ".join(stages.find_images(c))

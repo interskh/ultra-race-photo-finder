@@ -197,20 +197,21 @@ def test_index_rerun_with_everything_done_loads_no_model(tmp_path, monkeypatch, 
     monkeypatch.setattr(models, "detect_persons", FakeDetector())
     monkeypatch.setattr(models, "embed_crops", FakeEmbedder())
     monkeypatch.setattr(models, "embed_images", FakeSceneEmbedder())
+    monkeypatch.setattr(models, "read_text", lambda img: [])
     cli.main(["index", str(c)])
     monkeypatch.undo()
 
-    def forbidden():
+    def forbidden(*args):
         raise AssertionError("model loaded")
 
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
-    for name in ("yolo", "osnet", "siglip"):
+    for name in ("yolo", "osnet", "siglip", "read_text"):
         monkeypatch.setattr(models, name, forbidden)
     with caplog.at_level(logging.INFO):
         cli.main(["index", str(c)])
     messages = [r.getMessage() for r in caplog.records]
     assert "detect: 0 pending" in messages and "embed_persons: 0 pending" in messages
-    assert "embed_scenes: 0 pending" in messages
+    assert "embed_scenes: 0 pending" in messages and "ocr_bibs: 0 pending" in messages
     conn = sqlite3.connect(c / "index.sqlite")
     assert conn.execute("select count(*) from emb_person_osnet").fetchone() == (3,)
     assert conn.execute("select count(*) from emb_scene_siglip").fetchone() == (3,)

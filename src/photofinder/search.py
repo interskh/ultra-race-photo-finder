@@ -44,6 +44,56 @@ class Result:
     album: str | None
 
 
+@dataclass
+class Filters:
+    start: str | None = None
+    end: str | None = None
+    photographers: tuple = ()
+    albums: tuple = ()
+    bib: str | None = None
+
+    def __bool__(self):
+        return any((self.start, self.end, self.photographers, self.albums, self.bib))
+
+
+def check_filters(db: sqlite3.Connection, filters: Filters | None) -> str | None:
+    if not (filters and filters.bib):
+        return None
+    total, unread = db.execute("""select count(*), count(*) - count(p.ocr_at) from persons p
+                                  join photos ph on ph.id = p.photo_id where ph.status = 'ok'""").fetchone()
+    if total == unread:
+        raise MissingEmbeddings("index has no bib OCR yet (stage ocr_bibs); run `photofinder index <collection>` first")
+    if unread:
+        return f"ocr_bibs incomplete: {unread} of {total} persons not read yet; rerun `photofinder index`"
+    return None
+
+
+def filter_mask(db: sqlite3.Connection, persons: Persons, filters: Filters | None) -> np.ndarray | None:
+    if not filters:
+        return None
+    check_filters(db, filters)
+    where, args = [], []
+    if filters.start:
+        where.append("ph.taken_at >= ?")
+        args.append(filters.start)
+    if filters.end:
+        where.append("ph.taken_at <= ?")
+        args.append(filters.end)
+    if filters.photographers:
+        marks = ",".join("?" * len(filters.photographers))
+        where.append(f"(ph.photographer in ({marks}) or ph.photographer_uid in ({marks}))")
+        args += [*filters.photographers, *filters.photographers]
+    if filters.albums:
+        where.append(f"ph.album in ({','.join('?' * len(filters.albums))})")
+        args += filters.albums
+    if filters.bib:
+        where.append("exists (select 1 from bibs b where b.person_id = p.id and instr(b.text, ?) > 0)")
+        args.append(filters.bib)
+    ids = [i for (i,) in db.execute("select p.id from persons p join photos ph on ph.id = p.photo_id where "
+                                    + " and ".join(where), args)]
+    return np.isin(persons.ids, ids)
+
+
 def matrix(blobs) -> np.ndarray:
     return models.l2norm(np.frombuffer(b"".join(blobs), dtype=np.float16).reshape(len(blobs), -1))
 
@@ -121,13 +171,15 @@ def best_per_photo(photo_ids: np.ndarray, scores: np.ndarray, top: int, exclude=
 
 
 def search(db: sqlite3.Connection, refs: dict, top: int = 24, exclude=(), weights=WEIGHTS,
-           persons: Persons | None = None) -> list[Result]:
+           persons: Persons | None = None, filters: Filters | None = None) -> list[Result]:
     persons = persons or load_persons(db)
     if refs.get("scene") is not None and persons.scene is None:
         load_scenes(db, persons)
+    mask = filter_mask(db, persons, filters)
     t0 = time.monotonic()
     scores = score(persons, refs, weights)
-    picked = best_per_photo(persons.photo_ids, scores, top, exclude)
+    rows = np.arange(len(scores)) if mask is None else np.flatnonzero(mask)
+    picked = [int(rows[i]) for i in best_per_photo(persons.photo_ids[rows], scores[rows], top, exclude)]
     log.info("scored %d persons in %.3fs", len(scores), time.monotonic() - t0)
     results = []
     for rank, i in enumerate(picked, 1):

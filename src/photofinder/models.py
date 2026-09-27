@@ -114,6 +114,12 @@ def embed_images(images: list[Image.Image]) -> np.ndarray:
         return l2norm(model.encode_image(batch).float().cpu().numpy())
 
 
+def read_text(img: Image.Image) -> list[tuple[str, float]]:
+    from ocrmac import ocrmac
+    found = ocrmac.OCR(img, recognition_level="accurate", language_preference=["en-US"]).recognize()
+    return [(text, float(conf)) for text, conf, _ in found]
+
+
 def encode_text(texts: list[str]) -> np.ndarray:
     import torch
     model, _ = siglip()

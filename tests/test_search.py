@@ -401,3 +401,174 @@ def test_cli_photo_with_text_and_scene_encodes_both_texts(tmp_path, monkeypatch,
     assert len(fakes.embedded) == 1
     ranked = [ln.split() for ln in capsys.readouterr().out.splitlines() if ln.lstrip()[:1].isdigit()]
     assert ranked[0][2] == "1.jpg"
+
+
+def filter_index(tmp_path):
+    c, conn, ids = make_index(tmp_path, [
+        (1, (0, 0, 50, 100), A, X),
+        (1, (60, 0, 110, 100), [0.9, 0.1, 0, 0], X),
+        (2, (0, 0, 50, 100), [0.8, 0.2, 0, 0], X),
+        (3, (0, 0, 50, 100), [0.7, 0.3, 0, 0], X),
+        (4, (0, 0, 50, 100), [0.6, 0.4, 0, 0], X),
+    ], photos=4)
+    conn.executemany("update photos set taken_at = ?, photographer_uid = ?, photographer = ?, album = ? "
+                     "where relpath = ?", [
+                         ("2026-09-25 08:00:00", "u1", "阿光", "9.25 赛事", "1.jpg"),
+                         ("2026-09-25 09:30:00", "u2", "Lens", "9.25 赛事", "2.jpg"),
+                         ("2026-09-25 10:00:00", "u3", None, "定妆照", "3.jpg"),
+                         (None, "u1", "阿光", "9.25 赛事", "4.jpg")])
+    conn.executemany("insert into bibs(person_id, text, conf) values (?,?,?)",
+                     [(ids[1][1], "2001", 1.0), (ids[2][0], "12001", 0.5), (ids[3][0], "2100", 1.0)])
+    conn.execute("update persons set ocr_at = '2026-09-28 00:00:00'")
+    conn.commit()
+    return c, conn, ids
+
+
+def ranked(conn, **filters):
+    return [r.relpath for r in search.search(conn, {"osnet": np.array([A])}, filters=search.Filters(**filters))]
+
+
+def test_no_filters_returns_everything_including_null_time(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    assert ranked(conn) == ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]
+    assert not search.Filters()
+
+
+def test_time_window_is_inclusive_and_drops_null_time_photos(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    assert ranked(conn, start="2026-09-25 09:30:00") == ["2.jpg", "3.jpg"]
+    assert ranked(conn, end="2026-09-25 09:30:00") == ["1.jpg", "2.jpg"]
+    assert ranked(conn, start="2026-09-25 08:00:01", end="2026-09-25 09:59:59") == ["2.jpg"]
+
+
+def test_photographer_matches_nickname_or_uid_and_repeats(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    assert ranked(conn, photographers=("阿光",)) == ["1.jpg", "4.jpg"]
+    assert ranked(conn, photographers=("u3",)) == ["3.jpg"]
+    assert ranked(conn, photographers=("Lens", "u3")) == ["2.jpg", "3.jpg"]
+    assert ranked(conn, photographers=("阿",)) == []
+
+
+def test_album_is_exact_and_repeatable(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    assert ranked(conn, albums=("定妆照",)) == ["3.jpg"]
+    assert ranked(conn, albums=("定妆照", "9.25 赛事")) == ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]
+    assert ranked(conn, albums=("9.25",)) == []
+
+
+def test_bib_substring_keeps_only_matching_persons(tmp_path):
+    _, conn, ids = filter_index(tmp_path)
+    [r] = search.search(conn, {"osnet": np.array([A])}, filters=search.Filters(bib="2001"))[:1]
+    assert r.relpath == "1.jpg" and r.person_id == ids[1][1]
+    assert ranked(conn, bib="2001") == ["1.jpg", "2.jpg"]
+    assert ranked(conn, bib="200") == ["1.jpg", "2.jpg"]
+    assert ranked(conn, bib="21") == ["3.jpg"]
+    assert ranked(conn, bib="9999") == []
+
+
+def test_filters_combine_with_and(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    assert ranked(conn, bib="2001", albums=("9.25 赛事",), start="2026-09-25 09:00") == ["2.jpg"]
+    assert ranked(conn, photographers=("阿光",), start="2026-09-25 07:00:00") == ["1.jpg"]
+    assert ranked(conn, photographers=("Lens",), albums=("定妆照",)) == []
+
+
+def test_bib_filter_without_ocr_names_stage(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    conn.execute("update persons set ocr_at = null")
+    with pytest.raises(search.MissingEmbeddings, match="ocr_bibs"):
+        ranked(conn, bib="2001")
+    assert ranked(conn, albums=("定妆照",)) == ["3.jpg"]
+
+
+def cli_ranked(capsys, c, tmp_path, *flags):
+    cli.main(["search", str(c), "--text", "red", *flags, "--out", str(tmp_path / "s.jpg")])
+    return sorted(ln.split()[2] for ln in capsys.readouterr().out.splitlines() if ln.lstrip()[:1].isdigit())
+
+
+@pytest.mark.parametrize("flags, expected", [
+    ((), ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]),
+    (("--from", "2026-09-25 09:00"), ["2.jpg", "3.jpg"]),
+    (("--to", "2026-09-25 09:00"), ["1.jpg"]),
+    (("--photographer", "Lens", "--photographer", "u3"), ["2.jpg", "3.jpg"]),
+    (("--album", "定妆照"), ["3.jpg"]),
+    (("--bib", "21"), ["3.jpg"]),
+    (("--photographer", "u1", "--album", "9.25 赛事", "--from", "2026-09-25 07:00", "--to", "2026-09-25 09:00",
+      "--bib", "001"), ["1.jpg"]),
+])
+def test_cli_each_filter_flag_restricts_results(tmp_path, monkeypatch, capsys, flags, expected):
+    c, _, _ = filter_index(tmp_path)
+    Fakes(monkeypatch, texts={"red": Y})
+    assert cli_ranked(capsys, c, tmp_path, *flags) == expected
+
+
+def test_cli_to_without_seconds_includes_the_whole_minute(tmp_path, monkeypatch, capsys):
+    c, conn, _ = filter_index(tmp_path)
+    conn.execute("update photos set taken_at = '2026-09-25 09:30:30' where relpath = '2.jpg'")
+    conn.commit()
+    Fakes(monkeypatch, texts={"red": Y})
+    assert cli_ranked(capsys, c, tmp_path, "--to", "2026-09-25 09:30") == ["1.jpg", "2.jpg"]
+    assert cli_ranked(capsys, c, tmp_path, "--to", "2026-09-25 09:30:29") == ["1.jpg"]
+    assert cli_ranked(capsys, c, tmp_path, "--from", "2026-09-25 09:30") == ["2.jpg", "3.jpg"]
+    assert cli_ranked(capsys, c, tmp_path, "--from", "2026-09-25 09:31") == ["3.jpg"]
+
+
+@pytest.mark.parametrize("bib", ["", "   "])
+def test_cli_rejects_empty_bib(tmp_path, monkeypatch, capsys, bib):
+    c, _, _ = filter_index(tmp_path)
+    fakes = Fakes(monkeypatch, texts={"red": Y})
+    msg, _ = run(capsys, c, "--text", "red", "--bib", bib)
+    assert "--bib" in msg and "\n" not in msg
+    assert fakes.encoded == []
+
+
+def test_cli_partial_ocr_warns_and_still_filters(tmp_path, monkeypatch, capsys):
+    c, conn, ids = filter_index(tmp_path)
+    conn.execute("update persons set ocr_at = null where id in (?, ?)", (ids[3][0], ids[4][0]))
+    conn.commit()
+    Fakes(monkeypatch, texts={"red": Y})
+    cli.main(["search", str(c), "--text", "red", "--bib", "001", "--out", str(tmp_path / "s.jpg")])
+    lines = capsys.readouterr().out.splitlines()
+    assert "ocr_bibs incomplete: 2 of 5 persons not read yet; rerun `photofinder index`" in lines
+    assert sorted(ln.split()[2] for ln in lines if ln.lstrip()[:1].isdigit()) == ["1.jpg", "2.jpg"]
+    cli.main(["search", str(c), "--text", "red", "--out", str(tmp_path / "s.jpg")])
+    assert "ocr_bibs incomplete" not in capsys.readouterr().out
+    conn.execute("update persons set ocr_at = 'x'")
+    conn.commit()
+    cli.main(["search", str(c), "--text", "red", "--bib", "001", "--out", str(tmp_path / "s.jpg")])
+    assert "ocr_bibs incomplete" not in capsys.readouterr().out
+
+
+def test_cli_no_match_prints_line_and_writes_no_sheet(tmp_path, monkeypatch, capsys):
+    c, _, _ = filter_index(tmp_path)
+    Fakes(monkeypatch, texts={"red": Y})
+    cli.main(["search", str(c), "--text", "red", "--bib", "9999", "--out", str(tmp_path / "s.jpg")])
+    assert capsys.readouterr().out.strip() == "no photos match the filters"
+    assert not (tmp_path / "s.jpg").exists()
+
+
+@pytest.mark.parametrize("flag, value", [("--from", "2026-09-25"), ("--to", "25/09/2026 10:00"),
+                                         ("--from", "2026-13-01 10:00")])
+def test_cli_rejects_bad_time_with_one_line(tmp_path, monkeypatch, capsys, flag, value):
+    c, _, _ = filter_index(tmp_path)
+    fakes = Fakes(monkeypatch, texts={"red": Y})
+    msg, _ = run(capsys, c, "--text", "red", flag, value)
+    assert flag in msg and "YYYY-MM-DD HH:MM" in msg and "\n" not in msg
+    assert fakes.encoded == []
+
+
+def test_cli_filters_still_need_a_query_term(tmp_path, monkeypatch, capsys):
+    c, _, _ = filter_index(tmp_path)
+    Fakes(monkeypatch)
+    msg, _ = run(capsys, c, "--bib", "2001")
+    assert "--photo" in msg
+
+
+def test_cli_bib_without_ocr_names_stage_before_models(tmp_path, monkeypatch, capsys):
+    c, conn, _ = filter_index(tmp_path)
+    conn.execute("update persons set ocr_at = null")
+    conn.commit()
+    fakes = Fakes(monkeypatch, texts={"red": Y})
+    msg, _ = run(capsys, c, "--photo", query_photo(tmp_path), "--text", "red", "--bib", "2001")
+    assert "ocr_bibs" in msg and "\n" not in msg
+    assert fakes.detected == fakes.embedded == fakes.encoded == []
