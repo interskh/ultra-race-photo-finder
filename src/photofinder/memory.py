@@ -3,6 +3,8 @@ import resource
 import subprocess
 import time
 
+import psutil
+
 NORMAL, WARN, CRITICAL = 1, 2, 4
 LEVEL_NAMES = {NORMAL: "normal", WARN: "warn", CRITICAL: "critical"}
 
@@ -17,6 +19,10 @@ def pressure_level() -> int:
     except (OSError, ValueError, subprocess.SubprocessError):
         return NORMAL
     return CRITICAL if level >= CRITICAL else WARN if level >= WARN else NORMAL
+
+
+def rss_mb() -> float:
+    return psutil.Process().memory_info().rss / (1024 * 1024)
 
 
 def max_rss_mb() -> float:
@@ -37,8 +43,8 @@ class AdaptiveBatcher:
         self.batches = 0
 
     def _log(self, level, msg="memory"):
-        log.info("%s: level=%s batch=%d max_rss=%.0fMB", msg, LEVEL_NAMES.get(level, level),
-                 self.size, max_rss_mb())
+        log.info("%s: level=%s batch=%d rss=%.0fMB max_rss=%.0fMB", msg, LEVEL_NAMES.get(level, level),
+                 self.size, rss_mb(), max_rss_mb())
 
     def next_size(self) -> int:
         level = self.reader()

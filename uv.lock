@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-09-20T16:04:42.18378Z"
+exclude-newer = "2026-09-20T16:28:15.381454Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -1202,6 +1202,7 @@ dependencies = [
     { name = "numpy" },
     { name = "open-clip-torch" },
     { name = "pillow" },
+    { name = "psutil" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "ultralytics" },
@@ -1219,6 +1220,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "open-clip-torch", specifier = ">=3.3.0" },
     { name = "pillow", specifier = ">=12.3.0" },
+    { name = "psutil", specifier = ">=7.2.2" },
     { name = "torch", specifier = ">=2.14.0" },
     { name = "torchvision", specifier = ">=0.29.0" },
     { name = "ultralytics", specifier = ">=8.4.157" },

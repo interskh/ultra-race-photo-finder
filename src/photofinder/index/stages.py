@@ -6,12 +6,17 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
+
+from photofinder import models
+from photofinder.memory import AdaptiveBatcher
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MANIFEST_NAME = "manifest.sqlite"
 EXIF_IFD, DATETIME_ORIGINAL, MODEL = 0x8769, 0x9003, 0x0110
 COMMIT_EVERY = 200
+DETECT_BATCH, EMBED_BATCH = 8, 64
 
 log = logging.getLogger("index")
 
@@ -89,4 +94,82 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
             db.commit()
     db.commit()
     log.info("scan: %d new (%d errors), %d already indexed", counts["new"], counts["errors"], counts["existing"])
+    return counts
+
+
+def error_text(e: Exception) -> str:
+    return f"{type(e).__name__}: {e}"
+
+
+def to_blob(v) -> bytes:
+    return models.l2norm(v).astype(np.float16).tobytes()
+
+
+def detect(db: sqlite3.Connection, collection: Path, detector=None, batcher=None) -> dict:
+    pending = db.execute("select id, relpath from photos where status = 'ok' and detected_at is null "
+                         "order by id").fetchall()
+    counts = {"pending": len(pending), "photos": 0, "persons": 0, "errors": 0}
+    log.info("detect: %d pending", len(pending))
+    if not pending:
+        return counts
+    detector = detector or models.detect_persons
+    batcher = batcher or AdaptiveBatcher(DETECT_BATCH)
+    for chunk in batcher.chunks(pending):
+        ids, images, errors = [], [], []
+        for photo_id, relpath in chunk:
+            try:
+                images.append(models.load_image(collection / relpath))
+                ids.append(photo_id)
+            except Exception as e:
+                errors.append((error_text(e), photo_id))
+                log.warning("unreadable image %s: %s", relpath, errors[-1][0])
+        found = detector(images) if images else []
+        stamp = now()
+        with db:
+            db.executemany("update photos set status = 'error', error = ? where id = ?", errors)
+            for photo_id, boxes in zip(ids, found, strict=True):
+                db.executemany("insert into persons(photo_id, x1, y1, x2, y2, conf) values (?,?,?,?,?,?)",
+                               [(photo_id, *box) for box in boxes])
+                db.execute("update photos set detected_at = ? where id = ?", (stamp, photo_id))
+        counts["persons"] += sum(map(len, found))
+        counts["photos"] += len(ids)
+        counts["errors"] += len(errors)
+    log.info("detect: %d photos, %d persons, %d errors", counts["photos"], counts["persons"], counts["errors"])
+    return counts
+
+
+def embed_persons(db: sqlite3.Connection, collection: Path, embedder=None, batcher=None) -> dict:
+    pending = db.execute("""select p.id, p.photo_id, ph.relpath, p.x1, p.y1, p.x2, p.y2 from persons p
+                            join photos ph on ph.id = p.photo_id
+                            where p.embedded_at is null and ph.status = 'ok'
+                            order by p.photo_id, p.id""").fetchall()
+    counts = {"pending": len(pending), "persons": 0, "errors": 0}
+    log.info("embed_persons: %d pending", len(pending))
+    if not pending:
+        return counts
+    embedder = embedder or models.embed_crops
+    batcher = batcher or AdaptiveBatcher(EMBED_BATCH)
+    for chunk in batcher.chunks(pending):
+        images, bad = {}, {}
+        for _, photo_id, relpath, *_ in chunk:
+            if photo_id not in images and photo_id not in bad:
+                try:
+                    images[photo_id] = models.load_image(collection / relpath)
+                except Exception as e:
+                    bad[photo_id] = error_text(e)
+                    log.warning("unreadable image %s: %s", relpath, bad[photo_id])
+        todo = [(pid, models.crop(images[photo_id], box)) for pid, photo_id, _, *box in chunk
+                if photo_id in images]
+        reid, clip = embedder([c for _, c in todo]) if todo else ([], [])
+        stamp = now()
+        with db:
+            db.executemany("update photos set status = 'error', error = ? where id = ?",
+                           [(e, photo_id) for photo_id, e in bad.items()])
+            for (pid, _), r, c in zip(todo, reid, clip, strict=True):
+                db.execute("insert into emb_person_osnet(person_id, v) values (?,?)", (pid, to_blob(r)))
+                db.execute("insert into emb_person_siglip(person_id, v) values (?,?)", (pid, to_blob(c)))
+                db.execute("update persons set embedded_at = ? where id = ?", (stamp, pid))
+        counts["persons"] += len(todo)
+        counts["errors"] += len(bad)
+    log.info("embed_persons: %d persons embedded, %d photo errors", counts["persons"], counts["errors"])
     return counts

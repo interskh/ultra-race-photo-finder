@@ -46,8 +46,8 @@ def test_logs_level_batch_and_rss(caplog):
         b.next_size()
         b.next_size()
     messages = [r.getMessage() for r in caplog.records]
-    assert "level=normal batch=8 max_rss=" in messages[0]
-    assert "level=warn batch=4 max_rss=" in messages[1]
+    assert "level=normal batch=8 rss=" in messages[0]
+    assert "level=warn batch=4 rss=" in messages[1] and " max_rss=" in messages[1]
     assert messages[1].endswith("MB")
 
 
