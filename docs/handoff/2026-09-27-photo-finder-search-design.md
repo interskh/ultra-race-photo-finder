@@ -540,4 +540,6 @@ Mean over 36 bibs (R@10/R@50/xR@50; 427 refs, 416 xrefs): osnet .214/.282/.090, 
   - An unreadable result photo causes a traceback at contact-sheet time, in both search and eval.
   - float16 in-memory scoring for about 350k persons.
 
+- I re-checked the visual verdicts on the sheets rendered with the final z-scored default (`race925-eval-8038-20260928-045655.jpg` and `…-8039-…045656.jpg`), and they are unchanged. For bib 8038, 0 of the top 30 results are the same runner. For bib 8039, #1 and #2 are the true runner, and #3 (5180772, bib hidden) is plausibly the same runner.
+
 implement-loop: slice 2 shipped 471427d; remaining: [3]
