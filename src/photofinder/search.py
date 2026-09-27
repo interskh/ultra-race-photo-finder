@@ -2,6 +2,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,9 @@ from photofinder import models
 TABLES = {"osnet": "emb_person_osnet", "siglip": "emb_person_siglip"}
 WEIGHTS = {"osnet": 0.3, "siglip": 0.7, "text": 0.5, "scene": 0.5}
 SOURCES = {"text": "siglip"}
-CHUNK = 65536
+NEG_WEIGHT = 0.3
+CHUNK = 8192
+TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
 
 log = logging.getLogger("search")
 
@@ -56,6 +59,19 @@ class Filters:
         return any((self.start, self.end, self.photographers, self.albums, self.bib))
 
 
+def parse_time(value: str | None, minute_end=False) -> str | None:
+    if value is None:
+        return None
+    for fmt in TIME_FORMATS:
+        try:
+            t = datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+        return t.replace(second=59).strftime(TIME_FORMATS[0]) if minute_end and fmt == TIME_FORMATS[1] \
+            else t.strftime(TIME_FORMATS[0])
+    raise ValueError(f"{value!r} is not a time; use 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD HH:MM:SS'")
+
+
 def check_filters(db: sqlite3.Connection, filters: Filters | None) -> str | None:
     if not (filters and filters.bib):
         return None
@@ -68,11 +84,8 @@ def check_filters(db: sqlite3.Connection, filters: Filters | None) -> str | None
     return None
 
 
-def filter_mask(db: sqlite3.Connection, persons: Persons, filters: Filters | None) -> np.ndarray | None:
-    if not filters:
-        return None
-    check_filters(db, filters)
-    where, args = [], []
+def filter_where(filters: Filters) -> tuple[list[str], list]:
+    where, args = ["ph.status = 'ok'"], []
     if filters.start:
         where.append("ph.taken_at >= ?")
         args.append(filters.start)
@@ -89,13 +102,21 @@ def filter_mask(db: sqlite3.Connection, persons: Persons, filters: Filters | Non
     if filters.bib:
         where.append("exists (select 1 from bibs b where b.person_id = p.id and instr(b.text, ?) > 0)")
         args.append(filters.bib)
+    return where, args
+
+
+def filter_mask(db: sqlite3.Connection, persons: Persons, filters: Filters | None) -> np.ndarray | None:
+    if not filters:
+        return None
+    check_filters(db, filters)
+    where, args = filter_where(filters)
     ids = [i for (i,) in db.execute("select p.id from persons p join photos ph on ph.id = p.photo_id where "
                                     + " and ".join(where), args)]
     return np.isin(persons.ids, ids)
 
 
 def matrix(blobs) -> np.ndarray:
-    return models.l2norm(np.frombuffer(b"".join(blobs), dtype=np.float16).reshape(len(blobs), -1))
+    return models.l2norm(np.frombuffer(b"".join(blobs), dtype=np.float16).reshape(len(blobs), -1)).astype(np.float16)
 
 
 def load_persons(db: sqlite3.Connection) -> Persons:
@@ -124,7 +145,7 @@ def load_scenes(db: sqlite3.Connection, persons: Persons) -> Persons:
                                 "run `photofinder index <collection>` first")
     photo_ids, blobs = zip(*rows)
     vecs = matrix(blobs)
-    vecs = np.vstack([vecs, np.zeros((1, vecs.shape[1]), np.float32)])
+    vecs = np.vstack([vecs, np.zeros((1, vecs.shape[1]), vecs.dtype)])
     row = {p: i for i, p in enumerate(photo_ids)}
     persons.scene = vecs, np.array([row.get(p, len(rows)) for p in persons.photo_ids], dtype=np.int64)
     log.info("loaded %d scene embeddings in %.3fs", len(rows), time.monotonic() - t0)
@@ -150,7 +171,7 @@ def max_cos(vecs: np.ndarray, refs) -> np.ndarray:
     refs = models.l2norm(refs).T
     out = np.empty(len(vecs), dtype=np.float32)
     for i in range(0, len(vecs), CHUNK):
-        out[i:i + CHUNK] = (vecs[i:i + CHUNK] @ refs).max(axis=1)
+        out[i:i + CHUNK] = (models.l2norm(vecs[i:i + CHUNK]) @ refs).max(axis=1)
     return out
 
 
@@ -180,13 +201,17 @@ def zscore(s: np.ndarray) -> np.ndarray:
     return rank_invalid_last(out)
 
 
-def score(persons: Persons, refs: dict, weights=WEIGHTS) -> np.ndarray:
+def score(persons: Persons, refs: dict, weights=WEIGHTS, negatives=None) -> np.ndarray:
     terms = [(weights[k], term_scores(persons, k, r)) for k, r in refs.items()
              if r is not None and len(r) and weights.get(k)]
     if not terms:
         raise ValueError("no query terms to score")
     norm = zscore if len(terms) > 1 else rank_invalid_last
-    return sum(w * norm(s) for w, s in terms) / sum(w for w, _ in terms)
+    total = sum(w for w, _ in terms)
+    out = sum(w * norm(s) for w, s in terms) / total
+    if negatives is not None and len(negatives):
+        out = out - NEG_WEIGHT / total * norm(max_cos(persons.vecs["osnet"], negatives))
+    return out
 
 
 def best_per_photo(photo_ids: np.ndarray, scores: np.ndarray, top: int, exclude=()) -> list[int]:

@@ -4,7 +4,6 @@ import logging
 import sys
 import time
 from contextlib import closing
-from datetime import datetime
 from pathlib import Path
 
 from photofinder import config, db, evaluate, models, search
@@ -12,7 +11,6 @@ from photofinder.index import stages
 
 log = logging.getLogger("photofinder")
 LOCK_NAME = "index.lock"
-TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
 
 
 def lock_index(collection: Path):
@@ -65,16 +63,10 @@ def query_box(args, img) -> tuple:
 
 
 def parse_time(flag: str, value: str | None, minute_end=False) -> str | None:
-    if value is None:
-        return None
-    for fmt in TIME_FORMATS:
-        try:
-            t = datetime.strptime(value, fmt)
-        except ValueError:
-            continue
-        return t.replace(second=59).strftime(TIME_FORMATS[0]) if minute_end and fmt == TIME_FORMATS[1] \
-            else t.strftime(TIME_FORMATS[0])
-    sys.exit(f"{flag} {value!r} is not a time; use 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD HH:MM:SS'")
+    try:
+        return search.parse_time(value, minute_end)
+    except ValueError as e:
+        sys.exit(f"{flag} {e}")
 
 
 def cmd_search(args):
@@ -194,6 +186,19 @@ def cmd_eval(args):
             print_frequent(conn)
 
 
+def cmd_serve(args):
+    if not (args.collection / db.INDEX_NAME).is_file():
+        sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
+    import uvicorn
+    from photofinder.web import app as web
+    try:
+        app = web.create_app(args.collection)
+    except search.MissingEmbeddings as e:
+        sys.exit(str(e))
+    print(f"serving {args.collection} at http://127.0.0.1:{args.port}/", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="photofinder", description="Find your own photos in a race photo collection")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -223,6 +228,10 @@ def main(argv=None):
     p.add_argument("--refs", type=int, default=20, help="max reference persons per bib (default 20)")
     p.add_argument("--out-dir", type=Path, help="contact sheet directory (default data/exports)")
     p.set_defaults(func=cmd_eval)
+    p = sub.add_parser("serve", help="local web page for searching and labelling a collection")
+    p.add_argument("collection", type=Path)
+    p.add_argument("--port", type=int, default=8000, help="port on 127.0.0.1 (default 8000)")
+    p.set_defaults(func=cmd_serve)
     args = ap.parse_args(argv)
 
     if not args.collection.is_dir():

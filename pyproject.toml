@@ -8,16 +8,19 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "boxmot>=25.0.0",
+    "fastapi>=0.141.1",
     "httpx",
     "numpy>=2.5.3",
     "ocrmac>=1.0.1",
     "open-clip-torch>=3.3.0",
     "pillow>=12.3.0",
     "psutil>=7.2.2",
+    "python-multipart>=0.0.32",
     "torch>=2.14.0",
     "torchvision>=0.29.0",
     "transformers>=5.17.0",
     "ultralytics>=8.4.157",
+    "uvicorn>=0.53.0",
 ]
 
 [project.scripts]

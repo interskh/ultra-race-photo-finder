@@ -543,3 +543,47 @@ Mean over 36 bibs (R@10/R@50/xR@50; 427 refs, 416 xrefs): osnet .214/.282/.090, 
 - I re-checked the visual verdicts on the sheets rendered with the final z-scored default (`race925-eval-8038-20260928-045655.jpg` and `…-8039-…045656.jpg`), and they are unchanged. For bib 8038, 0 of the top 30 results are the same runner. For bib 8039, #1 and #2 are the true runner, and #3 (5180772, bib hidden) is plausibly the same runner.
 
 implement-loop: slice 2 shipped 471427d; remaining: [3]
+
+## Slice 3
+
+Slice 3 SLICE_BASE=1c9b6a8
+
+## S3-T1 — FastAPI backend (`photofinder serve`), float16 scoring, not_me negatives
+
+**Decisions**
+- API (`web/app.py`, `create_app(collection)`): `GET /api/facets`, `POST /api/upload`, `GET /api/uploads/{token}/image`, `POST /api/search`, `POST /api/labels {person_id, label: me|not_me|null}`, `GET /api/photos/{id}`, `GET /api/photos/{id}/image[?max=N]`, `GET /api/persons/{id}/crop`, `GET /api/me`, `POST /api/export`, `GET /` (placeholder `static/index.html`).
+- Bib start lives in the one search endpoint: `start_bib` set → exact `b.text = ?` SQL path (not `score()`), best-conf person per photo, `order by taken_at is null, taken_at, id`, filters via new `search.filter_where`; `score` is null, `total` returned. Combining it with persons/upload/text/scene/more → 400.
+- Negatives (`not_me` osnet vecs) apply in BOTH modes (spec formula is general); only `more` hides labelled items (me photos excluded, not_me persons masked as candidates). `score(..., negatives=)`: `pos − NEG_WEIGHT/Σw_pos · norm(max_cos(osnet, not_me))`, same norm as the positive part. `NEG_WEIGHT=0.3` is a constant, not a `WEIGHTS` key (eval passes custom weight dicts).
+- float16: `matrix()` returns L2-normed float16 (scene zero row keeps the dtype); `max_cos` upcasts+renormalizes per `CHUNK=8192` (8192×768×4 = 25 MB temp, ×2 inside l2norm).
+- Models: one `ThreadPoolExecutor(1)` for detect/embed/encode, awaited from `async` endpoints; scoring + SQLite run via `run_in_threadpool` so the loop stays free. `models.unload(*names)` (no args = all, unchanged for CLI); upload calls `unload("yolo")` after detect so OSNet/SigLIP stay resident.
+- Upload embeds every box plus the whole image (last row) in one `embed_crops` call; stores re-encoded upright JPEG; `OrderedDict` of the last 8. Search never does model work for uploads.
+- `parse_time` moved to `search.parse_time` (raises ValueError); CLI wrapper keeps `--from '…' is not a time; …` one-liner. Web → 400 `"start '…' is not a time; …"`.
+- Errors: `RequestValidationError` → 400 one-line `{"detail": "field: msg"}`; `MissingEmbeddings` → 400. Missing/unreadable photo → 404 (full image pre-opens the file before `FileResponse`). `Cache-Control: private, max-age=86400` on all images.
+- Export: `DATA_ROOT/exports/<collection.resolve().name>-YYYYMMDD.txt`, header `source_photo_id\tphoto_id\tpath`, path = `collection.resolve()/relpath` (the symlink inside the collection, not its target); same-day re-export overwrites.
+- Deps: `fastapi 0.141.1, uvicorn 0.53.0, python-multipart 0.0.32` (+ starlette 1.6.0, pydantic 2.13.5, pydantic-core 2.46.5, annotated-types, typing-inspection). uv.lock: only additions, plus the `[options] exclude-newer` timestamp (global `exclude-newer = "7 days"`); no existing version moved.
+
+**Rejected**
+- Routing web search through `search.search()`: no candidate mask, no offset, one meta query per result.
+- Separate bib endpoint: would duplicate filter parsing/validation.
+- Targeted unload vs `unload()`: dropping SigLIP after each upload costs a ~13 s reload on the next text query.
+- `WEIGHTS["neg"]`: leaks into eval configs/custom weight dicts.
+
+**Assumptions**
+- Candidate/labels read fresh per request (labels written by other tabs are seen immediately). Person-id validation uses embedded persons only; unembedded persons can be labelled but not used as refs.
+- Upload cache is process memory, lost on restart (page must re-upload → 404 message says so).
+
+**Deferred**
+- bib_bonus: not implemented. The bib start already lists every OCR-matched photo, and once marked `me` they are hidden from find-more, so a boost would only reorder photos the user has already seen; under z-scored fusion a fixed +0.3 also has no stable meaning.
+- `load_persons` peak at startup: fetchall of blobs + `b"".join` copies ≈ 3× the float16 matrix transiently (~2.7 GB at 350k). Steady state is fine; stream per-chunk if it bites.
+- Contact-sheet traceback on an unreadable result photo remains in the CLI path (closed for the web path only).
+
+**Real run** (race925, worktree code, port 8765): startup 8.7 s wall incl. `uv run`/imports (persons 0.48 s, scenes 0.08 s); RSS 295 MB start → 1.14 GB after SigLIP load → 820 MB after upload (MPS/compression) → 896 MB end. Facets 10 ms, 0 warnings. Bib start `8039`: 17 photos, 7 ms (#1 photo 1918 person 11785). Person-ref search 32 ms (scoring 26 ms). Labels 2 ms each. Find-more (2 me, 1 not_me) 33 ms. Text `red jacket` cold 14.6 s, warm 47 ms; text+scene warm 0.52 s. Upload 8015319.jpg (1920×8014, 11 boxes) cold 2.4 s (YOLO+OSNet load), warm 1.5 s; upload box 0 search 69 ms (#1 = photo 1918 itself). Photo detail 3 ms, full image 8 ms, thumb 480 → 480×320 12 ms, crop 76×256 8 ms, export 2 lines. Labels cleared (count 0), export file deleted, server stopped.
+- Benchmark (synthetic 350k persons, 512+768 float16 = 896,000,000 B vs 1.79 GB float32): 2-term score+group 0.25–0.31 s; find-more 10 me + 10 not_me + drop 0.38–0.40 s; 3-term 0.38–0.47 s.
+- Rankings: `eval --bib 8038 --bib 8039` identical to HEAD code (8039 run against `git archive HEAD` copy; 8038 matches the S2 table).
+
+**Tests / mutations**: `uv run pytest -q` 193 passed (+35 `tests/test_web.py`, +2 `test_search.py`). Mutations 15/15 caught (bib substring, me-photo exclusion, not_me mask, refs=first me only, neg sign, neg not /Σw, neg raw under multi-term, chunk upcast/renorm, matrix float32, path not rooted at collection, label clear no-op, export '-' fallback, export relative path, whole not embedded, boxes unsorted); restored from copies, sha256-verified.
+
+**Touches**
+- New `src/photofinder/web/{__init__,app}.py`, `web/static/index.html` (placeholder for T2), `tests/test_web.py`.
+- `search.py` (`parse_time`, `TIME_FORMATS`, `filter_where`, `NEG_WEIGHT`, `CHUNK`, `matrix`, `load_scenes`, `max_cos`, `score(negatives=)`), `cli.py` (`parse_time` wrapper, `serve`), `models.py` (`unload(*names)`), `tests/test_search.py`, `pyproject.toml`, `uv.lock`.
+- Shared surface for T2: JSON shapes above; result keys `rank score person_id photo_id box source_photo_id taken_at photographer photographer_uid album width height relpath bibs label`.

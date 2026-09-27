@@ -61,8 +61,8 @@ def tokenizer():
     return _get("siglip_tokenizer", load)
 
 
-def unload():
-    models = [k for k in _loaded if k != "device"]
+def unload(*names):
+    models = [k for k in _loaded if k != "device" and (not names or k in names)]
     for k in models:
         del _loaded[k]
     gc.collect()

@@ -101,6 +101,32 @@ def test_missing_term_renormalizes_weights(tmp_path):
     assert r.score == pytest.approx(cos(v, q[0]), abs=2e-3)
 
 
+def test_negatives_subtract_normalized_not_me_similarity_after_fusion(tmp_path):
+    o = [A, [0.8, 0.6, 0, 0], [0.8, 0, 0.6, 0], B]
+    s = [X, [0.8, 0.6, 0], [0.8, 0.6, 0], Y]
+    _, conn, _ = make_index(tmp_path, [(i + 1, (0, 0, 9, 9), o[i], s[i]) for i in range(4)], photos=4)
+    persons = search.load_persons(conn)
+    refs = {"osnet": np.array([A]), "siglip": np.array([X])}
+    base = search.score(persons, refs)
+    assert search.score(persons, refs, negatives=np.empty((0, 4))).tolist() == base.tolist()
+    got = search.score(persons, refs, negatives=np.array([B]))
+    w = search.WEIGHTS
+    neg = [cos(v, B) for v in o]
+    want = fused([(w["osnet"], [cos(v, A) for v in o]), (w["siglip"], [cos(v, X) for v in s])]) \
+        - search.NEG_WEIGHT / (w["osnet"] + w["siglip"]) * z(neg)
+    assert got == pytest.approx(want, abs=5e-3)
+    assert base[1] == pytest.approx(base[2], abs=1e-3) and got[1] < got[2] - 0.1
+    got = search.score(persons, {"osnet": np.array([A])}, weights={"osnet": 2.0}, negatives=np.array([B]))
+    want = np.array([cos(v, A) for v in o]) - search.NEG_WEIGHT / 2.0 * np.array(neg)
+    assert got == pytest.approx(want, abs=5e-3)
+
+
+def test_max_cos_renormalizes_float16_chunks(monkeypatch):
+    monkeypatch.setattr(search, "CHUNK", 2)
+    vecs = np.array([[2, 0, 0, 0], [0, 3, 0, 0], [1, 1, 0, 0]], np.float16)
+    assert search.max_cos(vecs, np.array([A, B])) == pytest.approx([1, 1, 2 ** -0.5], abs=2e-3)
+
+
 def test_score_takes_max_over_refs(tmp_path):
     _, conn, ids = make_index(tmp_path, [
         (1, (0, 0, 50, 100), A, X),
