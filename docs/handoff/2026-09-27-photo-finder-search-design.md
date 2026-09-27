@@ -147,3 +147,30 @@ Slice 1 SLICE_BASE=ffe232d
 - `tests/test_scan.py`: the manifest test was renamed to `..._closed_before_image_reads`. Added `test_manifest_rows_added_during_walk_are_joined` and `test_exif_rotated_photo_stores_upright_size`.
 - `tests/test_search.py`: added `test_find_photo_matches_case_variant_of_indexed_path` (skips on case-sensitive fs) and `test_contact_sheet_scales_wide_tile_to_fit`.
 - Mutations: 5/5 caught (orientation swap, manifest order, width cap, casefold prefilter, samefile→resolve). Restored and sha256-verified.
+
+## S1 whole-run gate (orchestrator)
+
+- Proof setup: the subset `data/subsets/first2000/` holds 2,000 symlinks (the lowest photo_ids) into the live download dir and a one-time `sqlite3 .backup` snapshot of the live manifest, taken read-only with a 5 s timeout. I chose a snapshot over a symlink so the proof runs never touch the live manifest's locks again. The subset's albums are 9.25 签到 (1,315) and 定妆照 (685); it contains no race-course photos.
+- Model identifiers:
+  - `yolo26s.pt`
+  - `osnet_x1_0_msmt17.pt` (boxmot 25.0.0 catalog, via `boxmot.reid.core.runtime.ReID`)
+  - open_clip `('ViT-B-16-SigLIP2', 'webli')` = `timm/ViT-B-16-SigLIP2`
+- Full suite: 58 passed before the fix round and 62 passed after it (`uv run pytest`). After the fixes, `photofinder index first2000` reran with 0 pending, loaded no model and took 0.19 s.
+- Whole-run reviewer: APPROVE. Its 2 findings (the upright-dims frame mismatch and case-variant self-exclusion) were fixed in 74845b8. The blocker re-check was APPROVE, with all 4 fixes closed.
+- Codex review had 6 findings:
+  - Fixed in 74845b8: the manifest read-order race, contact-sheet clipping, and upright dims.
+  - Rejected: "the `mode=ro` read takes a SHARED lock that can fail the downloader". The downloader's `sqlite3.connect` uses the default 5 s busy timeout (yipai.py:89), and our single read takes milliseconds.
+  - Deferred: two concurrent `index` processes can duplicate persons. That is not a supported use; a fix would be an index lockfile.
+  - Deferred: gdown hardcodes `~/.cache/gdown`. On the first OSNet download it rewrote `~/.cache/gdown/cookies.txt` (114 B; the directory already existed). The weights themselves landed on Ext1TB. A fix is to fetch the OSNet weights ourselves.
+  - Codex was not rerun: the fixes were small and targeted at its own findings.
+- Also deferred:
+  - `HF_HUB_OFFLINE` is not set, so a SigLIP2 load sends a HEAD request to huggingface.co.
+  - Scoring holds float32 embeddings (~1.8 GB at 350k persons) while the models are loaded.
+  - Rows indexed before 74845b8 are not backfilled; first2000 has 0 rotated photos.
+- Orchestrator contact-sheet verdicts:
+  - `data/exports/first2000-search-20260928-011830.jpg` (query 9564992 box 0, a 定妆照 studio portrait holding a yellow 强者之路 sign): 0 of the top 10 are the same runner. The results match the sign, the ghosted studio lighting and the yellow clothing, not the person.
+  - `…-013848.jpg` (query 5311971, a check-in photo: purple jacket, black vest, sunglasses, black tights): #1 and #2 are clearly the same runner, and #10 and #17 plausibly are (purple jacket with black vest). The rest are other people in purple tops.
+  - Conclusion: search matches outfit colour well and identity only weakly. The mechanics are proven; ranking quality is for slice 2's `eval` and weight tuning.
+- Timings: index 289 s for 2,000 photos (detect 145 s, embed 141 s, 4,355 persons), peak RSS 2.46 GB, pressure 17 normal / 12 warn / 0 critical samples. Search ~13–16 s wall (mostly model load), scoring <0.01 s, peak RSS 2.24 GB, pressure 1→1.
+
+implement-loop: slice 1 shipped 74845b8; remaining: [2, 3]
