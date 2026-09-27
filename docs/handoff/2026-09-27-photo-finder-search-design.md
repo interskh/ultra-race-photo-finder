@@ -504,3 +504,40 @@ Mean over 36 bibs (R@10/R@50/xR@50; 427 refs, 416 xrefs): osnet .214/.282/.090, 
 - Mutations: 6/6 caught. They were: stats over all rows, −1 sentinel restored, invalid filled with 0, zscore leaves NaN, single term not filled, single term z-scored. Restored and sha256-verified.
 - Eval check: race925 has 0 photos without a scene vector and no NaN embeddings. 36-bib mean for 0.3:0.7 is unchanged at .253/.356/.155/.248/.342. The rerun's sheets went to scratch, not `data/exports`.
 - Touches: `src/photofinder/search.py` (`term_scores`, `rank_invalid_last`, `zscore`, `score`) and `tests/test_search.py`.
+
+## S2 whole-run gate (orchestrator)
+
+- **Commits.**
+  - Tasks: 4c0aa95 (T1, lean), 20bc34d (T2; risk: concurrency/locking, so it got a merged reviewer-verifier with 1 fix round, and the recheck closed 4/4), ab48ce2 (T3, lean, plus the orchestrator-requested strict-metric addition before commit).
+  - Gate fixes: 4144297 and ec3e818 (round 1), 471427d (round 2).
+- **Full suite.**
+  - 142 passed at ab48ce2.
+  - 154 after round 1.
+  - 156 after round 2 (`uv run pytest -q`).
+- **Whole-run reviewer.**
+  - Verdict: APPROVE, with 1 MAJOR and 1 MINOR.
+  - MAJOR: text/scene terms were inert when combined with `--photo` because of the cosine scale gap. Fixed in ec3e818 by per-term z-scoring for queries with 2 or more terms.
+  - MINOR: partial scene index. Fixed in ec3e818 with a warning, and missing rows now rank last.
+  - The round-1 re-check was APPROVE and raised a new MINOR: sentinels compressed the z-stats. Fixed in 471427d.
+  - The round-2 re-check was APPROVE.
+- **Codex** (3 findings).
+  - Fixed in 4144297: ocrmac swallowed Vision failures, so a person was stamped as read with "no bib".
+  - Fixed in ec3e818: eval read the DB in more than one snapshot.
+  - Rejected: the HF offline check verifies "any complete snapshot" rather than the `refs/main` snapshot. The cache is only ever populated by hf_hub downloads, which write `refs/main`, and once the cache is complete offline mode stops any newer snapshot from being fetched. The failure needs a hand-prefetched cache.
+  - The Codex re-check of round 1 found 1 MAJOR: a NaN embedding blanked a whole term under z-score. Fixed in 471427d, which also closed the reviewer's MINOR. Codex was not re-run after round 2, because that fix was small and targeted its own finding.
+- **Real proof after the fixes.**
+  - On scenemix, `--photo 71300735.jpg` alone and `--photo 71300735.jpg --scene 雪山` differ in 4 of their top-12 results. 3 of the 4 newcomers are in the scene-only 雪山 top 12, so the scene term now affects combined queries.
+  - The race925 36-bib mean for 0.3:0.7 under the final scoring is R@10 .253, R@50 .356, xR@50 .155, sR@10 .248, sR@50 .342.
+  - The OCR data is still valid after 4144297: the new `read_text` output is identical to ocrmac on 70/70 real crops.
+- **Final defaults.** `WEIGHTS = osnet 0.3, siglip 0.7, text 0.5, scene 0.5`.
+- **Deferred** (carried to slice 3 or later):
+  - `bib_bonus` soft boost for the user's own known bib (slice 3 UI).
+  - Crop tightening and ghost/prop handling. Cross-photographer identity is weak (xR@50 .155), and for bib 8038 the first reference returned 0/30 same-runner results.
+  - Text/scene weights have not been tuned against labelled ground truth.
+  - HF offline mode only engages after the first text query has fetched the tokenizer files, so machines that only run `index` still send HEAD requests.
+  - Declare `pyobjc-framework-Vision` directly; it currently arrives through ocrmac.
+  - A persistent Vision failure leaves persons pending forever, with a perpetual "ocr_bibs incomplete" warning.
+  - An unreadable result photo causes a traceback at contact-sheet time, in both search and eval.
+  - float16 in-memory scoring for about 350k persons.
+
+implement-loop: slice 2 shipped 471427d; remaining: [3]
