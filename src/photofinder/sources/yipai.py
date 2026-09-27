@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import threading
 import time
+from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -51,16 +52,21 @@ def backoff_seconds(attempt: int) -> float:
 
 
 def retry_after(r: httpx.Response) -> float:
+    value = r.headers.get("retry-after", "0")
     try:
-        return float(r.headers.get("retry-after", 0))
+        return float(value)
     except ValueError:
+        pass
+    try:
+        return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
+    except (TypeError, ValueError):
         return 0.0
 
 
 class Downloader:
     def __init__(self, client: httpx.Client, order_id: str, out_dir: Path, *, concurrency=3,
                  page_size=500, page_delay=3.0, img_delay=(0.2, 0.6), tries=5,
-                 max_consecutive_failures=20, sleep=time.sleep):
+                 max_consecutive_failures=20, sleep=time.sleep, clock=time.monotonic):
         self.client = client
         self.order_id = order_id
         self.out_dir = out_dir
@@ -72,6 +78,7 @@ class Downloader:
         self.tries = tries
         self.max_consecutive_failures = max_consecutive_failures
         self.sleep = sleep
+        self.clock = clock
         self.api = f"{SITE}/api/v1/yipai/order/{order_id}"
         self.stop = threading.Event()
         self._lock = threading.Lock()
@@ -83,11 +90,13 @@ class Downloader:
         self.db.executescript(SCHEMA)
 
     def acquire_lock(self):
-        self._lockfile = open(self.out_dir / ".download.lock", "w")
+        f = open(self.out_dir / ".download.lock", "w")
         try:
-            fcntl.flock(self._lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            f.close()
             raise AlreadyRunning(f"another download is already running for {self.out_dir}")
+        self._lockfile = f
 
     def _request_json(self, method: str, url: str, **kw) -> dict:
         for attempt in range(self.tries):
@@ -151,13 +160,15 @@ class Downloader:
 
     def _cool_down(self, seconds: float):
         with self._lock:
-            self._cooldown_until = max(self._cooldown_until, time.monotonic() + seconds)
+            self._cooldown_until = max(self._cooldown_until, self.clock() + seconds)
 
     def _wait_for_cooldown(self):
-        with self._lock:
-            wait = self._cooldown_until - time.monotonic()
-        if wait > 0:
-            self.sleep(wait)
+        while not self.stop.is_set():
+            with self._lock:
+                wait = self._cooldown_until - self.clock()
+            if wait <= 0:
+                return
+            self.sleep(min(wait, 5))
 
     def download(self, photo: dict) -> tuple[int, str, str | None]:
         pid = photo["photoId"]
@@ -170,9 +181,9 @@ class Downloader:
         self.sleep(random.uniform(*self.img_delay))
         error = None
         for attempt in range(self.tries):
+            self._wait_for_cooldown()
             if self.stop.is_set():
                 return pid, "pending", error
-            self._wait_for_cooldown()
             domain = img["primary"] if attempt % 2 == 0 else img["failover"]
             wait = backoff_seconds(attempt)
             try:
