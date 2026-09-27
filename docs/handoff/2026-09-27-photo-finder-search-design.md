@@ -75,3 +75,46 @@ Slice 1 SLICE_BASE=ffe232d
 **Touches**
 - New: `src/photofinder/models.py`, `tests/test_detect_embed.py`. Modified: `index/stages.py` (`detect`, `embed_persons`, `to_blob`, `error_text`), `cli.py` (stage loop + `models.unload()`), `memory.py` (`rss_mb`, log format), `tests/test_memory.py`, `tests/test_scan.py`, `pyproject.toml`/`uv.lock` (psutil).
 - Public API for task 3: `models.load_image(path)`, `models.detect_persons(images) -> [[(x1,y1,x2,y2,conf)]]`, `models.crop(img, box)`, `models.embed_crops(crops) -> (osnet Nx512, siglip Nx768)` L2-normed float32, `models.l2norm`, `models.siglip() -> (model, preprocess)` (tokenizer: add `open_clip.get_tokenizer(SIGLIP[0])`), `models.unload()`, `stages.to_blob`.
+
+## S1-T3 — `search.py` core + CLI `search` + proof run
+
+**Decisions**
+- Scoring is `score(persons, refs, weights)`: terms = `(weight, max_cos)` for each refs key that has vectors and a weight, divided by the sum of those weights. Slice 2 adds a term by putting a key in `WEIGHTS` and a matrix in `Persons.vecs`, or by appending to `terms`.
+- `load_persons` joins persons with both embedding tables (status `ok`) and fully loads them as float32. Vectors are re-L2-normalized after the float16→float32 cast, so a single-term score equals the exact cosine. The vector dim comes from the blob length (tests use 4/3-dim vectors).
+- Grouping: a stable argsort of scores, taking the first (best) person per photo not in `exclude`, stopping at top-k.
+- The CLI loads persons before any model, so "no embeddings" fails fast with no YOLO/SigLIP load. It checks `index.sqlite` exists before `db.connect`, which would otherwise create an empty index in the collection.
+- Boxes are sorted by area descending, so box 0 is the largest. `--box`/`--whole` are mutually exclusive, and `--whole` never calls detect. YOLO is unloaded before the embed.
+- Self-exclusion (`find_photo`) compares resolved paths. Candidates are only the rows whose filename equals the query's name or its resolved target's name, so this stays O(rows) string checks instead of resolving 350k paths.
+- Contact sheet: tiles 256 px high, rows wrapped at 1800 px, PIL default font, label `#rank score id <source_photo_id>`. Default path is `config.DATA_ROOT/exports/<collection.resolve().name>-search-<ts>.jpg`, read at call time.
+- Timing: `load_persons` logs its own load time and `search` logs scoring only (matmul + grouping).
+
+**Rejected**
+- Keeping float16 in memory and upcasting per chunk: the task says float32 matrices, and 4,355 persons is trivial. At 350k it would be about 1.8 GB (see Deferred).
+- Resolving every indexed path for self-exclusion: correct but slow at 350k. It only misses a symlink whose name differs from both the query name and the target name.
+- Putting the contact sheet in the CLI: it lives in `search.py` so slice 2 `eval` can reuse it.
+
+**Assumptions**
+- The `photos.source_photo_id` (yipai id) is the photo id shown to the user; the db id is the fallback.
+- open_clip still sends a HEAD request to huggingface.co on SigLIP load (the model loads from the local cache). This was not changed here. Check: set `HF_HUB_OFFLINE=1` in `setup_model_env`.
+
+**Proof run** (first2000, mps). Query `photos/9564992.jpg`: woman with a teal tie-dye shirt, lime vest and ONO visor, holding a big yellow "强者之路" sign.
+- Boxes: `box 0 (35,499,1171,1779) conf .42`, `box 1 (33,244,1122,1410) conf .66`. Both are wide because they include the motion-blur ghosts. Self-exclusion line printed.
+- `--box 0 --top 24`: 14.81 s real, scoring 0.008 s, persons load 0.07 s (separate run), peak RSS 2,242,576,384 B, pressure 1→1. Top 5: 4883138 .793, 5570749 .771, 5952110 .749, 5381856 .739, 6070672 .734. Sheet `data/exports/first2000-search-20260928-011830.jpg`.
+- `--box 1`: 13.23 s, scoring 0.007 s, RSS 2,243,346,432 B, pressure 1→1. Top 5: 5381856 .792, 6070672 .780, 6383287 .779, 4883138 .775, 8987314 .749. Sheet `...-012033.jpg`.
+- Second query `4357233.jpg` (the same woman, bib 8045, holding a bib card instead of the sign), `--box 0`: 16.26 s, scoring 0.004 s, RSS 2,242,084,864 B, pressure 1→1. Top 3: 2256534 .821, 1781084 .801, 8988981 .796. Sheet `...-012355.jpg`.
+- **Verdict (honest): 0/10 of the top results were the same runner, in all three runs.** Results match the prop, pose and studio lighting (yellow sign, bib card held up, lime jackets), not the identity. Ground truth: 9564992 and 4357233 are the same person (found by photographer 阿光's burst ±1 min). They rank each other only #28–#30 fused. Per-term ranks were osnet #49–67 and siglip #40–165. A likely cause is that the boxes include the long-exposure ghost doubles and the handheld props, which dominate both embeddings on this 定妆照 studio set. Search mechanics are verified; identity quality on this subset is not. Slice 2 `eval`/weight tuning is where this gets measured and fixed. The CLI top-1 scores (.7930 / .7919) match the stored-embedding scores for the same boxes (.793 / .792 via `person_refs`), so query-time crop→embed reproduces index-time embeddings. The miss is model/data quality, not plumbing.
+- Control query, check-in album: `5311971.jpg` (man in a purple shell jacket, black KUAI vest, pink/white sunglasses), `--box 0` (259,571,1053,1746) conf .86. 16.47 s real, scoring 0.004 s, RSS 2,243,461,120 B, pressure 1→1. Sheet `...-013848.jpg`. Top 10 were 5428287 .937, 8810720 .867, 5544637 .818, 1766462 .812, 6410157 .800, 6987448 .799, 1191162 .797, 9434797 .759, 5050583 .759, 3191046 .743.
+- **Verdict: 2/10 are clearly the same runner (#1, #2, same burst), plus 1 plausible (#10, a studio shot 18 min later with the same jacket, vest and hair).** #3–#9 are different people in purple tops. The engine retrieves the same person when the crop is clean, and otherwise it ranks by dominant outfit colour. Studio 定妆照 queries fail, as described above.
+- Rerun `photofinder index first2000`: `scan: 0 new (0 errors), 2000 already indexed`, `detect: 0 pending`, `embed_persons: 0 pending`, no `loaded` lines, 0.21 s, 40 MB RSS. The photos count stays 2000, with 0 relpaths matching search/export, so the three sheets in `data/exports` were not ingested.
+- `~/Library/Application Support/Ultralytics` and `~/.config/Ultralytics` are absent. `~/.cache/huggingface` and `~/.cache/torch` are pre-existing symlinks to `/Volumes/Ext1TB/...`, and nothing in them is newer than the run.
+
+**Deferred**
+- float16-in-memory scoring for about 350k persons (target < 2 s). Change `matrix()` to keep float16 and upcast inside the `max_cos` chunk loop.
+- Crop tightening and ghost/prop handling, plus weight tuning: slice 2 `eval`.
+- A result photo that becomes unreadable between search and sheet rendering raises a traceback (not a listed failure path).
+
+**Touches**
+- New: `src/photofinder/search.py` (`Persons`, `Result`, `MissingEmbeddings`, `load_persons`, `person_refs`, `max_cos`, `score`, `best_per_photo`, `search`, `contact_sheet`, `find_photo`, `WEIGHTS`) and `tests/test_search.py` (18 tests).
+- Modified: `src/photofinder/cli.py` (`search` subparser, `cmd_search`, `query_box`, `default_out`, `area`, `fmt_box`).
+- Writes `data/exports/*.jpg` (gitignored).
+- Mutations: 8/8 caught (dedupe, best-first order, renormalization, max→mean, self-exclusion, box sort, box range, default out path). Restored and checksum-verified.
