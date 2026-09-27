@@ -1,4 +1,5 @@
 import gc
+import io
 import logging
 import time
 
@@ -115,9 +116,20 @@ def embed_images(images: list[Image.Image]) -> np.ndarray:
 
 
 def read_text(img: Image.Image) -> list[tuple[str, float]]:
-    from ocrmac import ocrmac
-    found = ocrmac.OCR(img, recognition_level="accurate", language_preference=["en-US"]).recognize()
-    return [(text, float(conf)) for text, conf, _ in found]
+    import objc
+    import Vision
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    with objc.autorelease_pool():
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+        req.setRecognitionLanguages_(["en-US"])
+        handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(buf.getvalue(), None)
+        ret = handler.performRequests_error_([req], None)
+        ok, err = ret if isinstance(ret, tuple) else (bool(ret), None)
+        if not ok or err is not None:
+            raise RuntimeError(f"Vision text recognition failed: {err}")
+        return [(str(r.text()), float(r.confidence())) for r in req.results() or []]
 
 
 def encode_text(texts: list[str]) -> np.ndarray:

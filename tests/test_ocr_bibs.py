@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image, ImageDraw, ImageFont
@@ -34,15 +35,16 @@ def test_bib_tokens_dedupe_keeps_best_confidence():
 
 
 class FakeReader:
-    def __init__(self, texts=None, fail_on_call=None):
+    def __init__(self, texts=None, fail_on_call=None, error=KeyboardInterrupt):
         self.calls = []
         self.texts = texts or {}
         self.fail_on_call = fail_on_call
+        self.error = error
 
     def __call__(self, img):
         self.calls.append(img.size)
         if len(self.calls) == self.fail_on_call:
-            raise RuntimeError("interrupted")
+            raise self.error("interrupted")
         return self.texts.get(img.size, [])
 
 
@@ -87,7 +89,7 @@ def test_ocr_bibs_stores_tokens_and_marks_every_person_done(tmp_path):
     c, conn = make_collection(tmp_path)
     reader = FakeReader(TEXTS)
     counts = ocr_bibs(conn, c, reader=reader, batcher=fixed_batcher(8))
-    assert counts == {"pending": 4, "persons": 4, "bibs": 2, "errors": 0}
+    assert counts == {"pending": 4, "persons": 4, "bibs": 2, "errors": 0, "ocr_errors": 0}
     assert bibs(conn) == [(1, "0887", 1.0), (2, "1685", 1.0)]
     assert reader.calls == [(200, 600), (100, 750), (200, 800)]
     assert not_read(conn) == []
@@ -100,7 +102,7 @@ def test_ocr_bibs_stores_tokens_and_marks_every_person_done(tmp_path):
 
 def test_ocr_bibs_resumes_after_crash_without_duplicates(tmp_path):
     c, conn = make_collection(tmp_path)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyboardInterrupt):
         ocr_bibs(conn, c, reader=FakeReader(TEXTS, fail_on_call=2), batcher=fixed_batcher(1))
     assert bibs(conn) == [(1, "0887", 1.0)]
     assert not_read(conn) == [2, 3, 4]
@@ -128,7 +130,7 @@ def test_ocr_bibs_unreadable_photo_marks_error_and_skips_its_persons(tmp_path):
     (c / "1.jpg").write_bytes(b"gone bad")
     reader = FakeReader(TEXTS)
     counts = ocr_bibs(conn, c, reader=reader, batcher=fixed_batcher(8))
-    assert counts == {"pending": 4, "persons": 1, "bibs": 0, "errors": 1}
+    assert counts == {"pending": 4, "persons": 1, "bibs": 0, "errors": 1, "ocr_errors": 0}
     assert reader.calls == [(200, 800)]
     status, error = conn.execute("select status, error from photos where relpath = '1.jpg'").fetchone()
     assert status == "error" and error
@@ -143,3 +145,75 @@ def test_read_text_reads_digits_with_apple_vision():
     found = models.read_text(img)
     assert "0887" in bib_tokens(found)
     assert all(isinstance(t, str) and 0 <= c <= 1 for t, c in found)
+
+
+def test_ocr_failure_leaves_person_pending_and_photo_ok(tmp_path, caplog):
+    c, conn = make_collection(tmp_path)
+    reader = FakeReader(TEXTS, fail_on_call=2, error=RuntimeError)
+    counts = ocr_bibs(conn, c, reader=reader, batcher=fixed_batcher(8))
+    assert counts == {"pending": 4, "persons": 3, "bibs": 1, "errors": 0, "ocr_errors": 1}
+    assert not_read(conn) == [2]
+    assert bibs(conn) == [(1, "0887", 1.0)]
+    assert conn.execute("select distinct status from photos").fetchall() == [("ok",)]
+    assert any("person 2" in r.getMessage() and "pending" in r.getMessage() for r in caplog.records)
+
+    again = FakeReader(TEXTS)
+    assert ocr_bibs(conn, c, reader=again)["persons"] == 1
+    assert again.calls == [(100, 750)]
+    assert not_read(conn) == []
+    assert bibs(conn) == [(1, "0887", 1.0), (2, "1685", 1.0)]
+
+
+class FakeVision:
+    VNRequestTextRecognitionLevelAccurate = 0
+
+    def __init__(self, ret, texts=()):
+        self.ret, self.texts, self.req = ret, texts, None
+        vision = self
+
+        class Request:
+            @staticmethod
+            def alloc():
+                return Request()
+
+            def init(self):
+                vision.req = self
+                return self
+
+            def setRecognitionLevel_(self, level):
+                self.level = level
+
+            def setRecognitionLanguages_(self, langs):
+                self.langs = langs
+
+            def results(self):
+                return [SimpleNamespace(text=lambda t=t: t, confidence=lambda c=c: c) for t, c in vision.texts]
+
+        class Handler:
+            @staticmethod
+            def alloc():
+                return Handler()
+
+            def initWithData_options_(self, data, options):
+                assert data.startswith(b"\x89PNG")
+                return self
+
+            def performRequests_error_(self, reqs, err):
+                return vision.ret
+
+        self.VNRecognizeTextRequest, self.VNImageRequestHandler = Request, Handler
+
+
+@pytest.mark.parametrize("ret", [(False, "NSError boom"), (True, "NSError boom"), False])
+def test_read_text_raises_when_vision_fails(monkeypatch, ret):
+    monkeypatch.setitem(sys.modules, "Vision", FakeVision(ret, [("1685", 1.0)]))
+    with pytest.raises(RuntimeError, match="Vision"):
+        models.read_text(Image.new("RGB", (40, 30)))
+
+
+@pytest.mark.parametrize("ret", [(True, None), True])
+def test_read_text_returns_text_and_conf_on_success(monkeypatch, ret):
+    vision = FakeVision(ret, [("No.1685", 0.5), ("FUGA", 1.0)])
+    monkeypatch.setitem(sys.modules, "Vision", vision)
+    assert models.read_text(Image.new("RGB", (40, 30))) == [("No.1685", 0.5), ("FUGA", 1.0)]
+    assert vision.req.level == 0 and vision.req.langs == ["en-US"]

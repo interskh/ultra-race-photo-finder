@@ -233,7 +233,7 @@ def ocr_bibs(db: sqlite3.Connection, collection: Path, reader=None, batcher=None
                             join photos ph on ph.id = p.photo_id
                             where p.ocr_at is null and ph.status = 'ok'
                             order by p.photo_id, p.id""").fetchall()
-    counts = {"pending": len(pending), "persons": 0, "bibs": 0, "errors": 0}
+    counts = {"pending": len(pending), "persons": 0, "bibs": 0, "errors": 0, "ocr_errors": 0}
     log.info("ocr_bibs: %d pending", len(pending))
     if not pending:
         return counts
@@ -248,8 +248,14 @@ def ocr_bibs(db: sqlite3.Connection, collection: Path, reader=None, batcher=None
                 except Exception as e:
                     bad[photo_id] = error_text(e)
                     log.warning("unreadable image %s: %s", relpath, bad[photo_id])
-        done = [(pid, read_bibs(models.crop(images[photo_id], box), reader)) for pid, photo_id, _, *box in chunk
-                if photo_id in images]
+        done = []
+        for pid, photo_id, relpath, *box in chunk:
+            if photo_id in images:
+                try:
+                    done.append((pid, read_bibs(models.crop(images[photo_id], box), reader)))
+                except Exception as e:
+                    counts["ocr_errors"] += 1
+                    log.warning("ocr failed for person %d in %s, left pending: %s", pid, relpath, error_text(e))
         stamp = now()
         with db:
             db.executemany("update photos set status = 'error', error = ? where id = ?",
@@ -261,5 +267,6 @@ def ocr_bibs(db: sqlite3.Connection, collection: Path, reader=None, batcher=None
         counts["persons"] += len(done)
         counts["bibs"] += sum(len(b) for _, b in done)
         counts["errors"] += len(bad)
-    log.info("ocr_bibs: %d persons read, %d bibs, %d photo errors", counts["persons"], counts["bibs"], counts["errors"])
+    log.info("ocr_bibs: %d persons read, %d bibs, %d photo errors, %d ocr errors (left pending)",
+             counts["persons"], counts["bibs"], counts["errors"], counts["ocr_errors"])
     return counts
