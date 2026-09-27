@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from photofinder import cli, db, models, search
+from photofinder import cli, db, evaluate, models, search
 from photofinder.index.stages import scan, to_blob
 
 A, B, C = [1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, 1.0, 0]
@@ -336,8 +336,8 @@ def test_scene_query_without_scene_embeddings_names_stage(tmp_path):
     with pytest.raises(search.MissingEmbeddings, match="embed_scenes") as e:
         search.search(conn, {"osnet": np.array([A]), "scene": np.array([X])})
     assert "photofinder index" in str(e.value)
-    assert [r.relpath for r in search.search(conn, {"osnet": np.array([A]), "text": np.array([Y])})] == [
-        "1.jpg", "2.jpg"]
+    assert [r.relpath for r in search.search(conn, {"osnet": np.array([A]), "text": np.array([Y])},
+                                             weights={"osnet": 1.0, "text": 0.5})] == ["1.jpg", "2.jpg"]
 
 
 @pytest.mark.parametrize("weights", [search.WEIGHTS, {"osnet": 1.0, "siglip": 0.0, "text": 2.0, "scene": 3.0}])
@@ -572,3 +572,183 @@ def test_cli_bib_without_ocr_names_stage_before_models(tmp_path, monkeypatch, ca
     msg, _ = run(capsys, c, "--photo", query_photo(tmp_path), "--text", "red", "--bib", "2001")
     assert "ocr_bibs" in msg and "\n" not in msg
     assert fakes.detected == fakes.embedded == fakes.encoded == []
+
+
+def capture_sheets(monkeypatch):
+    sheets = []
+    monkeypatch.setattr(search, "contact_sheet", lambda tiles, out, **kw: sheets.append((tiles, out)))
+    return sheets
+
+
+def test_cli_scene_only_sheet_shows_whole_photos(tmp_path, monkeypatch, capsys):
+    c, _, _ = scene_index(tmp_path)
+    Fakes(monkeypatch, texts={"雪山": X})
+    sheets = capture_sheets(monkeypatch)
+    cli.main(["search", str(c), "--scene", "雪山", "--out", str(tmp_path / "s.jpg")])
+    cli.main(["search", str(c), "--scene", "雪山", "--text", "雪山", "--out", str(tmp_path / "s.jpg")])
+    (whole, _), (crops, _) = sheets
+    assert [img.size for img, _ in whole] == [(200, 300)] * 4
+    assert all(img.size == (50, 100) for img, _ in crops)
+
+
+def eval_index(tmp_path):
+    c, conn, ids = make_index(tmp_path, [
+        (1, (0, 0, 100, 200), A, X),
+        (1, (100, 0, 110, 20), A, X),
+        (1, (0, 0, 190, 290), C, Z),
+        (2, (0, 0, 50, 100), [1, 0.1, 0, 0], [1, 0.1, 0]),
+        (2, (60, 0, 110, 100), [1, 0.05, 0, 0], [1, 0.1, 0]),
+        (3, (0, 0, 50, 100), [1, 0.3, 0, 0], [1, 0.3, 0]),
+        (4, (0, 0, 50, 100), [1, 0.2, 0, 0], [1, 0.2, 0]),
+        (5, (0, 0, 50, 100), B, [1, 0.05, 0]),
+        (6, (0, 0, 50, 100), C, Z),
+    ], photos=6)
+    conn.executemany("update photos set photographer_uid = ? where relpath = ?",
+                     [(u, f"{i}.jpg") for i, u in enumerate(["u1", "u1", "u2", "u3", "u2", "u3"], 1)])
+    conn.executemany("insert into bibs(person_id, text, conf) values (?,?,?)", [
+        (ids[1][0], "2001", 1.0), (ids[1][1], "2001", 0.5), (ids[2][0], "2001", 1.0), (ids[3][0], "2001", 1.0),
+        (ids[4][0], "12001", 1.0), (ids[5][0], "200", 1.0),
+        *[(ids[p][-1], "157", 0.5) for p in (3, 4, 5, 6)]])
+    conn.execute("update persons set ocr_at = '2026-09-28 00:00:00'")
+    conn.commit()
+    photo = dict(conn.execute("select cast(replace(relpath, '.jpg', '') as integer), id from photos"))
+    return c, conn, ids, photo
+
+
+def test_ground_truth_is_exact_bib_match_with_largest_box_refs(tmp_path):
+    _, conn, ids, photo = eval_index(tmp_path)
+    persons = search.load_persons(conn)
+    truth = evaluate.ground_truth(conn, "2001", persons)
+    assert set(truth.photos) == {photo[1], photo[2], photo[3]}
+    assert truth.refs == [(ids[1][0], photo[1]), (ids[2][0], photo[2]), (ids[3][0], photo[3])]
+    assert truth.photos[photo[3]] == "u2"
+    assert set(evaluate.ground_truth(conn, "200", persons).photos) == {photo[5]}
+    assert evaluate.ground_truth(conn, "2001", persons, cap=2).refs == truth.refs[:2]
+
+
+def test_recall_arithmetic_on_hand_built_ranking():
+    assert evaluate.recall([5, 3, 9, 1], {1, 3, 7}, 2) == pytest.approx(1 / 3)
+    assert evaluate.recall([5, 3, 9, 1], {1, 3, 7}, 4) == pytest.approx(2 / 3)
+    assert evaluate.recall([5, 3], set(), 2) is None
+
+
+def test_evaluate_ref_excludes_ref_photo_and_splits_cross_photographer(tmp_path, monkeypatch):
+    _, conn, ids, photo = eval_index(tmp_path)
+    persons = search.load_persons(conn)
+    truth = evaluate.ground_truth(conn, "2001", persons)
+    picked, _ = evaluate.rank_photos(persons, ids[1][0], photo[1], {"osnet": 1.0})
+    assert [int(persons.photo_ids[i]) for i in picked] == [photo[p] for p in (2, 4, 3, 5, 6)]
+    monkeypatch.setattr(evaluate, "KS", (1, 2))
+    assert evaluate.evaluate_ref(persons, truth, ids[1][0], photo[1], {"osnet": 1.0})[:3] == (0.5, 0.5, 0.0)
+    monkeypatch.setattr(evaluate, "KS", (1, 3))
+    assert evaluate.evaluate_ref(persons, truth, ids[1][0], photo[1], {"osnet": 1.0})[:3] == (0.5, 1.0, 1.0)
+    lone = evaluate.Truth("x", {photo[1]: "u1"}, [(ids[1][0], photo[1])])
+    assert evaluate.evaluate_ref(persons, lone, ids[1][0], photo[1], {"osnet": 1.0}) is None
+
+
+def test_strict_hit_needs_the_matched_person_to_carry_the_bib(tmp_path, monkeypatch):
+    _, conn, ids, photo = eval_index(tmp_path)
+    persons = search.load_persons(conn)
+    truth = evaluate.ground_truth(conn, "2001", persons)
+    assert truth.persons == {ids[1][0], ids[1][1], ids[2][0], ids[3][0]}
+    picked, _ = evaluate.rank_photos(persons, ids[1][0], photo[1], {"osnet": 1.0})
+    assert int(persons.ids[picked[0]]) == ids[2][1]
+    monkeypatch.setattr(evaluate, "KS", (1, 2))
+    assert evaluate.evaluate_ref(persons, truth, ids[1][0], photo[1], {"osnet": 1.0})[3:] == (0.0, 0.0)
+    monkeypatch.setattr(evaluate, "KS", (1, 3))
+    assert evaluate.evaluate_ref(persons, truth, ids[1][0], photo[1], {"osnet": 1.0})[3:] == (0.0, 0.5)
+    [row] = evaluate.evaluate_bib(persons, truth, {"o": {"osnet": 1.0}})
+    assert (row.r50, row.s50) == (1.0, pytest.approx((0.5 + 1 + 1) / 3))
+
+
+def test_weight_configs_change_the_ranking(tmp_path):
+    _, conn, ids, photo = eval_index(tmp_path)
+    persons = search.load_persons(conn)
+    order = {name: [int(persons.photo_ids[i]) for i in evaluate.rank_photos(persons, ids[1][0], photo[1], w, 3)[0]]
+             for name, w in evaluate.configs().items()}
+    assert order["osnet"] == [photo[2], photo[4], photo[3]]
+    assert order["siglip"] == [photo[5], photo[2], photo[4]]
+    assert list(evaluate.configs()) == ["osnet", "siglip", "0.3:0.7", "0.5:0.5", "0.7:0.3"]
+    assert "default 0.6:0.4" in evaluate.configs({"osnet": 0.6, "siglip": 0.4})
+
+
+def test_mean_over_bibs_weights_each_bib_equally():
+    rows = [[evaluate.Row("a", 0.2, 0.4, float("nan"), 0.1, 0.3, 1, 0, 3)],
+            [evaluate.Row("a", 0.6, 0.8, 0.5, 0.3, 0.5, 9, 4, 12)]]
+    [m] = evaluate.mean_over_bibs(rows)
+    assert (m.r10, m.r50, m.x50, m.s10, m.s50, m.refs, m.xrefs, m.photos) == (
+        pytest.approx(0.4), pytest.approx(0.6), 0.5, pytest.approx(0.2), pytest.approx(0.4), 10, 4, 15)
+
+
+def test_frequent_bibs_lists_four_digit_first(tmp_path):
+    _, conn, _, _ = eval_index(tmp_path)
+    assert evaluate.frequent_bibs(conn) == [("2001", 3, 2), ("157", 4, 2), ("12001", 1, 1), ("200", 1, 1)]
+
+
+def no_models(monkeypatch, tmp_path):
+    def boom(name, load):
+        raise AssertionError(f"eval loaded model {name}")
+    monkeypatch.setattr(models, "_get", boom)
+    monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
+    monkeypatch.setattr(cli.config, "DATA_ROOT", tmp_path / "data")
+
+
+def test_cli_eval_reports_recall_and_writes_sheet_without_models(tmp_path, monkeypatch, capsys):
+    c, _, _, _ = eval_index(tmp_path)
+    no_models(monkeypatch, tmp_path)
+    cli.main(["eval", str(c), "--bib", "2001", "--bib", "157"])
+    out = capsys.readouterr().out
+    assert "bib 2001" in out and "bib 157" in out and "mean over 2 bibs" in out
+    rows = [ln.split() for ln in out.splitlines() if ln.split()[:1] == ["0.3:0.7"]]
+    assert len(rows) == 3 and rows[0][-3:] == ["3", "3", "3"]
+    sheets = sorted((tmp_path / "data" / "exports").glob("*.jpg"))
+    assert [s.name.split("-")[:3] for s in sheets] == [["coll", "eval", "157"], ["coll", "eval", "2001"]]
+    assert "most frequent" not in out
+
+
+def test_eval_sheet_marks_gt_hits_and_shows_ocr_text(tmp_path, monkeypatch):
+    c, conn, ids, photo = eval_index(tmp_path)
+    persons = search.load_persons(conn)
+    sheets = capture_sheets(monkeypatch)
+    evaluate.sheet(conn, c, persons, evaluate.ground_truth(conn, "2001", persons), {"osnet": 1.0}, tmp_path / "s.jpg")
+    [(tiles, _)] = sheets
+    labels = [t for _, t in tiles]
+    assert labels[0].startswith("query\nbib 2001\n")
+    assert tiles[0][0].size == (100, 200)
+    assert [lb.split("\n")[1] for lb in labels[1:]] == [f"id {photo[p]}" for p in (2, 4, 3, 5, 6)]
+    assert [lb.split("\n")[0].split()[2:] for lb in labels[1:]] == [["bib-photo"], [], ["BIB"], [], []]
+    assert "ocr" not in labels[1] and "ocr 2001" in labels[3]
+    assert "ocr 12001" in labels[2] and "ocr 200/157" in labels[4]
+    assert tiles[1][0].size != (50, 100) and tiles[2][0].size == (50, 100)
+    assert tiles[1][0].getpixel((0, 0)) != tiles[3][0].getpixel((0, 0))
+
+
+@pytest.mark.parametrize("flags, says", [((), "no --bib given"), (("--bib", "200"), "bib 200: 1 photo(s)"),
+                                          (("--bib", "9999"), "bib 9999: 0 photo(s)")])
+def test_cli_eval_lists_frequent_bibs_when_bib_unusable(tmp_path, monkeypatch, capsys, flags, says):
+    c, _, _, _ = eval_index(tmp_path)
+    no_models(monkeypatch, tmp_path)
+    cli.main(["eval", str(c), *flags])
+    lines = capsys.readouterr().out.splitlines()
+    assert says in "\n".join(lines)
+    i = lines.index("most frequent OCR bibs (4-digit first): text photos photographers")
+    assert lines[i + 1].split() == ["2001", "3", "2"]
+    assert not (tmp_path / "data" / "exports").exists()
+
+
+def test_cli_eval_without_ocr_names_stage(tmp_path, monkeypatch, capsys):
+    c, conn, _, _ = eval_index(tmp_path)
+    conn.execute("update persons set ocr_at = null")
+    conn.commit()
+    no_models(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["eval", str(c), "--bib", "2001"])
+    assert "ocr_bibs" in str(e.value.code) and "\n" not in str(e.value.code)
+
+
+def test_cli_eval_without_embeddings_names_stage(tmp_path, monkeypatch, capsys):
+    c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)], embed=False)
+    no_models(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["eval", str(c), "--bib", "2001"])
+    assert "embed_persons" in str(e.value.code)

@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 from photofinder import models
 
 TABLES = {"osnet": "emb_person_osnet", "siglip": "emb_person_siglip"}
-WEIGHTS = {"osnet": 0.5, "siglip": 0.5, "text": 0.5, "scene": 0.5}
+WEIGHTS = {"osnet": 0.3, "siglip": 0.7, "text": 0.5, "scene": 0.5}
 SOURCES = {"text": "siglip"}
 CHUNK = 65536
 

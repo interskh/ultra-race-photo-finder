@@ -7,7 +7,7 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
-from photofinder import config, db, models, search
+from photofinder import config, db, evaluate, models, search
 from photofinder.index import stages
 
 log = logging.getLogger("photofinder")
@@ -44,9 +44,9 @@ def fmt_box(box) -> str:
     return "(" + ",".join(f"{v:.0f}" for v in box[:4]) + ")"
 
 
-def default_out(collection: Path) -> Path:
+def default_out(collection: Path, kind: str = "search", out_dir: Path | None = None) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return config.DATA_ROOT / "exports" / f"{collection.resolve().name}-search-{stamp}.jpg"
+    return (out_dir or config.DATA_ROOT / "exports") / f"{collection.resolve().name}-{kind}-{stamp}.jpg"
 
 
 def query_box(args, img) -> tuple:
@@ -127,11 +127,66 @@ def cmd_search(args):
               f"{r.photographer or '-'} {r.album or '-'}")
     tiles = [(query, "query")] if query is not None else []
     for r in results:
-        crop = models.crop(models.load_image(args.collection / r.relpath), r.box)
-        tiles.append((crop, f"#{r.rank} {r.score:.3f} id {r.source_photo_id or r.photo_id}"))
+        img = models.load_image(args.collection / r.relpath)
+        if args.photo or args.text:
+            img = models.crop(img, r.box)
+        tiles.append((img, f"#{r.rank} {r.score:.3f} id {r.source_photo_id or r.photo_id}"))
     out = args.out or default_out(args.collection)
     search.contact_sheet(tiles, out)
     print(f"contact sheet: {out}")
+
+
+def print_frequent(conn):
+    print("most frequent OCR bibs (4-digit first): text photos photographers")
+    for text, photos, who in evaluate.frequent_bibs(conn):
+        print(f"  {text:>6} {photos:>4} {who:>3}")
+
+
+def print_rows(title, rows):
+    print(title)
+    print(f"  {'config':<16} " + " ".join(f"{h:>6}" for h in ("R@10", "R@50", "xR@50", "sR@10", "sR@50"))
+          + f" {'refs':>5} {'xrefs':>5} {'GT':>4}")
+    for r in rows:
+        print(f"  {r.config:<16} " + " ".join(f"{v:>6.3f}" for v in (r.r10, r.r50, r.x50, r.s10, r.s50))
+              + f" {r.refs:>5} {r.xrefs:>5} {r.photos:>4}")
+
+
+def cmd_eval(args):
+    if not (args.collection / db.INDEX_NAME).is_file():
+        sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
+    if args.refs < 1:
+        sys.exit("--refs must be at least 1")
+    bibs = [b.strip() for b in args.bib or () if b.strip()]
+    with closing(db.connect(args.collection)) as conn:
+        try:
+            persons = search.load_persons(conn)
+            warning = search.check_filters(conn, search.Filters(bib="eval"))
+        except search.MissingEmbeddings as e:
+            sys.exit(str(e))
+        if warning:
+            print(warning)
+        if not bibs:
+            print("no --bib given")
+        weights = evaluate.configs()
+        default = {k: search.WEIGHTS[k] for k in ("osnet", "siglip")}
+        per_bib, missing = [], False
+        for bib in bibs:
+            truth = evaluate.ground_truth(conn, bib, persons, args.refs)
+            if len(truth.photos) < evaluate.MIN_PHOTOS or not truth.refs:
+                print(f"bib {bib}: {len(truth.photos)} photo(s) with OCR text {bib!r}; need at least "
+                      f"{evaluate.MIN_PHOTOS} with embedded persons to evaluate")
+                missing = True
+                continue
+            rows = evaluate.evaluate_bib(persons, truth, weights)
+            per_bib.append(rows)
+            print_rows(f"bib {bib}", rows)
+            out = default_out(args.collection, f"eval-{bib}", args.out_dir)
+            evaluate.sheet(conn, args.collection, persons, truth, default, out)
+            print(f"contact sheet: {out}")
+        if len(per_bib) > 1:
+            print_rows(f"mean over {len(per_bib)} bibs", evaluate.mean_over_bibs(per_bib))
+        if missing or not bibs:
+            print_frequent(conn)
 
 
 def main(argv=None):
@@ -157,6 +212,12 @@ def main(argv=None):
     p.add_argument("--top", type=int, default=24, help="number of photos to return (default 24)")
     p.add_argument("--out", type=Path, help="contact sheet JPEG (default data/exports/<collection>-search-<time>.jpg)")
     p.set_defaults(func=cmd_search)
+    p = sub.add_parser("eval", help="recall of photo search for OCR'd bibs, using stored embeddings only")
+    p.add_argument("collection", type=Path)
+    p.add_argument("--bib", action="append", help="bib number used as ground truth (repeatable)")
+    p.add_argument("--refs", type=int, default=20, help="max reference persons per bib (default 20)")
+    p.add_argument("--out-dir", type=Path, help="contact sheet directory (default data/exports)")
+    p.set_defaults(func=cmd_eval)
     args = ap.parse_args(argv)
 
     if not args.collection.is_dir():

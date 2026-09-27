@@ -283,3 +283,105 @@ Race subset `data/subsets/race925/`: 5,745 file symlinks (album 9.25 赛事, tag
 - Rejected: logging the warning inside `filter_mask`. The CLI calls both `check_filters` and `search`, so it would print twice; returning the string lets the slice 3 web app show it too.
 - Mutations: 9/9 caught. They were: each of `--from`/`--to`/`--photographer`/`--album` replaced by an empty value (the reviewer's exact mutation), empty bib accepted, warning never built, warning not printed, `--to` keeps `:00`, `--from` also gets `:59`. Restored and sha256-verified.
 - `uv run pytest`: 127 passed.
+
+## S2-T3 — `photofinder eval --bib`, tuned default weights, scene-only sheet tiles
+
+**Decisions**
+- New `evaluate.py` holds the pure logic (`ground_truth`, `recall`, `rank_photos`, `evaluate_ref`, `evaluate_bib`, `mean_over_bibs`, `frequent_bibs`, `sheet`); `cli.cmd_eval` does the wiring. It calls `search.score`/`best_per_photo` directly, not `search.search()`, which would do 50 db lookups per ref.
+- GT = `status='ok'` photos with a person whose `bibs.text = ?` (exact match). Refs = the largest-area bib-b person per GT photo, restricted to persons with embeddings. Ordered by photo id ascending, capped by `--refs 20`.
+- Photographer key = `coalesce(photographer_uid, photographer)`. Cross-photographer set = GT′ photos with a known key that differs from the ref photo's key. A ref with an empty cross set is skipped for xR@50 only (`xrefs` column).
+- Mean over bibs = mean of the per-bib means (each bib weighted equally; `nanmean` for xR@50). It is not pooled over refs.
+- `evaluate.KS = (10, 50)` is read at call time so tests can shrink k. `configs()` adds a `default o:s` row only when `search.WEIGHTS` is not proportional to a listed config.
+- No-OCR check reuses `search.check_filters(conn, Filters(bib=...))`. It raises naming `ocr_bibs` and prints the partial-OCR warning. Order: `load_persons` (embed_persons message), then OCR. The eval path never calls `models._get`.
+- Fallback: with no `--bib`, or when a bib has <2 GT photos or no embedded ref, eval prints one line and then the top 20 bibs, 4-digit texts first (`order by length(text)=4 desc, #photos desc, text`). The race925 top raw tokens are watermark garbage ("157" 41 photos, "100" 30), so 4-digit-first makes the list useful. Valid bibs in the same run are still evaluated.
+- Contact sheet: the first ref under the default weights, with the query crop plus the top 30. GT′ hits get a green border and "BIB" in the label. Labels have 3 lines (`#rank score [BIB]` / `id <source id>` / `ocr <texts>`) with `label=40`, which fixes the overlapping-label problem on narrow tiles for eval sheets. The path is `default_out(collection, f"eval-{bib}", --out-dir)`, and `default_out` gained `kind`/`out_dir` args.
+- `search` scene-only (no `--photo`, no `--text`) tiles are now the whole photo; `contact_sheet` downscales them to 256 px.
+- **Default weights: osnet 0.3 / siglip 0.7** (was 0.5/0.5). It has the best mean R@50, R@10 and xR@50 over 36 bibs. A finer ad-hoc sweep (`evaluate_bib` over the same 36 bibs with osnet 0.0–1.0 step 0.1; not shipped) peaks at 0.3:0.7 for R@50/R@10: 0.2:0.8 .352/.252, 0.3:0.7 .354/.253, 0.4:0.6 .353/.246 (xR@50 .148/.153/.155). Text/scene weights are unchanged because there is no eval evidence for them.
+- `test_scene_query_without_scene_embeddings_names_stage` relied on an exact osnet/text tie under 0.5/0.5. It now passes explicit weights `{osnet:1, text:.5}`, which gives a real ordering.
+
+**Rejected**
+- Pooled mean over refs: bibs with 20 refs would dominate those with 10.
+- Listing all tokens by frequency in the fallback: watermark tokens fill the top.
+- Picking osnet:siglip from bib 8038 alone: 8038 favours 0.5:0.5 (R@50 .242 vs .220), but it is one bib of 36.
+- Changing `contact_sheet` itself for label wrapping: eval passes multi-line labels and a taller label band, so search sheets are unchanged.
+
+**Assumptions**
+- OCR false positives pollute GT. Bib 8020's first ref (photo 64421025) visibly wears **8029**; results #1/#2 are the same runner (OCR 8029). That explains 8020's near-zero recall. Recall also counts only photos where the bib is visible and read, so same-runner hits with hidden bibs count as misses (e.g. 8039 sheet #3 5180772 looks like the query runner with no OCR).
+- R@50 counts hits in the top 50 *photos*. With 10–27 GT photos per bib, R@50 differences of ~.01 are within noise (one photo for one ref).
+
+**Deferred**
+- Tuning text/scene weights (no labelled scene/text ground truth); bib_bonus/w_neg (slice 3 labels).
+- A GT sanity filter (e.g. require ≥2 OCR reads, or conf ≥ x) to drop false-positive refs like 8020.
+
+**Real run** (race925, 26,783 persons, worktree code verified via `photofinder.__file__`)
+- `uv run photofinder eval …/race925 --bib 8038`: persons load 0.8 s, total ≈1 s, no model load.
+- 36-bib run (`--bib` for every `length(text)=4` bib with ≥10 distinct ok photos): 15.8 s wall. It wrote 36 sheets.
+- Fallback check: `--bib 157 --bib 77777` evaluated 157 (R@50 ≈ .02, garbage GT), printed "bib 77777: 0 photo(s)…", then listed 8020 27/5, 8039 17/5, 8010 16/4, …
+- Sheets (tuned weights): 8038 `data/exports/race925-eval-8038-20260928-040841.jpg` (0 GT hits in top 30 for ref 3651984). A GT photo whose bib person has no embedding is a guaranteed miss; race925 has none, 8039 `…-eval-8039-20260928-040842.jpg` (#1/#2 green GT hits, #3 plausible same runner), 8020 `…-eval-8020-20260928-040842.jpg` (polluted GT, see above), 8010 `…-eval-8010-20260928-040843.jpg`.
+
+Columns: R@50 per config, then R@10 and xR@50 for the chosen 0.3:0.7. refs = GT for every bib (cap 20 hits only 8020).
+
+| bib | GT | refs | R@50 osnet | siglip | 0.3:0.7 | 0.5:0.5 | 0.7:0.3 | R@10 0.3:0.7 | xR@50 0.3:0.7 |
+|---|---|---|---|---|---|---|---|---|---|
+| 8020 | 27 | 20 | 0.017 | 0.050 | 0.033 | 0.027 | 0.019 | 0.013 | 0.023 |
+| 8039 | 17 | 17 | 0.210 | 0.217 | 0.257 | 0.239 | 0.239 | 0.199 | 0.150 |
+| 8010 | 16 | 16 | 0.350 | 0.229 | 0.362 | 0.371 | 0.375 | 0.213 | 0.067 |
+| 8027 | 15 | 15 | 0.357 | 0.395 | 0.438 | 0.429 | 0.381 | 0.310 | 0.230 |
+| 8012 | 14 | 14 | 0.170 | 0.181 | 0.170 | 0.176 | 0.181 | 0.148 | 0.000 |
+| 8024 | 14 | 14 | 0.434 | 0.445 | 0.522 | 0.511 | 0.473 | 0.445 | 0.120 |
+| 8005 | 13 | 13 | 0.231 | 0.340 | 0.378 | 0.321 | 0.301 | 0.256 | 0.187 |
+| 8016 | 13 | 13 | 0.250 | 0.167 | 0.301 | 0.308 | 0.301 | 0.218 | 0.147 |
+| 8046 | 13 | 13 | 0.718 | 0.718 | 0.776 | 0.769 | 0.744 | 0.654 | 0.157 |
+| 8047 | 13 | 13 | 0.244 | 0.301 | 0.308 | 0.282 | 0.269 | 0.212 | 0.109 |
+| 8025 | 12 | 12 | 0.220 | 0.250 | 0.288 | 0.265 | 0.235 | 0.242 | 0.000 |
+| 8026 | 12 | 12 | 0.250 | 0.167 | 0.242 | 0.242 | 0.242 | 0.174 | 0.012 |
+| 8028 | 12 | 12 | 0.273 | 0.295 | 0.356 | 0.333 | 0.311 | 0.235 | 0.236 |
+| 8035 | 12 | 12 | 0.091 | 0.136 | 0.136 | 0.114 | 0.106 | 0.068 | 0.061 |
+| 8036 | 12 | 12 | 0.364 | 0.394 | 0.439 | 0.409 | 0.371 | 0.326 | 0.356 |
+| 8038 | 12 | 12 | 0.212 | 0.136 | 0.220 | 0.242 | 0.227 | 0.167 | 0.067 |
+| 8002 | 11 | 11 | 0.609 | 0.582 | 0.791 | 0.773 | 0.727 | 0.582 | 0.612 |
+| 8011 | 11 | 11 | 0.336 | 0.218 | 0.273 | 0.345 | 0.355 | 0.227 | 0.000 |
+| 8021 | 11 | 11 | 0.200 | 0.336 | 0.309 | 0.245 | 0.236 | 0.209 | 0.158 |
+| 8023 | 11 | 11 | 0.218 | 0.455 | 0.473 | 0.391 | 0.336 | 0.236 | 0.485 |
+| 8040 | 11 | 11 | 0.264 | 0.309 | 0.336 | 0.309 | 0.282 | 0.255 | 0.159 |
+| 8042 | 11 | 11 | 0.518 | 0.518 | 0.527 | 0.527 | 0.527 | 0.527 | 0.000 |
+| 8044 | 11 | 11 | 0.355 | 0.445 | 0.545 | 0.518 | 0.464 | 0.336 | nan |
+| 8003 | 10 | 10 | 0.244 | 0.367 | 0.333 | 0.333 | 0.322 | 0.244 | 0.000 |
+| 8007 | 10 | 10 | 0.056 | 0.067 | 0.056 | 0.056 | 0.067 | 0.044 | 0.011 |
+| 8008 | 10 | 10 | 0.089 | 0.256 | 0.222 | 0.156 | 0.122 | 0.122 | 0.039 |
+| 8009 | 10 | 10 | 0.322 | 0.244 | 0.300 | 0.322 | 0.333 | 0.244 | 0.050 |
+| 8013 | 10 | 10 | 0.456 | 0.533 | 0.678 | 0.611 | 0.522 | 0.433 | 0.580 |
+| 8018 | 10 | 10 | 0.344 | 0.356 | 0.422 | 0.411 | 0.378 | 0.289 | 0.370 |
+| 8019 | 10 | 10 | 0.278 | 0.267 | 0.411 | 0.378 | 0.311 | 0.189 | 0.300 |
+| 8022 | 10 | 10 | 0.189 | 0.233 | 0.267 | 0.311 | 0.267 | 0.178 | 0.071 |
+| 8031 | 10 | 10 | 0.144 | 0.300 | 0.333 | 0.300 | 0.244 | 0.133 | 0.234 |
+| 8032 | 10 | 10 | 0.211 | 0.278 | 0.233 | 0.233 | 0.222 | 0.189 | 0.069 |
+| 8033 | 10 | 10 | 0.444 | 0.333 | 0.444 | 0.467 | 0.478 | 0.356 | 0.060 |
+| 8034 | 10 | 10 | 0.256 | 0.211 | 0.300 | 0.300 | 0.267 | 0.256 | 0.096 |
+| 8037 | 10 | 10 | 0.244 | 0.133 | 0.278 | 0.278 | 0.278 | 0.189 | 0.149 |
+| mean over 36 bibs | 434 | 427 | 0.282 | 0.302 | 0.354 | 0.342 | 0.320 | 0.253 | 0.153 |
+
+Bib 8038 full row set (R@10/R@50/xR@50): osnet .144/.212/.081, siglip .091/.136/.019, 0.3:0.7 .167/.220/.067, 0.5:0.5 .174/.242/.093, 0.7:0.3 .167/.227/.090 (12 refs, 12 GT).
+Mean over 36 bibs (R@10/R@50/xR@50; 427 refs, 416 xrefs): osnet .214/.282/.090, siglip .200/.302/.102, **0.3:0.7 .253/.354/.153**, 0.5:0.5 .243/.342/.146, 0.7:0.3 .235/.320/.122.
+
+**Tests / mutations**
+- `uv run pytest -q tests/test_search.py`: 68 passed (+14: eval GT/refs, recall, ref exclusion + cross split, configs change ranking, mean over bibs, frequent listing, CLI eval + no-model, sheet labels/hits, 3 fallback cases, no-OCR, no-embeddings, scene-only tiles). `uv run pytest -q`: 141 passed.
+- Mutations: 8/8 caught (substring GT, ref photo not excluded, GT′ denominator includes ref photo, no cross-photographer filter, scene-only tiles cropped, ref = smallest box, 4-digit-first dropped, sheet marks every result). Restored from saved copies; sha256 verified.
+
+**Touches**
+- New `src/photofinder/evaluate.py`. `src/photofinder/cli.py` (`eval` subparser, `cmd_eval`, `print_rows`, `print_frequent`, `default_out(kind, out_dir)`, scene-only tiles). `src/photofinder/search.py` (`WEIGHTS` osnet .3 / siglip .7). `tests/test_search.py`.
+- Shared surface: `search.WEIGHTS` default changes every photo search's ranking; `default_out` signature (backward compatible).
+
+### S2-T3 correction — strict person-level recall (orchestrator finding)
+- Flaw in the tables above: GT hits are photo-level. A crowded start-line photo counted as a hit even when its best-scoring (returned) person was someone else, e.g. on the 8010 sheet #9 5865973 is the OCR-8035 runner. The photo-level R@10/R@50/xR@50 above are unchanged and kept: they are the user-facing "my photo came back" number.
+- Added strict sR@10/sR@50: a GT′ photo counts only if its best-scoring person, the box returned, is in `Truth.persons`, the set of all persons whose OCR text equals b (not only the refs). Same denominator |GT′|.
+- Sheet: strict hits get a green border and "BIB"; photo-level-only hits get an orange border and "bib-photo".
+- Strict agrees with photo-level, so **the osnet 0.3 / siglip 0.7 choice stands** (primary strict R@50, tie-break photo R@50).
+- Mean over 36 bibs (R@10/R@50/xR@50/sR@10/sR@50): osnet .214/.282/.090/.209/.268, siglip .200/.302/.102/.194/.285, **0.3:0.7 .253/.354/.153/.248/.341**, 0.5:0.5 .243/.342/.146/.238/.329, 0.7:0.3 .235/.320/.122/.230/.306.
+- Fine sweep sR@50: 0.2:0.8 .338, 0.3:0.7 .341, 0.4:0.6 .340, 0.5:0.5 .329.
+- Bib 8038: strict equals photo-level for every config (no crowd-shot hits), e.g. 0.3:0.7 .167/.220/.067/.167/.220.
+- Crowd inflation is visible on some bibs, e.g. 8010 at 0.3:0.7 R@50 .362 vs sR@50 .304.
+- Fresh sheets: 8038 `data/exports/race925-eval-8038-20260928-042725.jpg`, 8039 `…-eval-8039-20260928-042726.jpg`, 8010 `…-eval-8010-20260928-042727.jpg`. The 8010 sheet was checked visually: #7 and #9 are orange bib-photo, #18 is green BIB.
+- Tests: +1 (`test_strict_hit_needs_the_matched_person_to_carry_the_bib`). The eval fixture's photo 2 gained a non-bib person that out-scores the bib person under osnet. `uv run pytest -q`: 142 passed.
+- Mutations (whole battery rerun): 11/11 caught. The 3 new strict mutants were: strict = photo-level, strict persons = refs only, sR@50 computed from the photo-level ranking. The sheet mutant is now "every GT photo marked strict". Files were restored from saved copies and sha256-verified.
+- Touches: `evaluate.py` (`Truth.persons`, `Row.s10/s50`, `evaluate_ref` returns 5 values, sheet marks), `cli.print_rows` (2 new columns), `tests/test_search.py`.
