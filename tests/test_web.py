@@ -1,4 +1,5 @@
 import io
+import re
 import time
 
 import numpy as np
@@ -466,3 +467,14 @@ def test_persons_are_held_as_float16(tmp_path):
     persons = search.load_scenes(conn, search.load_persons(conn))
     assert {k: v.dtype for k, v in persons.vecs.items()} == {"osnet": np.float16, "siglip": np.float16}
     assert persons.scene[0].dtype == np.float16
+
+
+def test_page_is_served_and_calls_only_real_endpoints(tmp_path):
+    c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+    api = web.create_app(c)
+    res = TestClient(api).get("/")
+    assert res.status_code == 200 and res.headers["content-type"].startswith("text/html")
+    script = re.search(r"<script>(.*)</script>", res.text, re.S).group(1)
+    used = {re.sub(r"\$\{[^}]*\}", "{}", p) for p in re.findall(r"/api/[^\s'\"`?]*", script)}
+    routes = {re.sub(r"\{[^}]+\}", "{}", r.path) for r in api.routes if r.path.startswith("/api/")}
+    assert used == routes

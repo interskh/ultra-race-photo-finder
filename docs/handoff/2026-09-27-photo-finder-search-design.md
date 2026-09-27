@@ -587,3 +587,34 @@ Slice 3 SLICE_BASE=1c9b6a8
 - New `src/photofinder/web/{__init__,app}.py`, `web/static/index.html` (placeholder for T2), `tests/test_web.py`.
 - `search.py` (`parse_time`, `TIME_FORMATS`, `filter_where`, `NEG_WEIGHT`, `CHUNK`, `matrix`, `load_scenes`, `max_cos`, `score(negatives=)`), `cli.py` (`parse_time` wrapper, `serve`), `models.py` (`unload(*names)`), `tests/test_search.py`, `pyproject.toml`, `uv.lock`.
 - Shared surface for T2: JSON shapes above; result keys `rank score person_id photo_id box source_photo_id taken_at photographer photographer_uid album width height relpath bibs label`.
+
+## S3-T2 — static page `web/static/index.html` (vanilla JS, inline CSS)
+
+**Decisions**
+- One query model: a `base` start point (`{start_bib}` | `{persons:[id]}` | `{upload, box}` | `{mode:'more'}` | `{}` text-only) + current filters + description/scene, rebuilt on every run; Load more resends the same query with `offset = results.length`; done when `results.length >= total` (bib) or a page `< top`.
+- Bib start sends only filters + `start_bib` (backend 400s on combos); "Search description" combines with a persons/upload/more base, runs alone after a bib base; summary line says when the description is ignored.
+- Label state: one `S.labels[person_id]` map (server values overwrite on each fetch); after a successful POST, re-fetch `/api/facets` for header/Find-more counts and `/api/me` for the "My photos (N)" tab (photo count; `labels.me` counts persons) rather than counting locally. Failed POST → error banner, no visual flip.
+- Box overlays use percentages of API `width/height` inside a shrink-wrapped `position:relative; display:inline-block` frame, so no onload/resize math. Modal image capped at `calc(100vw - 400px)` because `%` max-width on an inline-block child is cyclic.
+- Photographer checkbox value = `uid || name` (filter_where matches either column).
+- Time filters are text inputs (`YYYY-MM-DD HH:MM`), placeholders from facets `taken_at`; parse errors come back as 400 `detail` and show in the banner.
+- Busy counter disables every `[data-run]` control during a request (backend runs one model job at a time); stale responses dropped via a sequence number. Text/scene/upload requests show the model-load time hint.
+- Modal: side list of all persons (crop, bib reads with conf, Me / Not me / Find people like this); box click selects the list row; Esc / backdrop click closes; arrows step through the list the card came from (results or My photos).
+
+**Rejected**
+- `datetime-local` inputs: send `T` form that `parse_time` rejects, and drop seconds; text inputs match the CLI format exactly.
+- Auto-running search on every filter checkbox change: many heavy requests; an explicit "Apply filters" (and Enter) instead.
+- Popover per box: a side list is keyboard-reachable and shows bibs for every person at once.
+- No backend change needed.
+
+**Assumptions**
+- DB `width/height` and boxes are in the EXIF-upright frame and the browser applies EXIF orientation to the full image (`image-orientation: from-image` default). Verified in code: `models.load_image` does `exif_transpose` and scan swaps width/height for rotated orientations.
+- `/api/me` persons[0] is a fine card representative for photos with several me persons.
+
+**Deferred**
+- No browser run here (no browser available); visual/interaction quality is for the S3-T3 E2E screenshot pass.
+- Unmarked photos stay visible in My photos until the view is reopened (lets the user undo).
+
+**Touches**
+- `src/photofinder/web/static/index.html` (full rewrite), `tests/test_web.py` (+`import re`, +`test_page_is_served_and_calls_only_real_endpoints`: every `/api/...` in the script == the app's `/api/` routes, both directions).
+- Evidence: `uv run pytest -q` 194 passed; `node --check` on extracted script OK (node v24.14.0); mutations 3/3 caught (renamed facets path, renamed crop path, export call removed), restored + sha256-verified.
+- Real server race925:8766: `/` 200 text/html; facets, start_bib 8039 (+ photographer uid + start filter → 8), photo 1918 detail, crop/thumb/full images, `/api/me`, find-more-without-labels 400 detail, bad time 400 detail, persons offset 60 → rank 61 all match the JS reads. No labels created (facets labels 0/0).
