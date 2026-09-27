@@ -340,7 +340,7 @@ def test_scene_only_ranks_persons_by_their_photo_scene(tmp_path):
     results = search.search(conn, {"scene": np.array([X])})
     assert [r.relpath for r in results] == ["3.jpg", "1.jpg", "2.jpg", "4.jpg"]
     assert [round(r.score, 3) for r in results] == pytest.approx(
-        [cos([1, 0.1, 0], X), cos([0.5, 1, 0], X), cos([-0.3, 1, 0], X), -1], abs=2e-3)
+        [cos([1, 0.1, 0], X), cos([0.5, 1, 0], X), cos([-0.3, 1, 0], X), cos([-0.3, 1, 0], X) - 1], abs=2e-3)
     persons = search.load_scenes(conn, search.load_persons(conn))
     scores = dict(zip(persons.ids, search.score(persons, {"scene": np.array([X])})))
     assert scores[ids[1][0]] == scores[ids[1][1]]
@@ -821,6 +821,36 @@ def test_missing_scene_vector_ranks_last_in_combined_query(tmp_path):
     assert [r.relpath for r in results].index("4.jpg") < 3
     only_scene = search.search(conn, {"scene": np.array([[-0.3, 1, 0]])})
     assert only_scene[-1].relpath == "4.jpg"
+
+
+def test_nan_embedding_ranks_last_and_does_not_blank_its_term(tmp_path):
+    nan = [float("nan")] * 4
+    _, conn, _ = make_index(tmp_path, [
+        (1, (0, 0, 50, 100), nan, X),
+        (2, (0, 0, 50, 100), B, X),
+        (3, (0, 0, 50, 100), A, X),
+    ])
+    refs = {"osnet": np.array([A]), "siglip": np.array([X])}
+    assert [r.relpath for r in search.search(conn, refs)] == ["3.jpg", "2.jpg", "1.jpg"]
+    results = search.search(conn, {"osnet": np.array([A])})
+    assert [r.relpath for r in results] == ["3.jpg", "2.jpg", "1.jpg"]
+    assert np.isfinite(results[-1].score) and results[-1].score < results[-2].score
+
+
+def test_scene_term_still_moves_combined_ranking_on_mostly_missing_scenes(tmp_path):
+    far = [0, 0, 1.0, 0]
+    _, conn, _ = make_index(tmp_path, [
+        (1, (0, 0, 50, 100), [1, 0.1, 0, 0], X),
+        (2, (0, 0, 50, 100), [1, 0.3, 0, 0], X),
+        (3, (0, 0, 50, 100), [1, 0.6, 0, 0], X),
+        (4, (0, 0, 50, 100), [1, 0.9, 0, 0], X),
+        *[(p, (0, 0, 50, 100), far, X) for p in range(5, 11)],
+    ], photos=10)
+    add_scenes(conn, [(1, [0.02, 1, 0]), (2, [0.06, 1, 0]), (3, [0.0, 1, 0]), (4, [0.03, 1, 0])])
+    results = search.search(conn, {"osnet": np.array([A]), "scene": np.array([X])},
+                            weights={"osnet": 1.0, "scene": 0.5})
+    assert [r.relpath for r in results[:2]] == ["2.jpg", "1.jpg"]
+    assert {r.relpath for r in results[-6:]} == {f"{p}.jpg" for p in range(5, 11)}
 
 
 @pytest.mark.parametrize("flag", [("--box", "1"), ("--whole",)])

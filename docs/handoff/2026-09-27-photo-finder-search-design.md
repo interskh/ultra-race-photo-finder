@@ -490,3 +490,17 @@ Mean over 36 bibs (R@10/R@50/xR@50; 427 refs, 416 xrefs): osnet .214/.282/.090, 
   - `ocr_errors` added to the counts asserts.
 - The `ocr_bibs` counts dict gained the `ocr_errors` key.
 - Mutations: 6/6 caught. They were: failure swallowed, err ignored when ok, failed person stamped, failed person marks the photo as error, ocr error not counted, and failure propagates. Files were restored and sha256-verified.
+
+## S2-gate fix round 2 — invalid rows in term normalization
+
+- Decision: `term_scores` marks invalid rows as NaN: a missing scene vector (it was −1 before) or a non-finite cosine from a NaN/inf stored embedding.
+- Decision: `zscore` takes mean and std over finite rows only. `rank_invalid_last` then sets invalid rows to (min valid − 1), or −1 when no row is valid.
+- Decision: a single-term query keeps raw cosine and also goes through `rank_invalid_last`. Invalid rows therefore rank last with a finite printed score; a missing scene now prints `min cos − 1` instead of −1.
+- Effect: one NaN embedding no longer blanks its whole term. A mostly-unembedded scene index (the test uses 60% missing) no longer compresses real photos' scene z toward 0.
+- Rejected: dropping invalid persons. The other terms may still rank them, and a missing scene is a partial-index state that `check_scenes` already warns about.
+- Rejected: `-inf` as the fill value. It would print as `-inf` and turns weighted sums into NaN when the weight is 0.
+- Tests: +2. `test_nan_embedding_ranks_last_and_does_not_blank_its_term` covers fused and single-term queries. `test_scene_term_still_moves_combined_ranking_on_mostly_missing_scenes` uses 6/10 photos without scene vectors. Both fail on ec3e818 (checked by swapping in the saved pre-fix `search.py`). The scene-only expected score for a missing photo is now `min − 1`.
+- `uv run pytest -q`: 156 passed.
+- Mutations: 6/6 caught. They were: stats over all rows, −1 sentinel restored, invalid filled with 0, zscore leaves NaN, single term not filled, single term z-scored. Restored and sha256-verified.
+- Eval check: race925 has 0 photos without a scene vector and no NaN embeddings. 36-bib mean for 0.3:0.7 is unchanged at .253/.356/.155/.248/.342. The rerun's sheets went to scratch, not `data/exports`.
+- Touches: `src/photofinder/search.py` (`term_scores`, `rank_invalid_last`, `zscore`, `score`) and `tests/test_search.py`.

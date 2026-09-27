@@ -158,14 +158,26 @@ def term_scores(persons: Persons, key: str, refs) -> np.ndarray:
     if key == "scene":
         vecs, rows = persons.scene
         out = max_cos(vecs, refs)[rows]
-        out[rows == len(vecs) - 1] = -1.0
+        out[rows == len(vecs) - 1] = np.nan
         return out
     return max_cos(persons.vecs[SOURCES.get(key, key)], refs)
 
 
+def rank_invalid_last(s: np.ndarray) -> np.ndarray:
+    ok = np.isfinite(s)
+    if ok.all():
+        return s
+    out = s.copy()
+    out[~ok] = s[ok].min() - 1 if ok.any() else -1.0
+    return out
+
+
 def zscore(s: np.ndarray) -> np.ndarray:
-    std = s.std()
-    return (s - s.mean()) / std if std > 0 else np.zeros_like(s)
+    ok = np.isfinite(s)
+    out = np.full_like(s, np.nan)
+    std = s[ok].std() if ok.any() else 0
+    out[ok] = (s[ok] - s[ok].mean()) / std if std > 0 else 0
+    return rank_invalid_last(out)
 
 
 def score(persons: Persons, refs: dict, weights=WEIGHTS) -> np.ndarray:
@@ -173,9 +185,8 @@ def score(persons: Persons, refs: dict, weights=WEIGHTS) -> np.ndarray:
              if r is not None and len(r) and weights.get(k)]
     if not terms:
         raise ValueError("no query terms to score")
-    if len(terms) > 1:
-        terms = [(w, zscore(s)) for w, s in terms]
-    return sum(w * s for w, s in terms) / sum(w for w, _ in terms)
+    norm = zscore if len(terms) > 1 else rank_invalid_last
+    return sum(w * norm(s) for w, s in terms) / sum(w for w, _ in terms)
 
 
 def best_per_photo(photo_ids: np.ndarray, scores: np.ndarray, top: int, exclude=()) -> list[int]:
