@@ -10,7 +10,8 @@ from PIL import Image, ImageDraw
 from photofinder import models
 
 TABLES = {"osnet": "emb_person_osnet", "siglip": "emb_person_siglip"}
-WEIGHTS = {"osnet": 0.5, "siglip": 0.5}
+WEIGHTS = {"osnet": 0.5, "siglip": 0.5, "text": 0.5, "scene": 0.5}
+SOURCES = {"text": "siglip"}
 CHUNK = 65536
 
 log = logging.getLogger("search")
@@ -26,6 +27,7 @@ class Persons:
     photo_ids: np.ndarray
     boxes: np.ndarray
     vecs: dict[str, np.ndarray]
+    scene: tuple[np.ndarray, np.ndarray] | None = None
 
 
 @dataclass
@@ -63,6 +65,22 @@ def load_persons(db: sqlite3.Connection) -> Persons:
     return persons
 
 
+def load_scenes(db: sqlite3.Connection, persons: Persons) -> Persons:
+    t0 = time.monotonic()
+    rows = db.execute("""select e.photo_id, e.v from emb_scene_siglip e join photos ph on ph.id = e.photo_id
+                         where ph.status = 'ok'""").fetchall()
+    if not rows:
+        raise MissingEmbeddings("index has no scene embeddings (stage embed_scenes); "
+                                "run `photofinder index <collection>` first")
+    photo_ids, blobs = zip(*rows)
+    vecs = matrix(blobs)
+    vecs = np.vstack([vecs, np.zeros((1, vecs.shape[1]), np.float32)])
+    row = {p: i for i, p in enumerate(photo_ids)}
+    persons.scene = vecs, np.array([row.get(p, len(rows)) for p in persons.photo_ids], dtype=np.int64)
+    log.info("loaded %d scene embeddings in %.3fs", len(rows), time.monotonic() - t0)
+    return persons
+
+
 def person_refs(persons: Persons, person_ids) -> dict[str, np.ndarray]:
     rows = np.flatnonzero(np.isin(persons.ids, person_ids))
     return {k: v[rows] for k, v in persons.vecs.items()}
@@ -76,8 +94,15 @@ def max_cos(vecs: np.ndarray, refs) -> np.ndarray:
     return out
 
 
+def term_scores(persons: Persons, key: str, refs) -> np.ndarray:
+    if key == "scene":
+        vecs, rows = persons.scene
+        return max_cos(vecs, refs)[rows]
+    return max_cos(persons.vecs[SOURCES.get(key, key)], refs)
+
+
 def score(persons: Persons, refs: dict, weights=WEIGHTS) -> np.ndarray:
-    terms = [(weights[k], max_cos(persons.vecs[k], r)) for k, r in refs.items()
+    terms = [(weights[k], term_scores(persons, k, r)) for k, r in refs.items()
              if r is not None and len(r) and weights.get(k)]
     if not terms:
         raise ValueError("no query terms to score")
@@ -98,6 +123,8 @@ def best_per_photo(photo_ids: np.ndarray, scores: np.ndarray, top: int, exclude=
 def search(db: sqlite3.Connection, refs: dict, top: int = 24, exclude=(), weights=WEIGHTS,
            persons: Persons | None = None) -> list[Result]:
     persons = persons or load_persons(db)
+    if refs.get("scene") is not None and persons.scene is None:
+        load_scenes(db, persons)
     t0 = time.monotonic()
     scores = score(persons, refs, weights)
     picked = best_per_photo(persons.photo_ids, scores, top, exclude)

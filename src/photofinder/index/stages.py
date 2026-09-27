@@ -16,7 +16,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MANIFEST_NAME = "manifest.sqlite"
 EXIF_IFD, DATETIME_ORIGINAL, MODEL, ORIENTATION = 0x8769, 0x9003, 0x0110, 0x0112
 COMMIT_EVERY = 200
-DETECT_BATCH, EMBED_BATCH = 8, 64
+DETECT_BATCH, EMBED_BATCH, SCENE_BATCH = 8, 64, 16
 
 log = logging.getLogger("index")
 
@@ -175,4 +175,35 @@ def embed_persons(db: sqlite3.Connection, collection: Path, embedder=None, batch
         counts["persons"] += len(todo)
         counts["errors"] += len(bad)
     log.info("embed_persons: %d persons embedded, %d photo errors", counts["persons"], counts["errors"])
+    return counts
+
+
+def embed_scenes(db: sqlite3.Connection, collection: Path, embedder=None, batcher=None) -> dict:
+    pending = db.execute("select id, relpath from photos where status = 'ok' and scene_done_at is null "
+                         "order by id").fetchall()
+    counts = {"pending": len(pending), "photos": 0, "errors": 0}
+    log.info("embed_scenes: %d pending", len(pending))
+    if not pending:
+        return counts
+    embedder = embedder or models.embed_images
+    batcher = batcher or AdaptiveBatcher(SCENE_BATCH)
+    for chunk in batcher.chunks(pending):
+        ids, images, errors = [], [], []
+        for photo_id, relpath in chunk:
+            try:
+                images.append(models.load_image(collection / relpath))
+                ids.append(photo_id)
+            except Exception as e:
+                errors.append((error_text(e), photo_id))
+                log.warning("unreadable image %s: %s", relpath, errors[-1][0])
+        vecs = embedder(images) if images else []
+        stamp = now()
+        with db:
+            db.executemany("update photos set status = 'error', error = ? where id = ?", errors)
+            for photo_id, v in zip(ids, vecs, strict=True):
+                db.execute("insert into emb_scene_siglip(photo_id, v) values (?,?)", (photo_id, to_blob(v)))
+                db.execute("update photos set scene_done_at = ? where id = ?", (stamp, photo_id))
+        counts["photos"] += len(ids)
+        counts["errors"] += len(errors)
+    log.info("embed_scenes: %d photos embedded, %d errors", counts["photos"], counts["errors"])
     return counts

@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -194,6 +195,7 @@ def test_cli_missing_collection_exits_nonzero(tmp_path, capsys):
 def test_cli_index_runs_scan(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
     monkeypatch.setattr(cli.models, "detect_persons", lambda images: [[] for _ in images])
+    monkeypatch.setattr(cli.models, "embed_images", lambda images: np.ones((len(images), 4), np.float32))
     c = tmp_path / "coll"
     jpeg(c / "1.jpg")
     cli.main(["index", str(c)])

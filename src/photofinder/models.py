@@ -53,6 +53,13 @@ def siglip():
     return _get("siglip", load)
 
 
+def tokenizer():
+    def load():
+        import open_clip
+        return open_clip.get_tokenizer(SIGLIP[0], tokenizer_type="gemma")
+    return _get("siglip_tokenizer", load)
+
+
 def unload():
     models = [k for k in _loaded if k != "device"]
     for k in models:
@@ -96,8 +103,20 @@ def l2norm(v) -> np.ndarray:
 def embed_crops(crops: list[Image.Image]) -> tuple[np.ndarray, np.ndarray]:
     import torch
     reid = osnet()([np.ascontiguousarray(np.asarray(c)[:, :, ::-1]) for c in crops])
+    return l2norm(reid), embed_images(crops)
+
+
+def embed_images(images: list[Image.Image]) -> np.ndarray:
+    import torch
     model, preprocess = siglip()
     with torch.no_grad():
-        batch = torch.stack([preprocess(c) for c in crops]).to(device())
-        clip = model.encode_image(batch).float().cpu().numpy()
-    return l2norm(reid), l2norm(clip)
+        batch = torch.stack([preprocess(img) for img in images]).to(device())
+        return l2norm(model.encode_image(batch).float().cpu().numpy())
+
+
+def encode_text(texts: list[str]) -> np.ndarray:
+    import torch
+    model, _ = siglip()
+    with torch.no_grad():
+        tokens = tokenizer()(list(texts)).to(device())
+        return l2norm(model.encode_text(tokens).float().cpu().numpy())

@@ -14,7 +14,7 @@ log = logging.getLogger("photofinder")
 def cmd_index(args):
     t0 = time.monotonic()
     with closing(db.connect(args.collection)) as conn:
-        for stage in (stages.scan, stages.detect, stages.embed_persons):
+        for stage in (stages.scan, stages.detect, stages.embed_persons, stages.embed_scenes):
             t = time.monotonic()
             counts = stage(conn, args.collection)
             models.unload()
@@ -50,34 +50,44 @@ def query_box(args, img) -> tuple:
 
 
 def cmd_search(args):
+    if not (args.photo or args.text or args.scene):
+        sys.exit("give at least one of --photo, --text, --scene")
     if not (args.collection / db.INDEX_NAME).is_file():
         sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
-    if not args.photo.is_file():
+    if args.photo and not args.photo.is_file():
         sys.exit(f"query photo {args.photo} not found")
     if args.top < 1:
         sys.exit("--top must be at least 1")
-    try:
-        img = models.load_image(args.photo)
-    except Exception as e:
-        sys.exit(f"cannot read query photo {args.photo}: {stages.error_text(e)}")
+    img = query = None
+    if args.photo:
+        try:
+            img = models.load_image(args.photo)
+        except Exception as e:
+            sys.exit(f"cannot read query photo {args.photo}: {stages.error_text(e)}")
     with closing(db.connect(args.collection)) as conn:
         try:
             persons = search.load_persons(conn)
+            if args.scene:
+                search.load_scenes(conn, persons)
         except search.MissingEmbeddings as e:
             sys.exit(str(e))
-        box = query_box(args, img)
-        query = models.crop(img, box)
-        osnet, siglip = models.embed_crops([query])
+        refs, exclude = {}, []
+        if img is not None:
+            query = models.crop(img, query_box(args, img))
+            refs["osnet"], refs["siglip"] = models.embed_crops([query])
+        texts = {k: t for k, t in (("text", args.text), ("scene", args.scene)) if t}
+        if texts:
+            vecs = models.encode_text(list(texts.values()))
+            refs.update({k: v[None] for k, v in zip(texts, vecs)})
         models.unload()
-        exclude = []
-        if found := search.find_photo(conn, args.collection, args.photo):
+        if args.photo and (found := search.find_photo(conn, args.collection, args.photo)):
             exclude.append(found[0])
             print(f"query photo is indexed as {found[1]}; excluded from results")
-        results = search.search(conn, {"osnet": osnet, "siglip": siglip}, args.top, exclude, persons=persons)
+        results = search.search(conn, refs, args.top, exclude, persons=persons)
     for r in results:
         print(f"{r.rank:>3} {r.score:.4f} {r.relpath} box={fmt_box(r.box)} {r.taken_at or '-'} "
               f"{r.photographer or '-'} {r.album or '-'}")
-    tiles = [(query, "query")]
+    tiles = [(query, "query")] if query is not None else []
     for r in results:
         crop = models.crop(models.load_image(args.collection / r.relpath), r.box)
         tiles.append((crop, f"#{r.rank} {r.score:.3f} id {r.source_photo_id or r.photo_id}"))
@@ -92,9 +102,11 @@ def main(argv=None):
     p = sub.add_parser("index", help="scan, detect and embed a collection into <collection>/index.sqlite")
     p.add_argument("collection", type=Path)
     p.set_defaults(func=cmd_index)
-    p = sub.add_parser("search", help="rank indexed photos by similarity to a person in a query photo")
+    p = sub.add_parser("search", help="rank indexed photos by a query photo, person text and/or scene text")
     p.add_argument("collection", type=Path)
-    p.add_argument("--photo", type=Path, required=True, help="query photo")
+    p.add_argument("--photo", type=Path, help="query photo")
+    p.add_argument("--text", help='person description, e.g. "orange vest black shorts"')
+    p.add_argument("--scene", help='scene description, e.g. "mountain" or "雪山"')
     g = p.add_mutually_exclusive_group()
     g.add_argument("--box", type=int, default=0,
                    help="detected person to search for; boxes are numbered by area, largest first (default 0)")

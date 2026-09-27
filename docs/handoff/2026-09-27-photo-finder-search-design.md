@@ -174,3 +174,52 @@ Slice 1 SLICE_BASE=ffe232d
 - Timings: index 289 s for 2,000 photos (detect 145 s, embed 141 s, 4,355 persons), peak RSS 2.46 GB, pressure 17 normal / 12 warn / 0 critical samples. Search ~13–16 s wall (mostly model load), scoring <0.01 s, peak RSS 2.24 GB, pressure 1→1.
 
 implement-loop: slice 1 shipped 74845b8; remaining: [2, 3]
+
+## Slice 2
+
+Slice 2 SLICE_BASE=8109548
+
+Race subset `data/subsets/race925/`: 5,745 file symlinks (album 9.25 赛事, tag_id 703070, all status done) into the live download dir + a read-only `sqlite3 .backup` snapshot of the live manifest taken 2026-09-28 (the first2000 snapshot predates the race album).
+
+## S2-T1 — `embed_scenes` stage, SigLIP2 text encoding, `--text`/`--scene`, HF offline
+
+**Decisions**
+- `embed_scenes` mirrors `detect`: select `status='ok' and scene_done_at is null`, EXIF-upright `load_image`, one `with db:` per batch (error updates + scene inserts + `scene_done_at`), plain `insert` (the rollback makes duplicates impossible, and a PK clash would surface a bug instead of hiding it). Batch cap `SCENE_BATCH=16`. It runs after `embed_persons` in the CLI loop.
+- `models.embed_images` (siglip preprocess → encode_image → l2norm) is now shared: `embed_crops` calls it for its siglip half. `models.encode_text` uses `models.tokenizer()`, which goes through `_get` so `unload()` drops it.
+- Tokenizer is `open_clip.get_tokenizer(SIGLIP[0], tokenizer_type="gemma")`. Without `tokenizer_type`, transformers 5.17 `AutoTokenizer` calls `AutoConfig` for `config.json` (the repo has none). That works online but raises OSError under `HF_HUB_OFFLINE=1`, even with a `.no_exist/config.json` marker. With `gemma` the offline ids equal the online ids ("mountain" → 53074; "雪山" → 236722, 235822).
+- New dependency: `transformers>=5.17.0`, which open_clip's `HFTokenizer` imports. The lock diff only adds packages (transformers, tokenizers 0.23.2, typer, shellingham, annotated-doc); no existing version changed. I synced only after the race925 index run had exited.
+- HF offline predicate: `config.hf_cached` requires one snapshot of `models--timm--ViT-B-16-SigLIP2` to hold `open_clip_model.safetensors`, `tokenizer.json`, `tokenizer_config.json` and `special_tokens_map.json`. This deviates from the task's "dir exists" suggestion: before this task the cache held only the safetensors, so that check would have set offline and broken the first text query. It never pops an existing `HF_HUB_OFFLINE`.
+- Search: `text` term = max cos(person siglip crop vec, text vec) via `SOURCES={"text":"siglip"}`. `scene` term = cos over per-photo scene vecs, broadcast to persons through a row index (`Persons.scene = (vecs, rows)`), so there is no 350k×768 duplicate.
+- Photos with no scene vec (partial index) get a zero row, so scene cos = 0. They are not dropped, because the other terms may still rank them. An index with zero scene rows raises `MissingEmbeddings` naming embed_scenes.
+- `load_scenes` runs only when a scene term is requested. `search()` lazy-loads it, and the CLI calls it before any model load, so it fails fast.
+- Weights: `text 0.5, scene 0.5`, equal to the spec's `w_reid = w_clip` defaults. Real numbers: text↔image cos spans ~0.01–0.11 while image↔image cos spans ~0.83–0.88 on the same photos. So with a photo ref, text/scene move the fused rank only slightly at 0.5. S2-T3 `eval` should tune this; solo text/scene queries are unaffected because they are renormalized.
+- Scene-only (and text-only) ranking is per person: photos with zero detected persons are never returned. This is accepted because race photos nearly always have a runner.
+- CLI: `--photo` is optional. With none of `--photo/--text/--scene` it exits with one line, before the index check. Text and scene are encoded in one `encode_text` call. Text/scene-only runs load only SigLIP and its tokenizer (verified in the real run's `loaded` lines). The contact sheet has no query tile when there is no `--photo`. `--box/--whole` are silently ignored without `--photo`.
+
+**Rejected**
+- `transformers[sentencepiece]`: not needed, because the fast tokenizer loads from `tokenizer.json`.
+- Setting offline when the repo dir merely exists: it breaks the tokenizer download (see above).
+- Materializing scene vecs per person, or an inner join dropping persons without scene vecs: memory at 350k, and silent result loss on partial indexes.
+- Prompt templates ("a photo of {}") for scene text: raw text keeps it predictable. Revisit in S2-T3 if recall is poor.
+
+**Assumptions**
+- The HF repo `timm/ViT-B-16-SigLIP2` tokenizer file set stays the four files above. If a future transformers wants another file offline, delete one of the four from the snapshot to force the online path once.
+- GemmaTokenizer (`tokenizer_type="gemma"`) matches the repo's `tokenizer_class`. Check: `tokenizer_config.json` → `"tokenizer_class": "GemmaTokenizer"`.
+
+**Real check** (after `pgrep` was clear; race925 index already built by the orchestrator, `embed_scenes` NOT run on it)
+- First load (online) downloaded the tokenizer files (34 MB) in 99 s. After that `HF_HUB_OFFLINE` env = 1, `huggingface_hub.constants.HF_HUB_OFFLINE` = True, and model plus tokenizer load offline in 13 s wall with peak RSS 2.04 GB. `~/.cache` listing was unchanged across both runs.
+- `encode_text(["mountain","雪山","finish arch","night city street","forest trail at night"])` → (5,768), norms 1.0. cos(mountain, 雪山) = 0.90.
+- Scene vecs for 3 race925 photos (all night shots) had norm 1.0. On "night city street", the street photo 2531911 scored .041 vs .015/.013 for the trail photos. On "forest trail at night", the trail photos 72443666/7637494 scored .114/.100 vs .049. 雪山 is lowest on the street photo (.011).
+- `photofinder search race925 --text "red jacket" --top 8`: 14.1 s, peak RSS 2.26 GB, 26,783 persons. All 8 tiles are people in red tops/jackets. `--scene mountain` → one-line "no scene embeddings (stage embed_scenes)", with no model load. No query flags → one-line error.
+- First-download path with the shipped `tokenizer_type="gemma"`: `setup_model_env(<empty scratch dir>)` left offline unset, the four tokenizer files downloaded, and the ids matched. I deleted the scratch dir afterwards.
+- `--photo race925/photos/2531911.jpg --top 5`: this exercises the refactored `embed_crops`. It printed 9 boxes and self-excluded the query. #1 was 5624888 (.880, same photographer, 2 s earlier). Peak RSS 2.17 GB.
+- Mutations: 9/9 caught (scene→crop vecs, broadcast by photo_id order, text→osnet, no renormalization, offline always, offline on any file, `scene_done_at` not set, no-query check removed, scenes loaded after models). Restored from saved copies and sha256-verified.
+
+**Deferred**
+- Contact-sheet labels overlap on narrow tiles (pre-existing, cosmetic).
+- `embed_scenes` was not run on race925; the orchestrator's next `index` does it for all 5,745 photos.
+
+**Touches**
+- `src/photofinder/{config,models,search,cli}.py`, `src/photofinder/index/stages.py` (`embed_scenes`, `SCENE_BATCH`), `pyproject.toml` + `uv.lock` (transformers).
+- Tests: new `tests/test_config.py`; `tests/test_search.py` (+10 test cases, `Fakes.encode`), `tests/test_detect_embed.py` (+5 tests, index-rerun test fakes `embed_images`), `tests/test_scan.py` (fakes `embed_images`).
+- Public API: `models.embed_images`, `models.encode_text`, `models.tokenizer`, `search.load_scenes`, `search.term_scores`, `search.SOURCES`, `Persons.scene`, `WEIGHTS` keys `text`/`scene`, `config.hf_cached/SIGLIP_REPO/SIGLIP_FILES`.

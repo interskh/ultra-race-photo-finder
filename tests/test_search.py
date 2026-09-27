@@ -106,12 +106,17 @@ QUERY_BOXES = [(10.0, 10.0, 40.0, 60.0, 0.9), (20.0, 30.0, 140.0, 280.0, 0.8)]
 
 
 class Fakes:
-    def __init__(self, monkeypatch, boxes=QUERY_BOXES, osnet=B, siglip=Y):
-        self.detected, self.embedded = [], []
-        self.boxes, self.osnet, self.siglip = boxes, osnet, siglip
+    def __init__(self, monkeypatch, boxes=QUERY_BOXES, osnet=B, siglip=Y, texts=None):
+        self.detected, self.embedded, self.encoded = [], [], []
+        self.boxes, self.osnet, self.siglip, self.texts = boxes, osnet, siglip, texts or {}
         monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
         monkeypatch.setattr(models, "detect_persons", self.detect)
         monkeypatch.setattr(models, "embed_crops", self.embed)
+        monkeypatch.setattr(models, "encode_text", self.encode)
+
+    def encode(self, texts):
+        self.encoded.append(list(texts))
+        return models.l2norm([self.texts[t] for t in texts])
 
     def detect(self, images):
         self.detected.append([img.size for img in images])
@@ -283,3 +288,116 @@ def test_cli_missing_collection(tmp_path, monkeypatch, capsys):
     msg, _ = run(capsys, tmp_path / "nope", "--photo", query_photo(tmp_path))
     assert "nope" in msg
 
+
+
+def add_scenes(conn, scenes):
+    for photo, v in scenes:
+        conn.execute("insert into emb_scene_siglip select id, ? from photos where relpath = ?", (to_blob(v), f"{photo}.jpg"))
+    conn.commit()
+
+
+def scene_index(tmp_path):
+    c, conn, ids = make_index(tmp_path, [
+        (1, (0, 0, 50, 100), A, X),
+        (1, (60, 0, 110, 100), B, Y),
+        (2, (0, 0, 50, 100), C, Z),
+        (3, (0, 0, 50, 100), [0, 0, 0, 1.0], Y),
+        (4, (0, 0, 50, 100), A, Z),
+    ], photos=5)
+    add_scenes(conn, [(5, X), (3, [1.0, 0.1, 0]), (2, [-0.3, 1, 0]), (1, [0.5, 1, 0])])
+    return c, conn, ids
+
+
+def test_scene_only_ranks_persons_by_their_photo_scene(tmp_path):
+    _, conn, ids = scene_index(tmp_path)
+    results = search.search(conn, {"scene": np.array([X])})
+    assert [r.relpath for r in results] == ["3.jpg", "1.jpg", "4.jpg", "2.jpg"]
+    assert [round(r.score, 3) for r in results] == pytest.approx(
+        [cos([1, 0.1, 0], X), cos([0.5, 1, 0], X), 0, cos([-0.3, 1, 0], X)], abs=2e-3)
+    persons = search.load_scenes(conn, search.load_persons(conn))
+    scores = dict(zip(persons.ids, search.score(persons, {"scene": np.array([X])})))
+    assert scores[ids[1][0]] == scores[ids[1][1]]
+
+
+def test_text_term_scores_person_crop_vectors(tmp_path):
+    _, conn, _ = make_index(tmp_path, [
+        (1, (0, 0, 50, 100), A, Z),
+        (2, (0, 0, 50, 100), B, X),
+        (3, (0, 0, 50, 100), C, [0.5, 0.5, 0]),
+    ])
+    add_scenes(conn, [(1, X), (2, Z), (3, Y)])
+    results = search.search(conn, {"text": np.array([X])})
+    assert [r.relpath for r in results] == ["2.jpg", "3.jpg", "1.jpg"]
+    assert results[1].score == pytest.approx(cos([0.5, 0.5, 0], X), abs=2e-3)
+
+
+def test_scene_query_without_scene_embeddings_names_stage(tmp_path):
+    _, conn, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X), (2, (0, 0, 9, 9), B, Y)])
+    with pytest.raises(search.MissingEmbeddings, match="embed_scenes") as e:
+        search.search(conn, {"osnet": np.array([A]), "scene": np.array([X])})
+    assert "photofinder index" in str(e.value)
+    assert [r.relpath for r in search.search(conn, {"osnet": np.array([A]), "text": np.array([Y])})] == [
+        "1.jpg", "2.jpg"]
+
+
+@pytest.mark.parametrize("weights", [search.WEIGHTS, {"osnet": 1.0, "siglip": 0.0, "text": 2.0, "scene": 3.0}])
+def test_photo_text_and_scene_terms_renormalize(tmp_path, weights):
+    o, s, sc = [0.6, 0.8, 0.3, 0.1], [0.2, 0.9, 0.4], [0.7, 0.1, 0.7]
+    _, conn, _ = make_index(tmp_path, [(1, (0, 0, 50, 100), o, s)])
+    add_scenes(conn, [(1, sc)])
+    qo, qt, qs = [2.0, 1.0, 0.0, 0.5], [0.1, 1.0, 0.3], [1.0, 0.2, 0.0]
+    [r] = search.search(conn, {"osnet": np.array([qo]), "text": np.array([qt]), "scene": np.array([qs])},
+                        weights=weights)
+    parts = [(weights["osnet"], cos(o, qo)), (weights["text"], cos(s, qt)), (weights["scene"], cos(sc, qs))]
+    assert r.score == pytest.approx(sum(w * c for w, c in parts) / sum(w for w, _ in parts), abs=2e-3)
+
+
+def test_cli_without_any_query_exits_with_one_line(tmp_path, monkeypatch, capsys):
+    c, _, _ = search_index(tmp_path)
+    fakes = Fakes(monkeypatch)
+    msg, _ = run(capsys, c, "--out", tmp_path / "s.jpg")
+    assert "--photo" in msg and "--text" in msg and "--scene" in msg and "\n" not in msg
+    assert fakes.detected == fakes.embedded == fakes.encoded == []
+    assert not (tmp_path / "s.jpg").exists()
+
+
+def test_cli_text_only_loads_no_person_models(tmp_path, monkeypatch, capsys):
+    c, _, _ = search_index(tmp_path)
+    fakes = Fakes(monkeypatch, texts={"orange vest": Y})
+    out = tmp_path / "s.jpg"
+    cli.main(["search", str(c), "--text", "orange vest", "--out", str(out)])
+    ranked = [ln.split() for ln in capsys.readouterr().out.splitlines() if ln.lstrip()[:1].isdigit()]
+    assert [r[2] for r in ranked] == ["2.jpg", "3.jpg", "1.jpg"]
+    assert fakes.encoded == [["orange vest"]]
+    assert fakes.detected == fakes.embedded == []
+    with Image.open(out) as img:
+        img.verify()
+
+
+def test_cli_scene_only_ranks_by_scene(tmp_path, monkeypatch, capsys):
+    c, _, _ = scene_index(tmp_path)
+    fakes = Fakes(monkeypatch, texts={"雪山": X})
+    cli.main(["search", str(c), "--scene", "雪山", "--out", str(tmp_path / "s.jpg")])
+    ranked = [ln.split() for ln in capsys.readouterr().out.splitlines() if ln.lstrip()[:1].isdigit()]
+    assert [r[2] for r in ranked] == ["3.jpg", "1.jpg", "4.jpg", "2.jpg"]
+    assert fakes.encoded == [["雪山"]]
+    assert fakes.detected == fakes.embedded == []
+
+
+def test_cli_scene_without_scene_embeddings_exits_before_models(tmp_path, monkeypatch, capsys):
+    c, _, _ = search_index(tmp_path)
+    fakes = Fakes(monkeypatch, texts={"mountain": X})
+    msg, _ = run(capsys, c, "--photo", query_photo(tmp_path), "--scene", "mountain")
+    assert "embed_scenes" in msg
+    assert fakes.detected == fakes.embedded == fakes.encoded == []
+
+
+def test_cli_photo_with_text_and_scene_encodes_both_texts(tmp_path, monkeypatch, capsys):
+    c, _, _ = scene_index(tmp_path)
+    fakes = Fakes(monkeypatch, osnet=A, siglip=X, texts={"red": Y, "arch": Z})
+    cli.main(["search", str(c), "--photo", str(query_photo(tmp_path)), "--text", "red", "--scene", "arch",
+              "--out", str(tmp_path / "s.jpg")])
+    assert fakes.encoded == [["red", "arch"]]
+    assert len(fakes.embedded) == 1
+    ranked = [ln.split() for ln in capsys.readouterr().out.splitlines() if ln.lstrip()[:1].isdigit()]
+    assert ranked[0][2] == "1.jpg"

@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from photofinder import cli, db, models
-from photofinder.index.stages import detect, embed_persons, scan
+from photofinder.index.stages import detect, embed_persons, embed_scenes, scan
 from photofinder.memory import AdaptiveBatcher
 
 BOXES = {
@@ -196,6 +196,7 @@ def test_index_rerun_with_everything_done_loads_no_model(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
     monkeypatch.setattr(models, "detect_persons", FakeDetector())
     monkeypatch.setattr(models, "embed_crops", FakeEmbedder())
+    monkeypatch.setattr(models, "embed_images", FakeSceneEmbedder())
     cli.main(["index", str(c)])
     monkeypatch.undo()
 
@@ -209,5 +210,99 @@ def test_index_rerun_with_everything_done_loads_no_model(tmp_path, monkeypatch, 
         cli.main(["index", str(c)])
     messages = [r.getMessage() for r in caplog.records]
     assert "detect: 0 pending" in messages and "embed_persons: 0 pending" in messages
+    assert "embed_scenes: 0 pending" in messages
     conn = sqlite3.connect(c / "index.sqlite")
     assert conn.execute("select count(*) from emb_person_osnet").fetchone() == (3,)
+    assert conn.execute("select count(*) from emb_scene_siglip").fetchone() == (3,)
+
+
+class FakeSceneEmbedder:
+    def __init__(self, fail_on_call=None):
+        self.calls = []
+        self.fail_on_call = fail_on_call
+
+    def __call__(self, images):
+        self.calls.append([img.size for img in images])
+        if len(self.calls) == self.fail_on_call:
+            raise RuntimeError("interrupted")
+        return np.array([[img.width, img.height] + [1.0] * 766 for img in images], dtype=np.float32)
+
+
+def scene_vectors(conn):
+    return {relpath: np.frombuffer(v, dtype=np.float16).astype(np.float32) for relpath, v in conn.execute(
+        "select ph.relpath, e.v from emb_scene_siglip e join photos ph on ph.id = e.photo_id")}
+
+
+def test_embed_scenes_stores_whole_image_vectors_and_skips_done(tmp_path):
+    c, conn = make_collection(tmp_path)
+    fake = FakeSceneEmbedder()
+    counts = embed_scenes(conn, c, embedder=fake, batcher=fixed_batcher(2))
+    assert counts == {"pending": 3, "photos": 3, "errors": 0}
+    assert fake.calls == [[(300, 200), (301, 200)], [(302, 200)]]
+    vecs = scene_vectors(conn)
+    assert set(vecs) == {"1.jpg", "2.jpg", "3.jpg"}
+    for relpath, v in vecs.items():
+        assert v.shape == (768,)
+        assert np.linalg.norm(v) == pytest.approx(1, abs=1e-3)
+    assert vecs["2.jpg"][0] / vecs["2.jpg"][2] == pytest.approx(301, rel=1e-2)
+    assert conn.execute("select count(*) from photos where scene_done_at is null").fetchone() == (0,)
+
+    idle = FakeSceneEmbedder()
+    assert embed_scenes(conn, c, embedder=idle)["pending"] == 0
+    assert idle.calls == []
+
+    jpeg(c / "4.jpg", (303, 200))
+    scan(conn, c)
+    again = FakeSceneEmbedder()
+    assert embed_scenes(conn, c, embedder=again)["photos"] == 1
+    assert again.calls == [[(303, 200)]]
+
+
+def test_embed_scenes_uses_exif_upright_image(tmp_path):
+    c = tmp_path / "coll"
+    c.mkdir()
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    Image.new("RGB", (300, 200), "green").save(c / "r.jpg", "JPEG", exif=exif)
+    conn = db.connect(c)
+    scan(conn, c)
+    fake = FakeSceneEmbedder()
+    embed_scenes(conn, c, embedder=fake)
+    assert fake.calls == [[(200, 300)]]
+
+
+def test_embed_scenes_resumes_after_crash_without_duplicates(tmp_path):
+    c, conn = make_collection(tmp_path)
+    with pytest.raises(RuntimeError):
+        embed_scenes(conn, c, embedder=FakeSceneEmbedder(fail_on_call=2), batcher=fixed_batcher(1))
+    assert set(scene_vectors(conn)) == {"1.jpg"}
+    again = FakeSceneEmbedder()
+    embed_scenes(conn, c, embedder=again, batcher=fixed_batcher(8))
+    assert again.calls == [[(301, 200), (302, 200)]]
+    assert conn.execute("select count(*) from emb_scene_siglip").fetchone() == (3,)
+
+
+def test_embed_scenes_failure_mid_transaction_rolls_back_batch(tmp_path):
+    c, conn = make_collection(tmp_path)
+    conn.execute("""create trigger boom before update of scene_done_at on photos when new.id = 2
+                    begin select raise(abort, 'boom'); end""")
+    with pytest.raises(sqlite3.IntegrityError):
+        embed_scenes(conn, c, embedder=FakeSceneEmbedder(), batcher=fixed_batcher(8))
+    assert conn.execute("select count(*) from emb_scene_siglip").fetchone() == (0,)
+    assert conn.execute("select count(*) from photos where scene_done_at is not null").fetchone() == (0,)
+    conn.execute("drop trigger boom")
+    assert embed_scenes(conn, c, embedder=FakeSceneEmbedder())["photos"] == 3
+    assert conn.execute("select count(*) from emb_scene_siglip").fetchone() == (3,)
+
+
+def test_embed_scenes_unreadable_photo_marks_error(tmp_path):
+    c, conn = make_collection(tmp_path)
+    (c / "1.jpg").write_bytes(b"gone bad")
+    fake = FakeSceneEmbedder()
+    counts = embed_scenes(conn, c, embedder=fake, batcher=fixed_batcher(8))
+    assert counts == {"pending": 3, "photos": 2, "errors": 1}
+    assert fake.calls == [[(301, 200), (302, 200)]]
+    status, error, done = conn.execute("select status, error, scene_done_at from photos where relpath = '1.jpg'").fetchone()
+    assert status == "error" and error and done is None
+    assert set(scene_vectors(conn)) == {"2.jpg", "3.jpg"}
+    assert embed_scenes(conn, c, embedder=FakeSceneEmbedder())["pending"] == 0

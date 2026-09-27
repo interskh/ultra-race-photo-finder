@@ -4,6 +4,8 @@ from pathlib import Path
 
 DATA_ROOT = Path("/Volumes/Ext1TB/Projects/photo-finder/data")
 MODELS_DIR = DATA_ROOT / "models"
+SIGLIP_REPO = "models--timm--ViT-B-16-SigLIP2"
+SIGLIP_FILES = ("open_clip_model.safetensors", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
 
 
 def require_mounted(root: Path = DATA_ROOT):
@@ -23,6 +25,13 @@ def setup_model_env(models_dir: Path = MODELS_DIR):
     for key, path in env.items():
         path.mkdir(parents=True, exist_ok=True)
         os.environ[key] = str(path)
+    if hf_cached(env["HF_HUB_CACHE"]):
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
+
+def hf_cached(hub: Path) -> bool:
+    return any(all((snap / f).is_file() for f in SIGLIP_FILES)
+               for snap in (hub / SIGLIP_REPO / "snapshots").glob("*"))
 
 
 def device() -> str:
