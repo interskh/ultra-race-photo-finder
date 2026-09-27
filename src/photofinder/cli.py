@@ -58,9 +58,10 @@ def query_box(args, img) -> tuple:
         print(f"box {i}: {fmt_box(box)} conf={box[4]:.2f}")
     if not boxes:
         sys.exit(f"no person detected in {args.photo}; rerun with --whole to search with the whole image")
-    if not 0 <= args.box < len(boxes):
-        sys.exit(f"--box {args.box} out of range; valid boxes are 0..{len(boxes) - 1}")
-    return boxes[args.box][:4]
+    box = args.box or 0
+    if not 0 <= box < len(boxes):
+        sys.exit(f"--box {box} out of range; valid boxes are 0..{len(boxes) - 1}")
+    return boxes[box][:4]
 
 
 def parse_time(flag: str, value: str | None, minute_end=False) -> str | None:
@@ -79,6 +80,8 @@ def parse_time(flag: str, value: str | None, minute_end=False) -> str | None:
 def cmd_search(args):
     if not (args.photo or args.text or args.scene):
         sys.exit("give at least one of --photo, --text, --scene")
+    if not args.photo and (args.box is not None or args.whole):
+        sys.exit(f"{'--whole' if args.whole else '--box'} needs --photo")
     if args.bib is not None and not args.bib.strip():
         sys.exit("--bib needs a number, e.g. --bib 8038")
     filters = search.Filters(parse_time("--from", args.start), parse_time("--to", args.end, minute_end=True),
@@ -99,12 +102,13 @@ def cmd_search(args):
     with closing(db.connect(args.collection)) as conn:
         try:
             persons = search.load_persons(conn)
+            warnings = [search.check_filters(conn, filters)]
             if args.scene:
                 search.load_scenes(conn, persons)
-            warning = search.check_filters(conn, filters)
+                warnings.append(search.check_scenes(conn))
         except search.MissingEmbeddings as e:
             sys.exit(str(e))
-        if warning:
+        for warning in filter(None, warnings):
             print(warning)
         refs, exclude = {}, []
         if img is not None:
@@ -158,6 +162,7 @@ def cmd_eval(args):
         sys.exit("--refs must be at least 1")
     bibs = [b.strip() for b in args.bib or () if b.strip()]
     with closing(db.connect(args.collection)) as conn:
+        conn.execute("begin")
         try:
             persons = search.load_persons(conn)
             warning = search.check_filters(conn, search.Filters(bib="eval"))
@@ -201,7 +206,7 @@ def main(argv=None):
     p.add_argument("--text", help='person description, e.g. "orange vest black shorts"')
     p.add_argument("--scene", help='scene description, e.g. "mountain" or "雪山"')
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--box", type=int, default=0,
+    g.add_argument("--box", type=int,
                    help="detected person to search for; boxes are numbered by area, largest first (default 0)")
     g.add_argument("--whole", action="store_true", help="skip detection and use the whole image as the query")
     p.add_argument("--from", dest="start", help="earliest camera-local time, 'YYYY-MM-DD HH:MM[:SS]'")

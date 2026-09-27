@@ -131,6 +131,16 @@ def load_scenes(db: sqlite3.Connection, persons: Persons) -> Persons:
     return persons
 
 
+def check_scenes(db: sqlite3.Connection) -> str | None:
+    total, missing = db.execute("""select count(*), count(*) - count(e.photo_id) from photos ph
+                                   left join emb_scene_siglip e on e.photo_id = ph.id
+                                   where ph.status = 'ok'""").fetchone()
+    if missing:
+        return (f"embed_scenes incomplete: {missing} of {total} photos have no scene vector yet; "
+                "rerun `photofinder index`")
+    return None
+
+
 def person_refs(persons: Persons, person_ids) -> dict[str, np.ndarray]:
     rows = np.flatnonzero(np.isin(persons.ids, person_ids))
     return {k: v[rows] for k, v in persons.vecs.items()}
@@ -147,8 +157,15 @@ def max_cos(vecs: np.ndarray, refs) -> np.ndarray:
 def term_scores(persons: Persons, key: str, refs) -> np.ndarray:
     if key == "scene":
         vecs, rows = persons.scene
-        return max_cos(vecs, refs)[rows]
+        out = max_cos(vecs, refs)[rows]
+        out[rows == len(vecs) - 1] = -1.0
+        return out
     return max_cos(persons.vecs[SOURCES.get(key, key)], refs)
+
+
+def zscore(s: np.ndarray) -> np.ndarray:
+    std = s.std()
+    return (s - s.mean()) / std if std > 0 else np.zeros_like(s)
 
 
 def score(persons: Persons, refs: dict, weights=WEIGHTS) -> np.ndarray:
@@ -156,6 +173,8 @@ def score(persons: Persons, refs: dict, weights=WEIGHTS) -> np.ndarray:
              if r is not None and len(r) and weights.get(k)]
     if not terms:
         raise ValueError("no query terms to score")
+    if len(terms) > 1:
+        terms = [(w, zscore(s)) for w, s in terms]
     return sum(w * s for w, s in terms) / sum(w for w, _ in terms)
 
 

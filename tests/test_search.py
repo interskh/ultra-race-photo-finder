@@ -34,17 +34,44 @@ def cos(a, b):
     return a @ b / np.linalg.norm(a) / np.linalg.norm(b)
 
 
+def z(values):
+    v = np.asarray(values, float)
+    return (v - v.mean()) / v.std()
+
+
+def fused(parts):
+    return sum(w * z(c) for w, c in parts) / sum(w for w, _ in parts)
+
+
 def test_nearest_person_ranks_its_photo_first(tmp_path):
+    o, s = [A, [0.1, 1, 0, 0], [0.5, 0.5, 0, 0]], [X, [0.1, 1, 0], [0.5, 0.5, 0]]
     _, conn, _ = make_index(tmp_path, [
-        (1, (0, 0, 50, 100), A, X),
-        (2, (10, 10, 60, 110), [0.1, 1, 0, 0], [0.1, 1, 0]),
-        (3, (0, 0, 40, 90), [0.5, 0.5, 0, 0], [0.5, 0.5, 0]),
+        (1, (0, 0, 50, 100), o[0], s[0]),
+        (2, (10, 10, 60, 110), o[1], s[1]),
+        (3, (0, 0, 40, 90), o[2], s[2]),
     ])
     results = search.search(conn, {"osnet": np.array([B]), "siglip": np.array([Y])})
     assert [r.relpath for r in results] == ["2.jpg", "3.jpg", "1.jpg"]
     assert [r.rank for r in results] == [1, 2, 3]
     assert results[0].box == (10, 10, 60, 110)
-    assert results[0].score == pytest.approx(cos([0.1, 1, 0, 0], B) / 2 + cos([0.1, 1, 0], Y) / 2, abs=2e-3)
+    want = fused([(search.WEIGHTS["osnet"], [cos(v, B) for v in o]), (search.WEIGHTS["siglip"], [cos(v, Y) for v in s])])
+    assert [r.score for r in results] == pytest.approx(want[[1, 2, 0]], abs=5e-3)
+
+
+def test_combined_terms_are_zscored_so_small_cosine_terms_still_move_the_ranking(tmp_path):
+    _, conn, _ = make_index(tmp_path, [
+        (1, (0, 0, 50, 100), [1, 0.10, 0, 0], X),
+        (2, (0, 0, 50, 100), [1, 0.3, 0, 0], X),
+        (3, (0, 0, 50, 100), [1, 0.6, 0, 0], X),
+    ])
+    add_scenes(conn, [(1, [0.02, 1, 0]), (2, [0.06, 1, 0]), (3, [0.0, 1, 0])])
+    refs = {"osnet": np.array([A]), "scene": np.array([X])}
+    assert [r.relpath for r in search.search(conn, {"osnet": np.array([A])})] == ["1.jpg", "2.jpg", "3.jpg"]
+    results = search.search(conn, refs, weights={"osnet": 1.0, "scene": 0.5})
+    assert [r.relpath for r in results] == ["2.jpg", "1.jpg", "3.jpg"]
+    o = [cos(v, A) for v in ([1, 0.1, 0, 0], [1, 0.3, 0, 0], [1, 0.6, 0, 0])]
+    sc = [cos(v, X) for v in ([0.02, 1, 0], [0.06, 1, 0], [0, 1, 0])]
+    assert [r.score for r in results] == pytest.approx(fused([(1.0, o), (0.5, sc)])[[1, 0, 2]], abs=5e-3)
 
 
 def test_photo_with_two_persons_appears_once_with_best_box(tmp_path):
@@ -82,10 +109,10 @@ def test_score_takes_max_over_refs(tmp_path):
     ])
     persons = search.load_persons(conn)
     refs = search.person_refs(persons, [ids[1][0], ids[2][0]])
-    scores = dict(zip(persons.ids, search.score(persons, refs)))
+    scores = dict(zip(persons.ids, search.score(persons, {"siglip": refs["siglip"]})))
     assert scores[ids[1][0]] == pytest.approx(1, abs=2e-3)
     assert scores[ids[2][0]] == pytest.approx(1, abs=2e-3)
-    assert scores[ids[3][0]] == pytest.approx(cos([0.2, 0.2, 1, 0], C) / 2 + cos([0.2, 0.2, 1], Z) / 2, abs=2e-3)
+    assert scores[ids[3][0]] == pytest.approx(cos([0.2, 0.2, 1], Z), abs=2e-3)
 
 
 def test_exclude_drops_photo(tmp_path):
@@ -311,9 +338,9 @@ def scene_index(tmp_path):
 def test_scene_only_ranks_persons_by_their_photo_scene(tmp_path):
     _, conn, ids = scene_index(tmp_path)
     results = search.search(conn, {"scene": np.array([X])})
-    assert [r.relpath for r in results] == ["3.jpg", "1.jpg", "4.jpg", "2.jpg"]
+    assert [r.relpath for r in results] == ["3.jpg", "1.jpg", "2.jpg", "4.jpg"]
     assert [round(r.score, 3) for r in results] == pytest.approx(
-        [cos([1, 0.1, 0], X), cos([0.5, 1, 0], X), 0, cos([-0.3, 1, 0], X)], abs=2e-3)
+        [cos([1, 0.1, 0], X), cos([0.5, 1, 0], X), cos([-0.3, 1, 0], X), -1], abs=2e-3)
     persons = search.load_scenes(conn, search.load_persons(conn))
     scores = dict(zip(persons.ids, search.score(persons, {"scene": np.array([X])})))
     assert scores[ids[1][0]] == scores[ids[1][1]]
@@ -342,14 +369,18 @@ def test_scene_query_without_scene_embeddings_names_stage(tmp_path):
 
 @pytest.mark.parametrize("weights", [search.WEIGHTS, {"osnet": 1.0, "siglip": 0.0, "text": 2.0, "scene": 3.0}])
 def test_photo_text_and_scene_terms_renormalize(tmp_path, weights):
-    o, s, sc = [0.6, 0.8, 0.3, 0.1], [0.2, 0.9, 0.4], [0.7, 0.1, 0.7]
-    _, conn, _ = make_index(tmp_path, [(1, (0, 0, 50, 100), o, s)])
-    add_scenes(conn, [(1, sc)])
+    o = [[0.6, 0.8, 0.3, 0.1], [0.1, 0.2, 0.9, 0.3], [0.5, 0.1, 0.1, 0.8]]
+    s = [[0.2, 0.9, 0.4], [0.9, 0.1, 0.2], [0.3, 0.3, 0.8]]
+    sc = [[0.7, 0.1, 0.7], [0.1, 0.9, 0.2], [0.8, 0.5, 0.1]]
+    _, conn, ids = make_index(tmp_path, [(i + 1, (0, 0, 50, 100), o[i], s[i]) for i in range(3)])
+    add_scenes(conn, [(i + 1, sc[i]) for i in range(3)])
     qo, qt, qs = [2.0, 1.0, 0.0, 0.5], [0.1, 1.0, 0.3], [1.0, 0.2, 0.0]
-    [r] = search.search(conn, {"osnet": np.array([qo]), "text": np.array([qt]), "scene": np.array([qs])},
-                        weights=weights)
-    parts = [(weights["osnet"], cos(o, qo)), (weights["text"], cos(s, qt)), (weights["scene"], cos(sc, qs))]
-    assert r.score == pytest.approx(sum(w * c for w, c in parts) / sum(w for w, _ in parts), abs=2e-3)
+    results = search.search(conn, {"osnet": np.array([qo]), "text": np.array([qt]), "scene": np.array([qs])},
+                            weights=weights)
+    want = fused([(weights["osnet"], [cos(v, qo) for v in o]), (weights["text"], [cos(v, qt) for v in s]),
+                  (weights["scene"], [cos(v, qs) for v in sc])])
+    assert {r.person_id: r.score for r in results} == pytest.approx(
+        {ids[i + 1][0]: want[i] for i in range(3)}, abs=5e-3)
 
 
 def test_cli_without_any_query_exits_with_one_line(tmp_path, monkeypatch, capsys):
@@ -378,8 +409,10 @@ def test_cli_scene_only_ranks_by_scene(tmp_path, monkeypatch, capsys):
     c, _, _ = scene_index(tmp_path)
     fakes = Fakes(monkeypatch, texts={"雪山": X})
     cli.main(["search", str(c), "--scene", "雪山", "--out", str(tmp_path / "s.jpg")])
-    ranked = [ln.split() for ln in capsys.readouterr().out.splitlines() if ln.lstrip()[:1].isdigit()]
-    assert [r[2] for r in ranked] == ["3.jpg", "1.jpg", "4.jpg", "2.jpg"]
+    lines = capsys.readouterr().out.splitlines()
+    assert "embed_scenes incomplete: 1 of 5 photos have no scene vector yet; rerun `photofinder index`" in lines
+    ranked = [ln.split() for ln in lines if ln.lstrip()[:1].isdigit()]
+    assert [r[2] for r in ranked] == ["3.jpg", "1.jpg", "2.jpg", "4.jpg"]
     assert fakes.encoded == [["雪山"]]
     assert fakes.detected == fakes.embedded == []
 
@@ -752,3 +785,48 @@ def test_cli_eval_without_embeddings_names_stage(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as e:
         cli.main(["eval", str(c), "--bib", "2001"])
     assert "embed_persons" in str(e.value.code)
+
+
+def test_cli_eval_reads_persons_and_ground_truth_from_one_snapshot(tmp_path, monkeypatch, capsys):
+    c, _, ids, _ = eval_index(tmp_path)
+    no_models(monkeypatch, tmp_path)
+    real = search.load_persons
+
+    def load_then_concurrent_write(conn):
+        persons = real(conn)
+        other = db.connect(c)
+        other.executemany("insert into bibs(person_id, text, conf) values (?, '4242', 1.0)",
+                          [(ids[4][0],), (ids[5][0],)])
+        other.commit()
+        other.close()
+        return persons
+    monkeypatch.setattr(search, "load_persons", load_then_concurrent_write)
+    cli.main(["eval", str(c), "--bib", "4242"])
+    assert "bib 4242: 0 photo(s)" in capsys.readouterr().out
+
+
+def test_check_scenes_counts_ok_photos_without_scene_vector(tmp_path):
+    _, conn, _ = scene_index(tmp_path)
+    assert search.check_scenes(conn) == ("embed_scenes incomplete: 1 of 5 photos have no scene vector yet; "
+                                         "rerun `photofinder index`")
+    add_scenes(conn, [(4, Y)])
+    assert search.check_scenes(conn) is None
+
+
+def test_missing_scene_vector_ranks_last_in_combined_query(tmp_path):
+    _, conn, _ = scene_index(tmp_path)
+    results = search.search(conn, {"osnet": np.array([A]), "scene": np.array([X])},
+                            weights={"osnet": 1.0, "scene": 1.0})
+    assert results[-1].relpath == "2.jpg" and results[0].relpath == "1.jpg"
+    assert [r.relpath for r in results].index("4.jpg") < 3
+    only_scene = search.search(conn, {"scene": np.array([[-0.3, 1, 0]])})
+    assert only_scene[-1].relpath == "4.jpg"
+
+
+@pytest.mark.parametrize("flag", [("--box", "1"), ("--whole",)])
+def test_cli_box_or_whole_without_photo_exits(tmp_path, monkeypatch, capsys, flag):
+    c, _, _ = search_index(tmp_path)
+    fakes = Fakes(monkeypatch, texts={"red": Y})
+    msg, _ = run(capsys, c, "--text", "red", *flag)
+    assert flag[0] in msg and "--photo" in msg and "\n" not in msg
+    assert fakes.encoded == []

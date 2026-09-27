@@ -385,3 +385,108 @@ Mean over 36 bibs (R@10/R@50/xR@50; 427 refs, 416 xrefs): osnet .214/.282/.090, 
 - Tests: +1 (`test_strict_hit_needs_the_matched_person_to_carry_the_bib`). The eval fixture's photo 2 gained a non-bib person that out-scores the bib person under osnet. `uv run pytest -q`: 142 passed.
 - Mutations (whole battery rerun): 11/11 caught. The 3 new strict mutants were: strict = photo-level, strict persons = refs only, sR@50 computed from the photo-level ranking. The sheet mutant is now "every GT photo marked strict". Files were restored from saved copies and sha256-verified.
 - Touches: `evaluate.py` (`Truth.persons`, `Row.s10/s50`, `evaluate_ref` returns 5 values, sheet marks), `cli.print_rows` (2 new columns), `tests/test_search.py`.
+
+## S2 orchestrator — real runs and visual verdicts
+
+**race925 index** (5,745 photos, album 9.25 赛事, device mps). Run from committed code or a byte-identical snapshot of it:
+- scan 3.4 s; detect 412.2 s (26,783 persons, 0 errors); embed_persons 671.0 s. Total 1,086.7 s, max_rss 1.97 GB, pressure samples 109 warn / 0 critical.
+- embed_scenes 192.5 s (5,745 photos, 0 errors), max_rss 2.11 GB.
+- ocr_bibs 1,156.0 s (26,783 persons, 5,101 bib tokens, 0 errors), peak footprint 852 MB. The S2-T2 fix round changed neither `stages.py` nor `models.py`, so the run matches the committed OCR code (diff-checked).
+- Bib 8038 exists in race925: 12 photos, 4 photographers. The user's suggested bib was evaluated directly.
+
+**Scene queries** (acceptance #4):
+- race925 is a night race (19:59–00:00) and contains no real mountain photos. "mountain" and "雪山" put 16/16 start-stage photos with the giant snow-mountain LED backdrop on top, which is the only mountain imagery in the set. The bottom of the ranking is dark village streets and trails. That is correct, but it is not a real test.
+- For a real test I built `data/subsets/scenemix/`: 800 symlinks, 400 random 9.26 赛事 photos and 400 random 9.25 赛事 photos, plus a manifest snapshot. Its index has 4,047 persons, built in 206.5 s.
+- Whole-photo scene cosine (scratch script) gave:
+  - "mountain": top 16 are 16/16 real Gongga sunrise mountain photos.
+  - "雪山": 16/16.
+  - "finish arch": the top 6 are the finish arch, and mountain photos rank at the very bottom (797–800 of 800).
+- CLI `search scenemix --scene 雪山 --top 12` (per-person ranking, whole-photo tiles) ranked:
+  - #1–4: runners in front of snow peaks;
+  - #5–7: stage/arch backdrops with mountain graphics;
+  - #8–12: runners crossing a boulder river in a mountain valley.
+- Verdict: pass. Mountain photos rank above finish-arch and night-stage photos. Landscape photos with no detected person are not returned by design (S2-T1 decision).
+
+**Eval contact sheets (orchestrator visual check, default 0.3/0.7):**
+- 8038 (`race925-eval-8038-20260928-040841.jpg`): the query is a man with glasses, a headlamp and a blue vest over a dark top. I found 0/30 same-runner results. #1 and #5 share a blue tie-dye pattern but are a different person. Most results show different readable bibs. Identity retrieval failed for this reference.
+- 8039 (`…-040842.jpg`): #1 and #2 are the true runner from the same start-line burst. #3 (5180772, bib hidden) is plausibly the same runner: sage shirt, dark vest, headband, blue shorts. The rest are different people.
+- 8010 (`…-040843.jpg`): #18 is the true runner, glasses and headband, bib read. #7 and #9 were counted as hits only because the 8010 runner is somewhere in the crowd. This led to the strict person-level metric (S2-T3 correction).
+- Honest summary: fused mean over 36 bibs is photo R@50 0.354 and strict sR@50 0.341. Cross-photographer R@50 is only 0.153. Most successes are same-photographer bursts or start-line sequences. Recognising the same runner across photographers through clothing alone is weak, because the race has look-alike kit (many runners in black vests with headlamps at night). Clothing search is a candidate generator, not an identifier. Filters (time, photographer, bib) and labels (slice 3) have to carry the rest.
+
+## S2-gate fix round 1 — search/eval (A, B, D, E)
+
+**Decisions**
+- A: `search.score` z-scores each term's per-person scores, `(s - mean) / std` over all loaded persons, before the weighted mean. It does this only when ≥2 terms are combined. A single-term query keeps raw cosine, so its printed score stays interpretable. A constant term (std 0) contributes 0. Multi-term printed scores are therefore weighted z-values (e.g. 3.1), not cosines.
+- A: the z statistics use all persons, not just the filter mask. A filter then does not change a person's score, and the numbers stay comparable across filtered and unfiltered runs.
+- A re-tune: the 36-bib eval under z-scored fusion still peaks at osnet 0.3 / siglip 0.7. The table is below; I picked by strict sR@50 with photo R@50 as tie-break. `WEIGHTS` is unchanged: osnet .3, siglip .7, text .5, scene .5.
+- A, text/scene weight: kept at 0.5. With the photo terms summing to 1, 0.5 gives text/scene one third of the total weight after normalization. Demo on race925 stored vectors (no model load): for each of the 36 bibs' first ref, I added a pseudo-query and measured the top 24:
+  - Pseudo-query was a random photo's scene vector, or a random person's siglip crop vector for `text`.
+
+    | w | scene: overlap with photo-only | scene: share in term's top 20% | text: overlap | text: share in top 20% |
+    |---|---|---|---|---|
+    | 0 | 1.00 | .21 | 1.00 | .28 |
+    | 0.1 | .85 | .27 | .89 | .28 |
+    | 0.25 | .65 | .53 | .73 | .36 |
+    | 0.5 | .46 | .74 | .49 | .51 |
+    | 1.0 | .14 | .97 | .19 | .73 |
+
+  - At 0.5 a combined query replaces about half of the photo-only results, and most results match the scene, so identity still leads. At 1.0 the scene dominates.
+  - Caveat: the pseudo-queries are image vectors. A real text query has a different, noisier cosine distribution, and z-scoring removes only the scale gap, not the noise. The real `--photo … --scene 雪山` visual proof is left to the orchestrator (needs SigLIP).
+- B: persons in photos with no scene vector get scene cosine −1 (the minimum possible), so they rank last on the scene term. It was previously 0, which was mid-pack. `search.check_scenes(db)` returns "embed_scenes incomplete: N of M photos have no scene vector yet; rerun `photofinder index`" (M = `status='ok'` photos). The CLI prints it after the OCR warning for any `--scene` query.
+- D: `cmd_eval` runs `begin` right after `db.connect`, which has already committed its schema script. `load_persons`, the OCR check, every `ground_truth`, the sheets and `frequent_bibs` then read one deferred WAL snapshot. The connection is closed without committing; nothing is written.
+- E: `--box` no longer defaults to 0; `query_box` uses `args.box or 0`. `--box N` or `--whole` without `--photo` exits with one line ("--box needs --photo" / "--whole needs --photo") before any model or index work.
+
+**Rejected**
+- Rank-based (percentile) normalization: it throws away how far ahead the top matches are, which is the signal that matters for top-k.
+- Min-max scaling: one outlier person decides the scale.
+- Normalizing single-term queries: printed scores would lose their cosine meaning, for no ranking change.
+- Raising text/scene weights above 1 without normalization: the cosine ranges differ per query and per term (S2-T1 measured text↔image .01–.11 against image↔image .83–.88), so a fixed multiplier only fits the query it was tuned on.
+- Excluding missing-scene persons outright: other terms may still rank them, and they already rank last on scene. The warning tells the user.
+
+**Deferred**
+- Correction to the S2-T3 Deferred line "Tuning text/scene weights (no labelled scene/text ground truth)". The scale problem is now fixed by z-scoring, and 0.5 is supported by the movement demo above. What remains deferred is a *labelled* tuning of text/scene weights, since there is still no ground truth for "right scene/outfit".
+- z-scoring with a large share of −1 missing-scene rows (a very partial index) widens the scene std and slightly damps the scene term for present photos. It is acceptable while `embed_scenes` is incomplete, and the warning says so.
+
+**Eval under z-scored fusion** (race925; R@10 / R@50 / xR@50 / sR@10 / sR@50; single-term rows unchanged by construction)
+- Mean over 36 bibs (427 refs, 416 xrefs): osnet .214/.282/.090/.209/.268; siglip .200/.302/.102/.194/.285; **0.3:0.7 .253/.356/.155/.248/.342**; 0.5:0.5 .243/.339/.143/.237/.326; 0.7:0.3 .232/.313/.118/.227/.299.
+- Fine sweep sR@50: 0.1:0.9 .327, 0.2:0.8 .341, **0.3:0.7 .342**, 0.4:0.6 .335, 0.5:0.5 .326.
+- Bib 8038 (12 refs): osnet .144/.212/.081/.144/.212; siglip .091/.136/.019/.091/.136; 0.3:0.7 .167/.220/.067/.167/.220; 0.5:0.5 .174/.227/.081/.174/.227; 0.7:0.3 .152/.220/.081/.152/.220.
+- Sheets: `data/exports/race925-eval-8038-20260928-045655.jpg`, `…-eval-8039-20260928-045656.jpg`, `…-eval-8010-20260928-045657.jpg`.
+
+**Tests / mutations**
+- `uv run pytest -q`: 154 passed. This includes the concurrent OCR doer's uncommitted changes, which I did not touch.
+- New tests: combined terms z-scored (the scene term reorders a close osnet ranking where raw fusion would not); `check_scenes` count/None; missing scene ranks last (scene-only and combined); CLI partial-scene warning line; eval snapshot (a concurrent bib insert after `load_persons` is invisible); `--box`/`--whole` without `--photo`.
+- Rewritten for z-scored fusion: the nearest-person, max-over-refs (now single-term) and renormalize (now 3 persons) tests.
+- Mutations: 9/9 caught. They were: no z-score, z-score on a single term, z without std division, missing scene stays 0, warning never built, warning not printed, no read transaction, box/whole check removed, `--whole` ignored in the check. The dedicated z-score test alone also kills "no z-score". Restored from saved copies and sha256-verified.
+
+**Touches**
+- `src/photofinder/search.py` (`zscore`, `score`, `term_scores` scene sentinel, `check_scenes`) and `src/photofinder/cli.py` (search warnings, box/whole check, `--box` default None, eval `begin`).
+- `tests/test_search.py`, plus this handoff.
+- Did not touch `models.py`, `stages.py` or `test_ocr_bibs.py`.
+
+### S2-T2 gate fix — Vision failure no longer reads as "no bib" (Codex MAJOR)
+**Decisions**
+- `models.read_text` now calls Vision via pyobjc directly instead of through ocrmac. It uses the same settings as the installed `ocrmac.text_from_image`: VNRecognizeTextRequest, level Accurate=0, languages ["en-US"], PNG bytes → VNImageRequestHandler.initWithData_options_, all inside `objc.autorelease_pool()`. It raises RuntimeError when `performRequests_error_` returns not-ok or a non-None error, and handles both the tuple and the bool return shapes. ocrmac returned [] in that case.
+- `ocr_bibs`: if read_bibs/reader raises for one person, that person is not stamped. `ocr_at` stays NULL, so the next `index` run retries it. The stage increments a new `counts["ocr_errors"]` and logs one warning line: "ocr failed for person N in <relpath>, left pending: ...". The photo stays `ok` and the rest of the batch still commits. Only `except Exception` is caught, so KeyboardInterrupt still aborts and rolls back the batch.
+- Equivalence evidence: I ran 70 real race925 crops (40 persons with a stored bib, 30 random at ≥200 px, with the stage's scaling applied).
+  - New `read_text` matched ocrmac on 70/70 for raw (text, conf) and on 70/70 for tokens.
+  - The tokens also matched the bibs stored by the full race925 run on 70/70. The race925 OCR data therefore stays valid.
+
+**Rejected**
+- Wrapping ocrmac: its `text_from_image` discards ok/err, so a failure cannot be distinguished from "no text".
+- Marking the photo `error` on an OCR failure: the image decoded fine, and error photos drop out of search.
+
+**Deferred**
+- `ocrmac` stays in pyproject only as the provider of pyobjc-framework-Vision. Switching to a direct `pyobjc-framework-vision` dependency needs a pyproject/uv.lock edit.
+- A persistent Vision failure leaves those persons pending on every run, logged once per person. It does not loop within a run.
+
+**Touches**
+- `src/photofinder/models.py`: `read_text`, plus `import io`.
+- `src/photofinder/index/stages.py`: `ocr_bibs` per-person try/except, the `ocr_errors` count, and the log line.
+- `tests/test_ocr_bibs.py`:
+  - FakeReader gained an `error=` param, with KeyboardInterrupt as the crash default.
+  - New test `test_ocr_failure_leaves_person_pending_and_photo_ok`.
+  - `FakeVision` plus 5 read_text raise/success cases.
+  - `ocr_errors` added to the counts asserts.
+- The `ocr_bibs` counts dict gained the `ocr_errors` key.
+- Mutations: 6/6 caught. They were: failure swallowed, err ignored when ok, failed person stamped, failed person marks the photo as error, ocr error not counted, and failure propagates. Files were restored and sha256-verified.
