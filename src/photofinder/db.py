@@ -17,17 +17,54 @@ create table if not exists emb_person_siglip(person_id integer primary key refer
 create table if not exists emb_scene_siglip(photo_id integer primary key references photos(id), v blob not null);
 create table if not exists bibs(person_id integer not null references persons(id), text text not null, conf real);
 create index if not exists bibs_person on bibs(person_id);
-create table if not exists labels(
-  person_id integer primary key references persons(id),
-  label text not null check (label in ('me', 'not_me')), created_at text not null);
 """
+LABELS = """create table if not exists {}(
+  profile_id integer not null references profiles(id), person_id integer not null references persons(id),
+  label text not null check (label in ('me', 'not_me')), created_at text not null,
+  primary key(profile_id, person_id))"""
+PROFILES = "create table if not exists profiles(id integer primary key, name text unique not null, created_at text not null)"
+SCHEMA += PROFILES + ";\n" + LABELS.format("labels") + ";\n"
+NOW = "strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')"
+DEFAULT_PROFILE = "Me"
+MIGRATE = [
+    PROFILES,
+    f"insert into profiles(name, created_at) values ('{DEFAULT_PROFILE}', {NOW})",
+    LABELS.format("labels_new"),
+    "insert into labels_new(profile_id, person_id, label, created_at) "
+    f"select (select id from profiles where name = '{DEFAULT_PROFILE}'), person_id, label, created_at from labels",
+    "drop table labels",
+    "alter table labels_new rename to labels",
+]
 
 INDEX_NAME = "index.sqlite"
+
+
+def old_labels(db) -> bool:
+    cols = [r[1] for r in db.execute("pragma table_info(labels)")]
+    return bool(cols) and "profile_id" not in cols
+
+
+def migrate(db):
+    if not old_labels(db):
+        return
+    db.execute("begin immediate")
+    try:
+        if old_labels(db):
+            for sql in MIGRATE:
+                db.execute(sql)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
 
 
 def connect(collection: Path) -> sqlite3.Connection:
     db = sqlite3.connect(collection / INDEX_NAME, timeout=30)
     db.execute("pragma journal_mode=wal")
     db.execute("pragma foreign_keys=on")
+    migrate(db)
     db.executescript(SCHEMA)
+    if not db.execute("select 1 from profiles limit 1").fetchone():
+        db.execute(f"insert or ignore into profiles(name, created_at) values ('{DEFAULT_PROFILE}', {NOW})")
+        db.commit()
     return db

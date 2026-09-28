@@ -220,6 +220,15 @@ def score(persons: Persons, refs: dict, weights=WEIGHTS, negatives=None) -> np.n
     return out
 
 
+def matched_via(persons: Persons, rows, refs: dict, ref_ids) -> list:
+    n = len(refs["osnet"]) if "osnet" in refs else 0
+    if n < 2 or not len(rows):
+        return [None] * len(rows)
+    sim = sum(WEIGHTS[k] * np.nan_to_num(models.l2norm(persons.vecs[k][rows]) @ models.l2norm(refs[k]).T)
+              for k in ("osnet", "siglip"))
+    return [int(ref_ids[j]) if j < len(ref_ids) else None for j in sim.argmax(axis=1)]
+
+
 def best_per_photo(photo_ids: np.ndarray, scores: np.ndarray, top: int, exclude=()) -> list[int]:
     picked, seen = [], set(exclude)
     for i in np.argsort(-scores, kind="stable"):

@@ -295,7 +295,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <script>
 const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
-  labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search'};
+  labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null};
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -457,8 +457,8 @@ function summary() {
 }
 
 async function search(append) {
-  const q = S.query.start_bib ? {...S.query, offset: append ? S.results.length : 0}
-    : {...S.query, offset: 0, seen: append ? S.results.map(r => r.photo_id) : []};
+  const q = S.query.start_bib ? {...S.query, profile_id: S.profile, offset: append ? S.results.length : 0}
+    : {...S.query, profile_id: S.profile, offset: 0, seen: append ? S.results.map(r => r.photo_id) : []};
   const seq = ++S.seq;
   S.appending = append;
   setBusy(q.text || q.scene ? 'Searching… the first description or scene search loads the text model (about 15 s).' : 'Searching…');
@@ -529,7 +529,7 @@ async function setLabel(pid, want, photoId) {
   S.pending.add(pid);
   const prev = S.labels[pid] ?? null;
   try {
-    const r = await post('/api/labels', {person_id: pid, label: prev === want ? null : want});
+    const r = await post('/api/labels', {profile_id: S.profile, person_id: pid, label: prev === want ? null : want});
     S.labels[pid] = r.label;
     paint(pid);
     if (S.facets) {
@@ -657,7 +657,7 @@ async function loadMe() {
   $('#summary').innerHTML = '';
   $('#summary').append(h('div', {class: 'title'}, 'My photos'), h('div', {class: 'sub'}, 'Loading…'));
   try {
-    const r = await api('/api/me');
+    const r = await api(`/api/me?profile_id=${S.profile}`);
     if (S.view !== 'me') return;
     setMine(r.photos);
     renderCounts();
@@ -680,7 +680,7 @@ async function loadMe() {
 
 async function exportList() {
   try {
-    const r = await post('/api/export', {});
+    const r = await post('/api/export', {profile_id: S.profile});
     banner(`Exported ${fmt(r.count)} photos to ${r.path} — one line per photo with its source photo id (for buying originals), photo id and file path. Replaces any earlier export from today.`, 'info');
   } catch (e) { banner(e.message); }
 }
@@ -703,7 +703,7 @@ async function openModal(list, i) {
   if (first) $('#m-close').focus();
   let d = S.details.get(r.photo_id);
   try {
-    if (!d) { d = await api(`/api/photos/${r.photo_id}`); S.details.set(r.photo_id, d); }
+    if (!d) { d = await api(`/api/photos/${r.photo_id}?profile_id=${S.profile}`); S.details.set(r.photo_id, d); }
   } catch (e) { banner(e.message); return; }
   if (!S.modal || S.modal.list !== list || S.modal.i !== i) return;
   for (const p of d.persons) if (!(p.person_id in S.labels)) S.labels[p.person_id] = p.label;
@@ -877,7 +877,8 @@ async function init() {
   welcome();
   try {
     let me;
-    [S.facets, me] = await Promise.all([api('/api/facets'), api('/api/me')]);
+    S.profile = (await api('/api/profiles')).profiles[0].id;
+    [S.facets, me] = await Promise.all([api(`/api/facets?profile_id=${S.profile}`), api(`/api/me?profile_id=${S.profile}`)]);
     setMine(me.photos);
   } catch (e) {
     $('#coll').textContent = 'Collection unavailable';

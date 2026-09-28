@@ -1,7 +1,9 @@
 import asyncio
 import csv
 import io
+import re
 import secrets
+import sqlite3
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -25,11 +27,13 @@ MAX_TOP = 500
 CROP_HEIGHT = 256
 CROP_PAD = 0.1
 CACHE = {"Cache-Control": "private, max-age=86400"}
+NAME_MAX = 40
 FIRST = "order by ph.taken_at is null, ph.taken_at, ph.id"
 Id = Annotated[int, Field(ge=0, le=2 ** 63 - 1)]
 
 
 class SearchQuery(BaseModel):
+    profile_id: Id
     persons: list[Id] = []
     upload: str | None = None
     box: int | Literal["whole"] = 0
@@ -48,8 +52,17 @@ class SearchQuery(BaseModel):
 
 
 class LabelBody(BaseModel):
+    profile_id: Id
     person_id: Id
     label: Literal["me", "not_me"] | None = None
+
+
+class ProfileBody(BaseModel):
+    name: str
+
+
+class ExportBody(BaseModel):
+    profile_id: Id
 
 
 def bad(msg: str, code: int = 400) -> HTTPException:
@@ -100,19 +113,50 @@ def bibs_of(conn, person_ids) -> dict:
     return out
 
 
-def labels_of(conn, person_ids) -> dict:
-    return dict(conn.execute(f"select person_id, label from labels where person_id in ({marks(person_ids)})",
-                             person_ids))
+def labels_of(conn, person_ids, profile_id) -> dict:
+    return dict(conn.execute(f"select person_id, label from labels where profile_id = ? "
+                             f"and person_id in ({marks(person_ids)})", [profile_id, *person_ids]))
 
 
-def hydrate(conn, picked, offset) -> list[dict]:
+def profile_name(conn, profile_id) -> str:
+    row = conn.execute("select name from profiles where id = ?", (profile_id,)).fetchone()
+    if row is None:
+        raise bad(f"profile {profile_id} not found", 404)
+    return row[0]
+
+
+def clean_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise bad("name must not be empty")
+    if len(name) > NAME_MAX:
+        raise bad(f"name is longer than {NAME_MAX} characters")
+    return name
+
+
+def safe_name(name: str) -> str:
+    return re.sub(r"[^\w-]+", "_", name).strip("_") or "profile"
+
+
+def profiles_of(conn, profile_id=None) -> list[dict]:
+    rows = conn.execute("select pr.id, pr.name, count(case when l.label = 'me' then 1 end), "
+                        "count(case when l.label = 'not_me' then 1 end), "
+                        "count(distinct case when l.label = 'me' then p.photo_id end) from profiles pr "
+                        "left join labels l on l.profile_id = pr.id left join persons p on p.id = l.person_id "
+                        "where ? is null or pr.id = ? group by pr.id order by pr.id", (profile_id, profile_id))
+    return [dict(zip(("id", "name", "me", "not_me", "me_photos"), r)) for r in rows]
+
+
+def hydrate(conn, picked, offset, profile_id, via=None) -> list[dict]:
     ids = [p for p, _ in picked]
+    via = via or [None] * len(ids)
     rows = {r[0]: r[1:] for r in conn.execute(f"select id, photo_id, x1, y1, x2, y2 from persons "
                                               f"where id in ({marks(ids)})", ids)}
     photos = photo_meta(conn, {rows[p][0] for p in ids})
-    bibs, labels = bibs_of(conn, ids), labels_of(conn, ids)
+    bibs, labels = bibs_of(conn, ids), labels_of(conn, ids, profile_id)
     return [{"rank": offset + i, "score": s, "person_id": p, "box": list(rows[p][1:]), **photos[rows[p][0]],
-             "bibs": bibs.get(p, []), "label": labels.get(p)} for i, (p, s) in enumerate(picked, 1)]
+             "bibs": bibs.get(p, []), "label": labels.get(p), "matched_via": v}
+            for i, ((p, s), v) in enumerate(zip(picked, via), 1)]
 
 
 def create_app(collection: Path) -> FastAPI:
@@ -149,8 +193,10 @@ def create_app(collection: Path) -> FastAPI:
         return FileResponse(STATIC / "index.html")
 
     @app.get("/api/facets")
-    def facets():
+    def facets(profile_id: Id | None = None):
         with connect() as conn:
+            if profile_id is not None:
+                profile_name(conn, profile_id)
             count, first, last = conn.execute("select count(*), min(taken_at), max(taken_at) from photos "
                                               "where status = 'ok'").fetchone()
             photographers = [{"name": n, "uid": u, "photos": c} for n, u, c in conn.execute(
@@ -160,16 +206,56 @@ def create_app(collection: Path) -> FastAPI:
             albums = [{"name": a, "photos": c} for a, c in conn.execute(
                 "select album, count(*) from photos where status = 'ok' and album is not null "
                 "group by album order by count(*) desc, album")]
-            labels = dict(conn.execute("select label, count(*) from labels group by label"))
+            labels = dict(conn.execute("select label, count(*) from labels where profile_id = ? group by label",
+                                       (profile_id,)))
             warnings = [scene_error or search.check_scenes(conn)]
             try:
                 warnings.append(search.check_filters(conn, search.Filters(bib="facets")))
             except search.MissingEmbeddings as e:
                 warnings.append(str(e))
-        return {"collection": collection.name, "photos": count, "persons": len(persons.ids),
-                "taken_at": {"min": first, "max": last}, "photographers": photographers, "albums": albums,
-                "labels": {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)},
-                "scenes": scene_error is None, "warnings": [w for w in warnings if w]}
+        out = {"collection": collection.name, "photos": count, "persons": len(persons.ids),
+               "taken_at": {"min": first, "max": last}, "photographers": photographers, "albums": albums,
+               "scenes": scene_error is None, "warnings": [w for w in warnings if w]}
+        if profile_id is not None:
+            out["labels"] = {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)}
+        return out
+
+    @app.get("/api/profiles")
+    def list_profiles():
+        with connect() as conn:
+            return {"profiles": profiles_of(conn)}
+
+    @app.post("/api/profiles")
+    def create_profile(body: ProfileBody):
+        name = clean_name(body.name)
+        with connect() as conn, conn:
+            try:
+                pid = conn.execute("insert into profiles(name, created_at) values (?, ?)", (name, now())).lastrowid
+            except sqlite3.IntegrityError:
+                raise bad(f"a profile named {name!r} already exists")
+            return profiles_of(conn, pid)[0]
+
+    @app.patch("/api/profiles/{profile_id}")
+    def rename_profile(profile_id: Id, body: ProfileBody):
+        name = clean_name(body.name)
+        with connect() as conn, conn:
+            profile_name(conn, profile_id)
+            try:
+                conn.execute("update profiles set name = ? where id = ?", (name, profile_id))
+            except sqlite3.IntegrityError:
+                raise bad(f"a profile named {name!r} already exists")
+            return profiles_of(conn, profile_id)[0]
+
+    @app.delete("/api/profiles/{profile_id}")
+    def delete_profile(profile_id: Id):
+        with connect() as conn, conn:
+            conn.execute("begin immediate")
+            profile_name(conn, profile_id)
+            if conn.execute("select count(*) from profiles").fetchone()[0] == 1:
+                raise bad("cannot delete the last profile; create another one first")
+            n = conn.execute("delete from labels where profile_id = ?", (profile_id,)).rowcount
+            conn.execute("delete from profiles where id = ?", (profile_id,))
+        return {"id": profile_id, "labels_removed": n}
 
     def detect_and_embed(img):
         boxes = sorted(models.detect_persons([img])[0], key=area, reverse=True)
@@ -205,8 +291,10 @@ def create_app(collection: Path) -> FastAPI:
 
     def prepare(q: SearchQuery):
         with connect() as conn:
+            profile_name(conn, q.profile_id)
             labels = conn.execute("select l.person_id, l.label, p.photo_id from labels l "
-                                  "join persons p on p.id = l.person_id").fetchall()
+                                  "join persons p on p.id = l.person_id where l.profile_id = ?",
+                                  (q.profile_id,)).fetchall()
         embedded = lambda ids: [p for p, ok in zip(ids, np.isin(ids, persons.ids)) if ok]
         me = [p for p, label, _ in labels if label == "me"]
         not_me = [p for p, label, _ in labels if label == "not_me"]
@@ -224,6 +312,7 @@ def create_app(collection: Path) -> FastAPI:
             raise bad(f"person {unknown[0]} is not an indexed person with embeddings")
         ids = list(q.persons) + (me_emb if q.mode == "more" else [])
         refs = search.person_refs(persons, ids) if ids else {}
+        ref_ids = persons.ids[np.isin(persons.ids, ids)] if ids else []
         if q.upload:
             up = get_upload(q.upload)
             row = len(up["boxes"]) if q.box == "whole" else q.box
@@ -236,9 +325,9 @@ def create_app(collection: Path) -> FastAPI:
         negatives = search.person_refs(persons, not_me_emb)["osnet"] if not_me_emb else None
         exclude = {photo for _, label, photo in labels if label == "me"} if q.mode == "more" else set()
         drop = not_me if q.mode == "more" else []
-        return refs, negatives, exclude | set(q.seen), drop, note
+        return refs, ref_ids, negatives, exclude | set(q.seen), drop, note
 
-    def ranked(q, filters, top, offset, refs, negatives, exclude, drop, note):
+    def ranked(q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note):
         with connect() as conn:
             warnings = [note, search.check_filters(conn, filters)]
             if "scene" in refs:
@@ -253,8 +342,9 @@ def create_app(collection: Path) -> FastAPI:
             picked = [int(rows[i]) for i in
                       search.best_per_photo(persons.photo_ids[rows], scores[rows], offset + top, exclude)][offset:]
             timing = time.monotonic() - t0
+            via = search.matched_via(persons, picked, refs, ref_ids)
             results = hydrate(conn, [(int(persons.ids[i]), float(scores[i])) for i in picked],
-                              offset + len(set(q.seen)))
+                              offset + len(set(q.seen)), q.profile_id, via)
         return {"results": results, "warnings": [w for w in warnings if w], "timing": round(timing, 4)}
 
     def bib_start(q, filters, top, offset):
@@ -264,6 +354,7 @@ def create_app(collection: Path) -> FastAPI:
         if q.persons or q.upload or (q.text or "").strip() or (q.scene or "").strip() or q.mode == "more":
             raise bad("start_bib cannot be combined with persons, upload, text, scene or find-more")
         with connect() as conn:
+            profile_name(conn, q.profile_id)
             warnings = [search.check_filters(conn, search.Filters(bib=bib))]
             where, args = search.filter_where(filters)
             t0 = time.monotonic()
@@ -276,7 +367,7 @@ def create_app(collection: Path) -> FastAPI:
                     seen.add(photo)
                     picked.append((pid, None))
             timing = time.monotonic() - t0
-            results = hydrate(conn, picked[offset:offset + top], offset)
+            results = hydrate(conn, picked[offset:offset + top], offset, q.profile_id)
         return {"results": results, "total": len(picked), "warnings": [w for w in warnings if w],
                 "timing": round(timing, 4)}
 
@@ -289,39 +380,44 @@ def create_app(collection: Path) -> FastAPI:
         texts = {k: v.strip() for k, v in (("text", q.text), ("scene", q.scene)) if v and v.strip()}
         if "scene" in texts and scene_error:
             raise bad(scene_error)
-        refs, negatives, exclude, drop, note = await run_in_threadpool(prepare, q)
+        refs, ref_ids, negatives, exclude, drop, note = await run_in_threadpool(prepare, q)
         if not refs and not texts:
             raise bad("give a person, an uploaded box, text, scene or start_bib to search")
         if texts:
             vecs = await on_models(models.encode_text, list(texts.values()))
             refs.update({k: v[None] for k, v in zip(texts, vecs)})
-        return await run_in_threadpool(ranked, q, filters, top, offset, refs, negatives, exclude, drop, note)
+        return await run_in_threadpool(ranked, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note)
 
     @app.post("/api/labels")
     def set_label(body: LabelBody):
         with connect() as conn, conn:
             conn.execute("begin immediate")
+            profile_name(conn, body.profile_id)
             if not conn.execute("select 1 from persons where id = ?", (body.person_id,)).fetchone():
                 raise bad(f"person {body.person_id} not found", 404)
-            previous = conn.execute("select label from labels where person_id = ?", (body.person_id,)).fetchone()
+            key = (body.profile_id, body.person_id)
+            previous = conn.execute("select label from labels where profile_id = ? and person_id = ?", key).fetchone()
             if body.label is None:
-                conn.execute("delete from labels where person_id = ?", (body.person_id,))
+                conn.execute("delete from labels where profile_id = ? and person_id = ?", key)
             else:
-                conn.execute("insert into labels(person_id, label, created_at) values (?, ?, ?) on conflict(person_id) "
+                conn.execute("insert into labels(profile_id, person_id, label, created_at) values (?, ?, ?, ?) "
+                             "on conflict(profile_id, person_id) "
                              "do update set label = excluded.label, created_at = excluded.created_at",
-                             (body.person_id, body.label, now()))
-        return {"person_id": body.person_id, "label": body.label, "previous": previous and previous[0]}
+                             (*key, body.label, now()))
+        return {"profile_id": body.profile_id, "person_id": body.person_id, "label": body.label,
+                "previous": previous and previous[0]}
 
     @app.get("/api/photos/{photo_id}")
-    def photo(photo_id: Id):
+    def photo(photo_id: Id, profile_id: Id):
         with connect() as conn:
+            profile_name(conn, profile_id)
             meta = photo_meta(conn, [photo_id]).get(photo_id)
             if meta is None:
                 raise bad(f"photo {photo_id} not found", 404)
             rows = conn.execute("select id, x1, y1, x2, y2 from persons where photo_id = ? order by id",
                                 (photo_id,)).fetchall()
             ids = [r[0] for r in rows]
-            bibs, labels = bibs_of(conn, ids), labels_of(conn, ids)
+            bibs, labels = bibs_of(conn, ids), labels_of(conn, ids, profile_id)
         return {**meta, "persons": [{"person_id": r[0], "box": list(r[1:]), "bibs": bibs.get(r[0], []),
                                      "label": labels.get(r[0])} for r in rows]}
 
@@ -367,15 +463,16 @@ def create_app(collection: Path) -> FastAPI:
             img = img.resize((max(1, round(img.width * CROP_HEIGHT / img.height)), CROP_HEIGHT))
         return Response(jpeg(img), media_type="image/jpeg", headers=CACHE)
 
-    def me_rows(conn):
+    def me_rows(conn, profile_id):
         return conn.execute("select ph.id, p.id, p.x1, p.y1, p.x2, p.y2 from labels l "
                             "join persons p on p.id = l.person_id join photos ph on ph.id = p.photo_id "
-                            f"where l.label = 'me' {FIRST}, p.id").fetchall()
+                            f"where l.profile_id = ? and l.label = 'me' {FIRST}, p.id", (profile_id,)).fetchall()
 
     @app.get("/api/me")
-    def my_photos():
+    def my_photos(profile_id: Id):
         with connect() as conn:
-            rows = me_rows(conn)
+            profile_name(conn, profile_id)
+            rows = me_rows(conn, profile_id)
             meta = photo_meta(conn, {r[0] for r in rows})
             bibs = bibs_of(conn, [r[1] for r in rows])
         photos = {}
@@ -385,13 +482,14 @@ def create_app(collection: Path) -> FastAPI:
         return {"photos": list(photos.values()), "count": len(photos)}
 
     @app.post("/api/export")
-    def export():
+    def export(body: ExportBody):
         with connect() as conn:
-            ids = list(dict.fromkeys(r[0] for r in me_rows(conn)))
+            name = profile_name(conn, body.profile_id)
+            ids = list(dict.fromkeys(r[0] for r in me_rows(conn, body.profile_id)))
             meta = photo_meta(conn, ids)
         if not ids:
             raise bad("no photos marked as me yet; nothing to export")
-        out = config.DATA_ROOT / "exports" / f"{collection.name}-{time.strftime('%Y%m%d')}.txt"
+        out = config.DATA_ROOT / "exports" / f"{collection.name}-{safe_name(name)}-{time.strftime('%Y%m%d')}.txt"
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w", newline="") as f:
             writer = csv.writer(f, delimiter="\t", lineterminator="\n")
