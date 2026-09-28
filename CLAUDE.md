@@ -7,6 +7,7 @@ Personal tool to find the user's own photos in race-photo galleries (faces often
 - `docs/ROADMAP.md` — current status, what's running, ranked next steps, known issues.
 - `docs/superpowers/specs/2026-09-27-photo-finder-search-design.md` — architecture, data model, scoring.
 - `docs/handoff/2026-09-27-photo-finder-search-design.md` — decisions, model identifiers, measured timings/recall, rejected alternatives. Grep it before re-deciding anything.
+- `docs/superpowers/specs/2026-09-28-people-and-originals-design.md` + `docs/handoff/2026-09-28-people-and-originals-design.md` — saved people (profiles, label migration), matched via, originals download; decisions and E2E results.
 
 ## Layout
 - `src/photofinder/sources/yipai.py` downloader · `index/stages.py` indexing stages · `models.py` model loaders · `search.py` scoring/filters · `evaluate.py` bib-based recall eval · `originals.py` full-size originals job (fresh signed URL by file name, CSV, zip) · `web/app.py` + `web/static/index.html` UI · `cli.py` entrypoint (`photofinder index|search|eval|serve`).
@@ -18,4 +19,4 @@ Personal tool to find the user's own photos in race-photo galleries (faces often
 - Don't hammer yipai360: keep the downloader's pacing (6 workers, page delay, breaker). The downloader fetches only free 1920px previews; originals are fetched only for marked photos by `originals.py` (≤1 lookup/s, one job per collection).
 - Never modify a collection that a running downloader/indexer is writing; experiment on `data/subsets/*`. `index` holds a per-collection lock.
 - One heavy model job at a time (16 GB unified memory); the memory guard throttles on system pressure.
-- Tests: `uv run pytest -q` (236 passing as of 2026-09-28).
+- Tests: `uv run pytest -q` (240 passing as of 2026-09-28).
