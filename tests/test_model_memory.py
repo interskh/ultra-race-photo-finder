@@ -1,5 +1,7 @@
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -132,6 +134,22 @@ def test_worker_that_died_while_idle_is_replaced():
     time.sleep(0.5)
     fresh = w.submit(os.getpid).result(timeout=60)
     assert fresh != child
+
+
+def test_worker_exits_when_the_server_is_killed():
+    code = ("import os, sys, time\n"
+            "from photofinder.web import app as web\n"
+            "w = web.ModelWorker(600)\n"
+            "print(w.submit(os.getpid).result(timeout=60), flush=True)\n"
+            "time.sleep(60)\n")
+    server = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        child = int(server.stdout.readline())
+        assert alive(child)
+    finally:
+        server.kill()
+        server.wait()
+    assert wait_until(lambda: not alive(child), timeout=10)
 
 
 def test_request_on_a_dying_worker_is_503(tmp_path, monkeypatch):
