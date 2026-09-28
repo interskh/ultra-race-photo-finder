@@ -227,12 +227,11 @@ def test_cancel_interrupts_pacing_wait_and_blocks_other_downloads(tmp_path, monk
     assert not folder(tmp_path).exists()
     assert api.patch(f"/api/profiles/{ME}", json={"name": "Bob"}).status_code == 409
     assert api.delete(f"/api/profiles/{ME}").status_code == 409
-    assert api.patch(f"/api/profiles/{ann}", json={"name": "Cy"}).status_code == 200
-    (folder(tmp_path, "Cy") / "originals").mkdir(parents=True)
+    (folder(tmp_path, "Ann") / "originals").mkdir(parents=True)
     res = api.patch(f"/api/profiles/{ann}", json={"name": "Dee"})
     assert res.status_code == 409 and "rename when it finishes" in res.json()["detail"]
-    assert folder(tmp_path, "Cy").exists() and not folder(tmp_path, "Dee").exists()
-    assert [p["name"] for p in api.get("/api/profiles").json()["profiles"]] == ["Me", "Cy"]
+    assert folder(tmp_path, "Ann").exists() and not folder(tmp_path, "Dee").exists()
+    assert [p["name"] for p in api.get("/api/profiles").json()["profiles"]] == ["Me", "Ann"]
     t0 = time.monotonic()
     assert api.post("/api/originals/cancel").json()["state"] in ("running", "cancelled")
     api.app.state.originals.thread.join(5)
@@ -347,6 +346,57 @@ def test_cancel_checks_and_sets_stop_atomically_with_job_state(tmp_path, monkeyp
     job.state["state"] = "running"
     job.cancel()
     assert held == [True]
+
+
+def test_single_download_in_progress_blocks_rename_and_start(tmp_path, monkeypatch):
+    c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [("A1.JPG", "2026-09-25 08:01:00", "cam")], mark=False)
+    g.add(1, "A1.JPG")
+    ann = api.post("/api/profiles", json={"name": "Ann"}).json()["id"]
+    label(api, ids[1][0], "me", profile=ann)
+    seen = []
+    g.on_image = lambda pid: seen.extend([
+        api.patch(f"/api/profiles/{ann}", json={"name": "Beth"}),
+        api.post("/api/originals", json={"profile_id": ann})])
+    photo = conn.execute("select id from photos").fetchone()[0]
+    assert api.post(f"/api/photos/{photo}/original", json={"profile_id": ann}).status_code == 200
+    assert [r.status_code for r in seen] == [409, 409]
+    assert "in progress" in seen[0].json()["detail"] and "in progress" in seen[1].json()["detail"]
+    assert [p["name"] for p in api.get("/api/profiles").json()["profiles"]] == ["Me", "Ann"]
+    assert files(tmp_path, "Ann") == ["20260925-080100_cam_1.jpg"]
+    assert api.get("/api/me", params={"profile_id": ann}).json()["photos"][0]["original"] == "downloaded"
+
+
+def test_start_resolves_profile_folder_after_claiming(tmp_path, monkeypatch):
+    c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [("A1.JPG", "2026-09-25 08:01:00", "cam")], mark=False)
+    g.add(1, "A1.JPG")
+    ann = api.post("/api/profiles", json={"name": "Ann"}).json()["id"]
+    label(api, ids[1][0], "me", profile=ann)
+    (folder(tmp_path, "Ann") / "originals").mkdir(parents=True)
+    rows_of, renames = originals.rows_of, []
+
+    def rename_meanwhile(*a):
+        if not renames:
+            renames.append(api.patch(f"/api/profiles/{ann}", json={"name": "Beth"}).status_code)
+        return rows_of(*a)
+    monkeypatch.setattr(originals, "rows_of", rename_meanwhile)
+    run(api, ann)
+    name = api.get("/api/profiles").json()["profiles"][1]["name"]
+    assert renames == [409] and name == "Ann"
+    assert files(tmp_path, name) == ["20260925-080100_cam_1.jpg"]
+
+
+def test_invalid_existing_file_is_removed_when_refetch_fails(tmp_path, monkeypatch):
+    c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [("A1.JPG", "2026-09-25 08:01:00", "cam")], tries=2)
+    g.add(1, "A1.JPG")
+    g.images = {1: [httpx.Response(503), httpx.Response(503)]}
+    d = folder(tmp_path) / "originals"
+    d.mkdir(parents=True)
+    (d / "20260925-080100_cam_1.jpg").write_bytes(jpeg(1)[:-2])
+    status = run(api)
+    assert status["counts"]["failed"] == 1 and files(tmp_path) == []
+    assert [r[6:] for r in read_csv(tmp_path)[1:]] == [["", "failed: HTTP 503"]]
+    assert api.get("/api/me", params={"profile_id": ME}).json()["photos"][0]["original"] == "failed: HTTP 503"
+    assert api.get("/api/originals/zip", params={"profile_id": ME}).status_code == 404
 
 
 def test_rename_after_download_rewrites_csv_paths(tmp_path, monkeypatch):

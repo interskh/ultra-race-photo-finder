@@ -10,7 +10,7 @@ import threading
 import time
 import unicodedata
 import zipfile
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import httpx
@@ -211,6 +211,7 @@ class Fetcher:
         raise Failed(error)
 
     def original(self, row: dict, dest: Path) -> str:
+        dest.unlink(missing_ok=True)
         if not row["fname"]:
             return "failed: not in the gallery manifest"
         try:
@@ -248,9 +249,17 @@ class Job:
             self.fetcher.stop.clear()
             self.state.update(state)
 
+    @contextmanager
+    def claimed(self):
+        self.claim()
+        try:
+            yield
+        finally:
+            self.busy.release()
+
     def start(self, profile_id: int, profile: str, folder: Path, rows: list[dict]):
-        self.claim(state="running", profile_id=profile_id, profile=profile, done=0, total=len(rows), current=None,
-                   counts=dict.fromkeys(COUNTS, 0), errors=[], folder=str(folder))
+        self.update(state="running", profile_id=profile_id, profile=profile, done=0, total=len(rows), current=None,
+                    counts=dict.fromkeys(COUNTS, 0), errors=[], folder=str(folder))
         self.thread = threading.Thread(target=self.run, args=(folder, rows), daemon=True, name="originals")
         self.thread.start()
 
@@ -296,12 +305,8 @@ class Job:
             self.busy.release()
 
     def single(self, row: dict, folder: Path, rows: list[dict]) -> tuple[str, Path]:
-        self.claim()
-        try:
-            dest = folder / ORIGINALS / row["file"]
-            result = DOWNLOADED if valid(dest) else self.fetcher.original(row, dest)
-            if any(r["photo_id"] == row["photo_id"] for r in rows):
-                write_csv(folder, rows, {row["photo_id"]: result})
-            return result, dest
-        finally:
-            self.busy.release()
+        dest = folder / ORIGINALS / row["file"]
+        result = DOWNLOADED if valid(dest) else self.fetcher.original(row, dest)
+        if any(r["photo_id"] == row["photo_id"] for r in rows):
+            write_csv(folder, rows, {row["photo_id"]: result})
+        return result, dest

@@ -259,21 +259,22 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> Fa
                 raise bad(f"a profile named {name!r} already exists")
             check_folder(conn, name, profile_id)
             new = originals.profile_folder(collection, name)
-            if old != new and old.exists():
-                if old.name.casefold() != new.name.casefold() and new.exists():
-                    raise bad(f"folder {new} already exists; move or delete it first")
+            if old != new:
                 try:
                     job.claim()
                 except originals.Busy:
-                    raise bad("an originals download is running; rename when it finishes", 409)
+                    raise bad("a download is in progress; rename when it finishes", 409)
                 try:
-                    old.rename(new)
-                    if (new / originals.CSV_NAME).is_file():
-                        try:
-                            originals.write_csv(new, marked(conn, profile_id))
-                        except Exception:
-                            new.rename(old)
-                            raise
+                    if old.exists():
+                        if old.name.casefold() != new.name.casefold() and new.exists():
+                            raise bad(f"folder {new} already exists; move or delete it first")
+                        old.rename(new)
+                        if (new / originals.CSV_NAME).is_file():
+                            try:
+                                originals.write_csv(new, marked(conn, profile_id))
+                            except Exception:
+                                new.rename(old)
+                                raise
                 finally:
                     job.busy.release()
             return profiles_of(conn, profile_id)[0]
@@ -530,6 +531,11 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> Fa
             raise bad("no photos marked as me yet; nothing to export")
         return {"path": str(originals.write_csv(originals.profile_folder(collection, name), rows)), "count": len(rows)}
 
+    def busy():
+        if job.status()["state"] == "running":
+            return bad("an originals download is already running", 409)
+        return bad("a download is in progress; try again in a moment", 409)
+
     def need_yipai():
         if not yipai:
             raise bad("originals are only available for yipai360 collections (no manifest.sqlite)")
@@ -537,15 +543,20 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> Fa
     @app.post("/api/originals")
     def start_originals(body: ExportBody):
         need_yipai()
-        with connect() as conn:
-            name = profile_name(conn, body.profile_id)
-            rows = marked(conn, body.profile_id)
-        if not rows:
-            raise bad("no photos marked as me yet; nothing to download")
         try:
-            job.start(body.profile_id, name, originals.profile_folder(collection, name), rows)
+            job.claim()
         except originals.Busy:
-            raise bad("an originals download is already running", 409)
+            raise busy()
+        try:
+            with connect() as conn:
+                name = profile_name(conn, body.profile_id)
+                rows = marked(conn, body.profile_id)
+            if not rows:
+                raise bad("no photos marked as me yet; nothing to download")
+            job.start(body.profile_id, name, originals.profile_folder(collection, name), rows)
+        except BaseException:
+            job.busy.release()
+            raise
         return job.status()
 
     @app.get("/api/originals")
@@ -572,17 +583,18 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> Fa
     @app.post("/api/photos/{photo_id}/original")
     def photo_original(photo_id: Id, body: ExportBody):
         need_yipai()
-        with connect() as conn:
-            name = profile_name(conn, body.profile_id)
-            meta = photo_meta(conn, [photo_id]).get(photo_id)
-            if meta is None:
-                raise bad(f"photo {photo_id} not found", 404)
-            rows = marked(conn, body.profile_id)
-        row = originals.rows_of(collection, [meta])[0]
         try:
-            result, dest = job.single(row, originals.profile_folder(collection, name), rows)
+            with job.claimed():
+                with connect() as conn:
+                    name = profile_name(conn, body.profile_id)
+                    meta = photo_meta(conn, [photo_id]).get(photo_id)
+                    if meta is None:
+                        raise bad(f"photo {photo_id} not found", 404)
+                    rows = marked(conn, body.profile_id)
+                row = originals.rows_of(collection, [meta])[0]
+                result, dest = job.single(row, originals.profile_folder(collection, name), rows)
         except originals.Busy:
-            raise bad("an originals download is running; try again when it finishes", 409)
+            raise busy()
         except originals.Cancelled:
             raise bad("download was cancelled; try again", 409)
         except Blocked as e:
