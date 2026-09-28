@@ -39,6 +39,10 @@ class Blocked(Exception):
     pass
 
 
+class RetriesExhausted(Blocked):
+    pass
+
+
 class AlreadyRunning(Exception):
     pass
 
@@ -88,7 +92,7 @@ def request_json(client: httpx.Client, method: str, url: str, *, tries=5, sleep=
             log.warning("api %s error %r (attempt %d)", url, e, attempt + 1)
         if attempt < tries - 1:
             sleep(wait)
-    raise Blocked(f"api {url} failed after {tries} attempts")
+    raise RetriesExhausted(f"api {url} failed after {tries} attempts")
 
 
 class Downloader:

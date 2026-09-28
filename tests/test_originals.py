@@ -124,7 +124,7 @@ def test_duplicate_names_resolved_by_photo_id_across_pages_with_paced_lookups(tm
     assert status["folder"] == str(folder(tmp_path)) and status["profile"] == "Me"
     assert [(f, p) for _, f, p in g.lookups] == [("未标题-1", 1), ("IMG_1", 1), ("IMG_1", 2)]
     times = [when for when, _, _ in g.lookups]
-    assert all(b - a >= 1.0 for a, b in zip(times, times[1:]))
+    assert all(b - a >= originals.LOOKUP_GAP for a, b in zip(times, times[1:]))
     assert files(tmp_path) == ["20260925-090000_unknown_2.jpg", "20260925-100000_阿光_A_B_1.jpg"]
     d = folder(tmp_path) / "originals"
     assert (d / "20260925-100000_阿光_A_B_1.jpg").read_bytes() == jpeg(1)
@@ -249,6 +249,39 @@ def test_api_failure_stops_job_with_error(tmp_path, monkeypatch):
     assert "yipai360 API unavailable" in status["errors"][-1]
     assert len(g.lookups) == 1 and g.fetched == []
     assert [r[7] for r in read_csv(tmp_path)[1:]] == ["", ""]
+
+
+def test_lookups_stay_under_the_sites_rate_limit():
+    assert 60 / originals.LOOKUP_GAP <= 10
+
+
+def test_rate_limited_lookups_wait_it_out_and_finish(tmp_path, monkeypatch):
+    c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [
+        (f"A{i}.JPG", f"2026-09-25 08:0{i}:00", "cam") for i in range(1, 4)])
+    for i in range(1, 4):
+        g.add(i, f"A{i}.JPG")
+    block = {}
+
+    def rate_limit(req):
+        if len(g.lookups) == 2:
+            block["until"] = t.now + 100
+        if block and t.now < block["until"]:
+            return httpx.Response(500)
+    g.api = rate_limit
+    status = run(api)
+    assert status["state"] == "done" and status["counts"]["downloaded"] == 3
+    assert originals.RATE_LIMIT_WAITS[0] in t.slept
+    assert sorted(g.fetched_ids()) == [1, 2, 3]
+
+
+def test_persistent_rate_limit_gives_up_after_the_long_waits(tmp_path, monkeypatch):
+    c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [("A1.JPG", "2026-09-25 08:01:00", "cam")])
+    g.add(1, "A1.JPG")
+    g.api = lambda req: httpx.Response(500)
+    status = run(api)
+    assert status["state"] == "error" and "yipai360 API unavailable" in status["errors"][-1]
+    assert all(w in t.slept for w in originals.RATE_LIMIT_WAITS)
+    assert g.fetched == []
 
 
 def test_lookup_stops_paging_after_the_page_cap(tmp_path, monkeypatch):

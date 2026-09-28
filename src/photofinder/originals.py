@@ -19,7 +19,8 @@ from photofinder import config
 from photofinder.index.stages import MANIFEST_NAME
 from photofinder.sources import yipai
 
-LOOKUP_GAP = 1.0
+LOOKUP_GAP = 6.0
+RATE_LIMIT_WAITS = (60, 120, 240)
 LOOKUP_PAGE_SIZE = 100
 MAX_LOOKUP_PAGES = 10
 NAME_PART_MAX = 40
@@ -152,6 +153,7 @@ class Fetcher:
         self.img_delay = img_delay
         self.tries = tries
         self.last_lookup = None
+        self.note = lambda message: None
 
     def pause(self, seconds: float):
         if seconds > 0:
@@ -167,12 +169,20 @@ class Fetcher:
                 raise Failed(f"gallery search for {fname} has more than {MAX_LOOKUP_PAGES} pages")
             if self.last_lookup is not None:
                 self.pause(self.last_lookup + LOOKUP_GAP - self.clock())
-            try:
-                data = yipai.request_json(self.client, "GET", url, tries=self.tries, sleep=self.pause, params={
-                    "tagId": "", "pwd": "", "sortType": "desc", "page": page, "pageSize": LOOKUP_PAGE_SIZE,
-                    "fileName": Path(fname).stem})
-            finally:
-                self.last_lookup = self.clock()
+            params = {"tagId": "", "pwd": "", "sortType": "desc", "page": page, "pageSize": LOOKUP_PAGE_SIZE,
+                      "fileName": Path(fname).stem}
+            for wait in (*RATE_LIMIT_WAITS, None):
+                try:
+                    data = yipai.request_json(self.client, "GET", url, tries=self.tries, sleep=self.pause,
+                                              params=params)
+                    break
+                except yipai.RetriesExhausted:
+                    if wait is None:
+                        raise
+                    self.note(f"yipai360 is rate-limiting lookups; waiting {wait}s before {fname}")
+                    self.pause(wait)
+                finally:
+                    self.last_lookup = self.clock()
             for p in data.get("photos") or []:
                 if p["photoId"] == photo_id:
                     return p["img"]
@@ -228,6 +238,7 @@ class Fetcher:
 class Job:
     def __init__(self, fetcher: Fetcher):
         self.fetcher = fetcher
+        fetcher.note = lambda message: self.update(current=message)
         self.busy = threading.Lock()
         self.lock = threading.Lock()
         self.thread = None
