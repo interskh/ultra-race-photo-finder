@@ -703,3 +703,8 @@ Slice 3 SLICE_BASE=1c9b6a8
 
 **Touches**
 - `src/photofinder/web/app.py` (SearchQuery.seen, Id, prepare/ranked signatures, labels response `previous`, export writer), `src/photofinder/search.py` (`score` negatives), `src/photofinder/web/static/index.html`, `tests/test_web.py`. API change: `/api/labels` response adds `previous`; `/api/search` accepts `seen`.
+
+### S3-gate fix round 2
+- Decision: if no negative cosine is finite (e.g. the only not_me has a NaN OSNet vector), the negative term is dropped, so scores equal the no-negative scores; before, `rank_invalid_last` filled every row with −1 and the subtraction added a uniform +0.6 (ranking unchanged, printed scores wrong). Rejected: a uniform fill of 0, which would still depend on the norm.
+- Evidence: `test_all_invalid_negatives_leave_scores_unchanged` fails on 9b3b666 ([1.6, 0.6] vs [1.0, 0.0]); `uv run pytest -q` 202 passed; mutant `if ok.any()` → `if True` caught, restored, sha256 verified.
+- Touches: `src/photofinder/search.py` (`score`), `tests/test_search.py`.

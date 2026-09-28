@@ -211,10 +211,12 @@ def score(persons: Persons, refs: dict, weights=WEIGHTS, negatives=None) -> np.n
     out = sum(w * norm(s) for w, s in terms) / total
     if negatives is not None and len(negatives):
         raw = max_cos(persons.vecs["osnet"], negatives)
-        ok, neg = np.isfinite(raw), norm(raw)
-        if ok.any() and not ok.all():
-            neg[~ok] = neg[ok].max()
-        out = out - NEG_WEIGHT / total * neg
+        ok = np.isfinite(raw)
+        if ok.any():
+            neg = norm(raw)
+            if not ok.all():
+                neg[~ok] = neg[ok].max()
+            out = out - NEG_WEIGHT / total * neg
     return out
 
 

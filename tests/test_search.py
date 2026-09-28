@@ -886,3 +886,12 @@ def test_cli_box_or_whole_without_photo_exits(tmp_path, monkeypatch, capsys, fla
     msg, _ = run(capsys, c, "--text", "red", *flag)
     assert flag[0] in msg and "--photo" in msg and "\n" not in msg
     assert fakes.encoded == []
+
+
+def test_all_invalid_negatives_leave_scores_unchanged(tmp_path):
+    _, conn, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X), (2, (0, 0, 9, 9), B, Y)])
+    persons = search.load_persons(conn)
+    refs = {"text": np.array([X])}
+    base = search.score(persons, refs)
+    got = search.score(persons, refs, negatives=np.array([[float("nan")] * 4]))
+    assert got.tolist() == base.tolist()
