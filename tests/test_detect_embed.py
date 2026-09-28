@@ -198,7 +198,7 @@ def test_index_rerun_with_everything_done_loads_no_model(tmp_path, monkeypatch, 
     monkeypatch.setattr(models, "embed_crops", FakeEmbedder())
     monkeypatch.setattr(models, "embed_images", FakeSceneEmbedder())
     monkeypatch.setattr(models, "read_text", lambda img: [])
-    cli.main(["index", str(c)])
+    cli.main(["index", str(c), "--ocr"])
     monkeypatch.undo()
 
     def forbidden(*args):
@@ -208,7 +208,7 @@ def test_index_rerun_with_everything_done_loads_no_model(tmp_path, monkeypatch, 
     for name in ("yolo", "osnet", "siglip", "read_text"):
         monkeypatch.setattr(models, name, forbidden)
     with caplog.at_level(logging.INFO):
-        cli.main(["index", str(c)])
+        cli.main(["index", str(c), "--ocr"])
     messages = [r.getMessage() for r in caplog.records]
     assert "detect: 0 pending" in messages and "embed_persons: 0 pending" in messages
     assert "embed_scenes: 0 pending" in messages and "ocr_bibs: 0 pending" in messages
@@ -307,3 +307,22 @@ def test_embed_scenes_unreadable_photo_marks_error(tmp_path):
     assert status == "error" and error and done is None
     assert set(scene_vectors(conn)) == {"2.jpg", "3.jpg"}
     assert embed_scenes(conn, c, embedder=FakeSceneEmbedder())["pending"] == 0
+
+
+def test_index_skips_bib_ocr_unless_asked(tmp_path, monkeypatch, caplog):
+    c, conn = make_collection(tmp_path)
+    conn.close()
+    monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
+    monkeypatch.setattr(models, "detect_persons", FakeDetector())
+    monkeypatch.setattr(models, "embed_crops", FakeEmbedder())
+    monkeypatch.setattr(models, "embed_images", FakeSceneEmbedder())
+
+    def forbidden(img):
+        raise AssertionError("OCR ran without --ocr")
+    monkeypatch.setattr(models, "read_text", forbidden)
+    with caplog.at_level(logging.INFO):
+        cli.main(["index", str(c)])
+    assert not any("ocr_bibs" in r.getMessage() for r in caplog.records)
+    conn = sqlite3.connect(c / "index.sqlite")
+    assert conn.execute("select count(*) from persons where embedded_at is not null").fetchone()[0] > 0
+    assert conn.execute("select count(*) from persons where ocr_at is not null").fetchone()[0] == 0

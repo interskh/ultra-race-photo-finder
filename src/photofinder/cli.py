@@ -27,7 +27,10 @@ def lock_index(collection: Path):
 def cmd_index(args):
     t0 = time.monotonic()
     with lock_index(args.collection), closing(db.connect(args.collection)) as conn:
-        for stage in (stages.scan, stages.detect, stages.embed_persons, stages.embed_scenes, stages.ocr_bibs):
+        pipeline = [stages.scan, stages.detect, stages.embed_persons, stages.embed_scenes]
+        if args.ocr:
+            pipeline.append(stages.ocr_bibs)
+        for stage in pipeline:
             t = time.monotonic()
             try:
                 counts = stage(conn, args.collection)
@@ -206,8 +209,9 @@ def cmd_serve(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="photofinder", description="Find your own photos in a race photo collection")
     sub = ap.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("index", help="scan, detect, embed and OCR bibs of a collection into <collection>/index.sqlite")
+    p = sub.add_parser("index", help="scan, detect and embed a collection into <collection>/index.sqlite")
     p.add_argument("collection", type=Path)
+    p.add_argument("--ocr", action="store_true", help="also read bib numbers with Apple Vision (slow, optional)")
     p.set_defaults(func=cmd_index)
     p = sub.add_parser("search", help="rank indexed photos by a query photo, person text and/or scene text")
     p.add_argument("collection", type=Path)

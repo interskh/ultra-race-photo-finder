@@ -19,7 +19,7 @@ Runs detached under `caffeinate`, paced, resumable. Rerun the same command a day
 uv run photofinder index data/yipai/<orderId>
 ```
 
-Stages: scan (EXIF time, photographer, album) → detect people → clothing embeddings → scene embeddings → bib OCR. Resumable and incremental; slows itself down under memory pressure. Any folder of JPEGs works as a collection.
+Stages: scan (EXIF time, photographer, album) → detect people → clothing embeddings → scene embeddings. Add `--ocr` to also read bib numbers with Apple Vision (optional and slow: ~2–3 h for 190k people). Resumable and incremental; throttles under memory pressure and stops (resumable) if its own footprint passes 6 GB. Any folder of JPEGs works as a collection.
 
 ## 3. Search in the browser
 
@@ -29,7 +29,7 @@ uv run photofinder serve data/yipai/<orderId>     # http://127.0.0.1:8000/
 
 What works best (measured in the handoff log): clothing alone is weak when many runners wear the same event jacket, so iterate:
 
-1. Start from **your bib number**, or upload a photo of you and click your box.
+1. Upload a photo of you (race day, same kit) and click your box — or start from your bib number if the index was built with `--ocr`.
 2. Mark results **Me** / **Not me**.
 3. **Find more like my marked ones** — searches with all your marked shots, which is how other photographers' photos of you surface.
 4. Narrow with time, photographer, album; add a scene or outfit description.

@@ -4,13 +4,14 @@ Last updated 2026-09-28.
 
 ## Done
 - yipai360 downloader: paced, resumable, single-instance, Retry-After aware (`src/photofinder/sources/yipai.py`, `scripts/download_yipai.sh`).
-- Indexer: scan → detect (yolo26s) → embed_persons (OSNet x1_0 MSMT17 + SigLIP2 B/16) → embed_scenes (SigLIP2) → ocr_bibs (Apple Vision); memory-pressure-adaptive batching; per-collection lock.
+- Indexer: scan → detect (yolo26s) → embed_persons (OSNet x1_0 MSMT17 + SigLIP2 B/16) → embed_scenes (SigLIP2) → optional `--ocr` bib reading (Apple Vision); memory-pressure-adaptive batching, 6 GB process-footprint stop; per-collection lock.
 - Search: fused clothing similarity (osnet 0.3 / siglip 0.7), person/scene text, filters (time, photographer, album, bib), me/not-me labels, CLI `search` and `eval`.
 - Web UI (`photofinder serve`): bib / upload / click-a-person start points, Me/Not me, Find more, full-photo viewer, My photos + export.
 - Measured quality (race925, 36 bibs): photo R@50 .354, cross-photographer R@50 only .153 — clothing search is a candidate generator; the bib → mark → Find more loop does the rest. Details: `docs/handoff/2026-09-27-photo-finder-search-design.md`.
 
 ## In progress (operational)
-- FUGA 贡嘎100 (`data/yipai/83415673067642538672`, 68,488 photos) downloaded 2026-09-28 07:42; full index running (log: `data/yipai/83415673067642538672/index.log`). When it finishes, serve that collection instead of `data/subsets/race925`.
+- FUGA 贡嘎100 (`data/yipai/83415673067642538672`, 68,488 photos) downloaded 2026-09-28 07:42 and fully indexed 2026-09-28 (190,980 people; scenes done). Bib OCR stopped at 60,096 of 190,980 people by choice — the user doesn't need it (platforms already offer bib search); finish with `photofinder index <collection> --ocr` if ever wanted.
+- 2026-09-28: fixed a Vision OCR leak (new VNRecognizeTextRequest per call → 22 GB footprint, 38 GB swap); OCR is now opt-in.
 - Top-up: rerun `scripts/download_yipai.sh 83415673067642538672` a day or two after the race, then `photofinder index` again (incremental).
 
 ## Next (ranked)
