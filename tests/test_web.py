@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -17,6 +18,7 @@ def no_real_models(monkeypatch):
     def boom(name, load):
         raise AssertionError(f"model loader called: {name}")
     monkeypatch.setattr(models, "_get", boom)
+    monkeypatch.setattr(web, "model_pool", lambda: ThreadPoolExecutor(1, thread_name_prefix="models"))
 
 
 class FakeModels:

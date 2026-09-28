@@ -16,25 +16,15 @@ PERSON_CLASS, MIN_CONF, MIN_HEIGHT, IMGSZ = 0, 0.35, 96, 1280
 log = logging.getLogger("models")
 _loaded = {}
 half_precision = False
-loading = None
 
 
 def _get(name, load):
-    global loading
     if name not in _loaded:
         config.setup_model_env()
         t0 = time.monotonic()
-        loading = name
-        try:
-            _loaded[name] = load()
-        finally:
-            loading = None
+        _loaded[name] = load()
         log.info("loaded %s on %s in %.1fs", name, device(), time.monotonic() - t0)
     return _loaded[name]
-
-
-def loaded() -> list[str]:
-    return [k for k in list(_loaded) if k != "device"]
 
 
 def device() -> str:

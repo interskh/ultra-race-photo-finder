@@ -373,12 +373,12 @@ function setBusy(msg) {
   const on = S.busy > 0;
   if (msg) $('#busy-text').textContent = msg;
   $('#busy').hidden = $('#progress').hidden = !on;
-  if (on) watchModels();
+  if (on) watchModels(); else $('#busy-model').hidden = true;
   $('#grid').classList.toggle('dim', on && !S.appending);
   document.querySelectorAll('[data-run]').forEach(b => b.disabled = on || (b.id === 'more' && !meCount()));
 }
 
-const MODEL_LABELS = {siglip: 'appearance & text', siglip_tokenizer: 'text', osnet: 'person re-ID', yolo: 'person detector'};
+const MODEL_LABELS = {encode_text: 'text search', detect_and_embed: 'person detection'};
 function watchModels() {
   if (S.modelPoll) return;
   const tick = async () => {
@@ -387,8 +387,8 @@ function watchModels() {
     const el = $('#busy-model');
     el.hidden = !(m && m.loading && S.busy > 0);
     if (!el.hidden) {
-      el.textContent = `Loading the ${MODEL_LABELS[m.loading] || m.loading} model (~15 s)…`;
-      el.title = `Models are unloaded after ${Math.round(m.unload_after_s / 60)} idle minutes to save memory, so the next upload or description search reloads them.`;
+      el.textContent = `Loading the ${MODEL_LABELS[m.loading] || m.loading} models (~20 s)…`;
+      el.title = `Models are unloaded after ${Math.round(m.unload_after_s / 60)} idle minutes to save memory, so the next upload or description search starts them again.`;
     }
     S.modelPoll = S.busy > 0 ? setTimeout(tick, 600) : null;
   };

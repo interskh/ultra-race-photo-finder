@@ -1,12 +1,15 @@
 import asyncio
 import io
 import logging
+import multiprocessing
+import os
 import secrets
 import sqlite3
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Literal
@@ -167,43 +170,95 @@ def hydrate(conn, picked, offset, profile_id, via=None) -> list[dict]:
             for i, ((p, s), v) in enumerate(zip(picked, via), 1)]
 
 
-class IdleUnloader:
-    def __init__(self, worker, idle: float, clock=time.monotonic):
-        self.worker, self.idle, self.clock = worker, idle, clock
+def detect_and_embed(img):
+    boxes = sorted(models.detect_persons([img])[0], key=area, reverse=True)
+    osnet, siglip = models.embed_crops([models.crop(img, b[:4]) for b in boxes] + [img])
+    return boxes, osnet, siglip
+
+
+def watch_parent(parent: int):
+    while os.getppid() == parent:
+        time.sleep(2)
+    os._exit(0)
+
+
+def init_model_process(parent: int, half: bool):
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    models.half_precision = half
+    threading.Thread(target=watch_parent, args=(parent,), daemon=True).start()
+
+
+def model_pool():
+    return ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"), initializer=init_model_process,
+                               initargs=(os.getpid(), models.half_precision))
+
+
+class ModelWorker:
+    def __init__(self, idle: float, factory=None, clock=time.monotonic):
+        self.idle, self.factory, self.clock = idle, factory or model_pool, clock
         self.lock = threading.Lock()
-        self.active, self.last, self.timer = 0, clock(), None
+        self.pool, self.ready, self.running, self.last, self.timer = None, set(), [], clock(), None
 
-    def begin(self):
+    def submit(self, fn, *args) -> Future:
         with self.lock:
-            self.active += 1
+            if self.pool is not None:
+                try:
+                    fut = self.pool.submit(fn, *args)
+                except BrokenProcessPool:
+                    log.error("model worker process died while idle; starting a new one")
+                    self.pool.shutdown(wait=False, cancel_futures=True)
+                    self.pool = None
+            if self.pool is None:
+                self.pool, self.ready = self.factory(), set()
+                fut = self.pool.submit(fn, *args)
+            pool = self.pool
+            self.running.append(fn.__name__)
+        fut.add_done_callback(lambda f: self.finished(pool, fn.__name__, f))
+        return fut
 
-    def end(self):
+    def finished(self, pool, name, fut):
+        broken = not fut.cancelled() and isinstance(fut.exception(), BrokenProcessPool)
         with self.lock:
-            self.active -= 1
+            self.running.remove(name)
             self.last = self.clock()
+            if pool is not self.pool:
+                return
+            if broken:
+                log.error("model worker process died; the next request starts a new one")
+                self.pool, self.ready = None, set()
+                return
+            if not fut.cancelled() and fut.exception() is None:
+                self.ready.add(name)
             if self.timer is None:
                 self.arm(self.idle)
 
     def arm(self, delay):
-        self.timer = threading.Timer(delay, self.worker.submit, (self.check,))
+        self.timer = threading.Timer(delay, self.check)
         self.timer.daemon = True
         self.timer.start()
 
     def check(self):
         with self.lock:
             self.timer = None
-            if self.active:
+            if self.pool is None or self.running:
                 return
             left = self.last + self.idle - self.clock()
             if left > 0:
                 self.arm(left)
                 return
-        if models.loaded():
-            log.info("no model work for %.0fs; unloading %s", self.idle, ", ".join(models.loaded()))
-            models.unload()
+            pool, self.pool, self.ready = self.pool, None, set()
+        log.info("no model work for %.0fs; stopping the model worker process", self.idle)
+        pool.shutdown(wait=True)
+
+    def status(self) -> dict:
+        with self.lock:
+            loading = [n for n in self.running if n not in self.ready]
+            return {"running": self.pool is not None, "ready": sorted(self.ready),
+                    "loading": loading[0] if loading else None, "unload_after_s": self.idle}
 
 
-def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_unload: float = IDLE_UNLOAD) -> FastAPI:
+def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_unload: float = IDLE_UNLOAD,
+               worker_factory=None) -> FastAPI:
     collection = collection.resolve()
     yipai = originals.is_yipai(collection)
     job = originals.Job(fetcher or originals.Fetcher())
@@ -214,22 +269,20 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
             scene_error = None
         except search.MissingEmbeddings as e:
             scene_error = str(e)
-    worker = ThreadPoolExecutor(1, thread_name_prefix="models")
+    worker = ModelWorker(idle_unload, worker_factory)
     uploads = OrderedDict()
     app = FastAPI(title="photofinder")
     app.state.originals = job
+    app.state.models = worker
 
     def connect():
         return closing(db.connect(collection))
 
-    unloader = IdleUnloader(worker, idle_unload)
-
     async def on_models(fn, *args):
-        unloader.begin()
         try:
-            return await asyncio.get_running_loop().run_in_executor(worker, fn, *args)
-        finally:
-            unloader.end()
+            return await asyncio.wrap_future(worker.submit(fn, *args))
+        except BrokenProcessPool:
+            raise bad("the model worker stopped, probably because the Mac ran low on memory; try again", 503)
 
     @app.exception_handler(RequestValidationError)
     async def invalid(request, exc):
@@ -275,7 +328,7 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
 
     @app.get("/api/models")
     def model_status():
-        return {"loaded": models.loaded(), "loading": models.loading, "unload_after_s": idle_unload}
+        return worker.status()
 
     def downloading(profile_id):
         status = job.status()
@@ -344,12 +397,6 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
             n = conn.execute("delete from labels where profile_id = ?", (profile_id,)).rowcount
             conn.execute("delete from profiles where id = ?", (profile_id,))
         return {"id": profile_id, "labels_removed": n}
-
-    def detect_and_embed(img):
-        boxes = sorted(models.detect_persons([img])[0], key=area, reverse=True)
-        models.unload("yolo")
-        osnet, siglip = models.embed_crops([models.crop(img, b[:4]) for b in boxes] + [img])
-        return boxes, osnet, siglip
 
     @app.post("/api/upload")
     async def upload(file: UploadFile = File(...)):
