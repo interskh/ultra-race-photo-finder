@@ -63,6 +63,34 @@ def retry_after(r: httpx.Response) -> float:
         return 0.0
 
 
+def write_atomic(dest: Path, data: bytes):
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp.write_bytes(data)
+    tmp.replace(dest)
+
+
+def request_json(client: httpx.Client, method: str, url: str, *, tries=5, sleep=time.sleep, **kw) -> dict:
+    for attempt in range(tries):
+        wait = backoff_seconds(attempt)
+        try:
+            r = client.request(method, url, headers=HEADERS, **kw)
+            if r.status_code == 200:
+                body = r.json()
+                if body.get("status") == 200:
+                    return body["data"]
+                log.warning("api %s returned status=%s message=%r", url, body.get("status"), body.get("message"))
+            elif r.status_code not in RETRYABLE:
+                raise Blocked(f"api {url} -> HTTP {r.status_code}")
+            else:
+                wait = max(wait, retry_after(r))
+                log.warning("api %s -> HTTP %s (attempt %d)", url, r.status_code, attempt + 1)
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("api %s error %r (attempt %d)", url, e, attempt + 1)
+        if attempt < tries - 1:
+            sleep(wait)
+    raise Blocked(f"api {url} failed after {tries} attempts")
+
+
 class Downloader:
     def __init__(self, client: httpx.Client, order_id: str, out_dir: Path, *, concurrency=3,
                  page_size=500, page_delay=3.0, img_delay=(0.2, 0.6), tries=5,
@@ -99,25 +127,7 @@ class Downloader:
         self._lockfile = f
 
     def _request_json(self, method: str, url: str, **kw) -> dict:
-        for attempt in range(self.tries):
-            wait = backoff_seconds(attempt)
-            try:
-                r = self.client.request(method, url, headers=HEADERS, **kw)
-                if r.status_code == 200:
-                    body = r.json()
-                    if body.get("status") == 200:
-                        return body["data"]
-                    log.warning("api %s returned status=%s message=%r", url, body.get("status"), body.get("message"))
-                elif r.status_code not in RETRYABLE:
-                    raise Blocked(f"api {url} -> HTTP {r.status_code}")
-                else:
-                    wait = max(wait, retry_after(r))
-                    log.warning("api %s -> HTTP %s (attempt %d)", url, r.status_code, attempt + 1)
-            except (httpx.HTTPError, ValueError) as e:
-                log.warning("api %s error %r (attempt %d)", url, e, attempt + 1)
-            if attempt < self.tries - 1:
-                self.sleep(wait)
-        raise Blocked(f"api {url} failed after {self.tries} attempts")
+        return request_json(self.client, method, url, tries=self.tries, sleep=self.sleep, **kw)
 
     def list_page(self, page: int) -> tuple[dict, list[dict]]:
         data = self._request_json("GET", f"{self.api}/audience/photos", params={
@@ -192,10 +202,8 @@ class Downloader:
                 error = repr(e)
             else:
                 if r.status_code == 200 and looks_like_jpeg(r.content):
-                    tmp = dest.with_suffix(".jpg.part")
                     try:
-                        tmp.write_bytes(r.content)
-                        tmp.replace(dest)
+                        write_atomic(dest, r.content)
                     except OSError:
                         self.stop.set()
                         raise

@@ -1,7 +1,5 @@
 import asyncio
-import csv
 import io
-import re
 import secrets
 import sqlite3
 import time
@@ -17,8 +15,10 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
-from photofinder import config, db, models, search
+from photofinder import db, models, originals, search
+from photofinder.sources.yipai import Blocked
 from photofinder.index.stages import now
 
 STATIC = Path(__file__).parent / "static"
@@ -134,8 +134,11 @@ def clean_name(name: str) -> str:
     return name
 
 
-def safe_name(name: str) -> str:
-    return re.sub(r"[^\w-]+", "_", name).strip("_") or "profile"
+def check_folder(conn, name, profile_id):
+    key = originals.folder_key(name)
+    for other, in conn.execute("select name from profiles where id != ?", (profile_id,)):
+        if originals.folder_key(other) == key:
+            raise bad(f"{name!r} would share a download folder with profile {other!r}; choose another name")
 
 
 def profiles_of(conn, profile_id=None) -> list[dict]:
@@ -159,8 +162,10 @@ def hydrate(conn, picked, offset, profile_id, via=None) -> list[dict]:
             for i, ((p, s), v) in enumerate(zip(picked, via), 1)]
 
 
-def create_app(collection: Path) -> FastAPI:
+def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> FastAPI:
     collection = collection.resolve()
+    yipai = originals.is_yipai(collection)
+    job = originals.Job(fetcher or originals.Fetcher())
     with closing(db.connect(collection)) as conn:
         persons = search.load_persons(conn)
         try:
@@ -171,6 +176,7 @@ def create_app(collection: Path) -> FastAPI:
     worker = ThreadPoolExecutor(1, thread_name_prefix="models")
     uploads = OrderedDict()
     app = FastAPI(title="photofinder")
+    app.state.originals = job
 
     def connect():
         return closing(db.connect(collection))
@@ -215,10 +221,15 @@ def create_app(collection: Path) -> FastAPI:
                 warnings.append(str(e))
         out = {"collection": collection.name, "photos": count, "persons": len(persons.ids),
                "taken_at": {"min": first, "max": last}, "photographers": photographers, "albums": albums,
-               "scenes": scene_error is None, "warnings": [w for w in warnings if w]}
+               "scenes": scene_error is None, "originals": yipai, "warnings": [w for w in warnings if w]}
         if profile_id is not None:
             out["labels"] = {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)}
         return out
+
+    def downloading(profile_id):
+        status = job.status()
+        if status["state"] == "running" and status["profile_id"] == profile_id:
+            raise bad("an originals download is running for this profile; cancel it or wait until it finishes", 409)
 
     @app.get("/api/profiles")
     def list_profiles():
@@ -233,17 +244,38 @@ def create_app(collection: Path) -> FastAPI:
                 pid = conn.execute("insert into profiles(name, created_at) values (?, ?)", (name, now())).lastrowid
             except sqlite3.IntegrityError:
                 raise bad(f"a profile named {name!r} already exists")
+            check_folder(conn, name, pid)
             return profiles_of(conn, pid)[0]
 
     @app.patch("/api/profiles/{profile_id}")
     def rename_profile(profile_id: Id, body: ProfileBody):
         name = clean_name(body.name)
         with connect() as conn, conn:
-            profile_name(conn, profile_id)
+            old = originals.profile_folder(collection, profile_name(conn, profile_id))
+            downloading(profile_id)
             try:
                 conn.execute("update profiles set name = ? where id = ?", (name, profile_id))
             except sqlite3.IntegrityError:
                 raise bad(f"a profile named {name!r} already exists")
+            check_folder(conn, name, profile_id)
+            new = originals.profile_folder(collection, name)
+            if old != new and old.exists():
+                if old.name.casefold() != new.name.casefold() and new.exists():
+                    raise bad(f"folder {new} already exists; move or delete it first")
+                try:
+                    job.claim()
+                except originals.Busy:
+                    raise bad("an originals download is running; rename when it finishes", 409)
+                try:
+                    old.rename(new)
+                    if (new / originals.CSV_NAME).is_file():
+                        try:
+                            originals.write_csv(new, marked(conn, profile_id))
+                        except Exception:
+                            new.rename(old)
+                            raise
+                finally:
+                    job.busy.release()
             return profiles_of(conn, profile_id)[0]
 
     @app.delete("/api/profiles/{profile_id}")
@@ -251,6 +283,7 @@ def create_app(collection: Path) -> FastAPI:
         with connect() as conn, conn:
             conn.execute("begin immediate")
             profile_name(conn, profile_id)
+            downloading(profile_id)
             if conn.execute("select count(*) from profiles").fetchone()[0] == 1:
                 raise bad("cannot delete the last profile; create another one first")
             n = conn.execute("delete from labels where profile_id = ?", (profile_id,)).rowcount
@@ -468,16 +501,23 @@ def create_app(collection: Path) -> FastAPI:
                             "join persons p on p.id = l.person_id join photos ph on ph.id = p.photo_id "
                             f"where l.profile_id = ? and l.label = 'me' {FIRST}, p.id", (profile_id,)).fetchall()
 
+    def marked(conn, profile_id):
+        ids = list(dict.fromkeys(r[0] for r in me_rows(conn, profile_id)))
+        meta = photo_meta(conn, ids)
+        return originals.rows_of(collection, [meta[i] for i in ids])
+
     @app.get("/api/me")
     def my_photos(profile_id: Id):
         with connect() as conn:
-            profile_name(conn, profile_id)
+            name = profile_name(conn, profile_id)
             rows = me_rows(conn, profile_id)
             meta = photo_meta(conn, {r[0] for r in rows})
             bibs = bibs_of(conn, [r[1] for r in rows])
+        status = originals.statuses(originals.profile_folder(collection, name),
+                                    originals.rows_of(collection, list(meta.values())))
         photos = {}
         for photo_id, pid, *box in rows:
-            photos.setdefault(photo_id, {**meta[photo_id], "persons": []})["persons"].append(
+            photos.setdefault(photo_id, {**meta[photo_id], "original": status[photo_id], "persons": []})["persons"].append(
                 {"person_id": pid, "box": box, "bibs": bibs.get(pid, []), "label": "me"})
         return {"photos": list(photos.values()), "count": len(photos)}
 
@@ -485,16 +525,72 @@ def create_app(collection: Path) -> FastAPI:
     def export(body: ExportBody):
         with connect() as conn:
             name = profile_name(conn, body.profile_id)
-            ids = list(dict.fromkeys(r[0] for r in me_rows(conn, body.profile_id)))
-            meta = photo_meta(conn, ids)
-        if not ids:
+            rows = marked(conn, body.profile_id)
+        if not rows:
             raise bad("no photos marked as me yet; nothing to export")
-        out = config.DATA_ROOT / "exports" / f"{collection.name}-{safe_name(name)}-{time.strftime('%Y%m%d')}.txt"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        with open(out, "w", newline="") as f:
-            writer = csv.writer(f, delimiter="\t", lineterminator="\n")
-            writer.writerow(["source_photo_id", "photo_id", "path"])
-            writer.writerows([meta[i]["source_photo_id"] or "-", i, collection / meta[i]["relpath"]] for i in ids)
-        return {"path": str(out), "count": len(ids)}
+        return {"path": str(originals.write_csv(originals.profile_folder(collection, name), rows)), "count": len(rows)}
+
+    def need_yipai():
+        if not yipai:
+            raise bad("originals are only available for yipai360 collections (no manifest.sqlite)")
+
+    @app.post("/api/originals")
+    def start_originals(body: ExportBody):
+        need_yipai()
+        with connect() as conn:
+            name = profile_name(conn, body.profile_id)
+            rows = marked(conn, body.profile_id)
+        if not rows:
+            raise bad("no photos marked as me yet; nothing to download")
+        try:
+            job.start(body.profile_id, name, originals.profile_folder(collection, name), rows)
+        except originals.Busy:
+            raise bad("an originals download is already running", 409)
+        return job.status()
+
+    @app.get("/api/originals")
+    def originals_status():
+        return job.status()
+
+    @app.post("/api/originals/cancel")
+    def cancel_originals():
+        job.cancel()
+        return job.status()
+
+    @app.get("/api/originals/zip")
+    def originals_zip(profile_id: Id):
+        need_yipai()
+        with connect() as conn:
+            name = profile_name(conn, profile_id)
+        folder = originals.profile_folder(collection, name)
+        path = originals.zip_folder(folder)
+        if path is None:
+            raise bad(f"no originals downloaded yet for {name}", 404)
+        return FileResponse(path, media_type="application/zip", filename=f"{collection.name}-{folder.name}-originals.zip",
+                            background=BackgroundTask(path.unlink, missing_ok=True))
+
+    @app.post("/api/photos/{photo_id}/original")
+    def photo_original(photo_id: Id, body: ExportBody):
+        need_yipai()
+        with connect() as conn:
+            name = profile_name(conn, body.profile_id)
+            meta = photo_meta(conn, [photo_id]).get(photo_id)
+            if meta is None:
+                raise bad(f"photo {photo_id} not found", 404)
+            rows = marked(conn, body.profile_id)
+        row = originals.rows_of(collection, [meta])[0]
+        try:
+            result, dest = job.single(row, originals.profile_folder(collection, name), rows)
+        except originals.Busy:
+            raise bad("an originals download is running; try again when it finishes", 409)
+        except originals.Cancelled:
+            raise bad("download was cancelled; try again", 409)
+        except Blocked as e:
+            raise bad(f"yipai360 API unavailable: {e}", 502)
+        if result.startswith("buy on site"):
+            raise bad(result, 402)
+        if result != originals.DOWNLOADED:
+            raise bad(result, 502)
+        return FileResponse(dest, media_type="image/jpeg", filename=dest.name)
 
     return app

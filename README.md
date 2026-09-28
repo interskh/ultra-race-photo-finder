@@ -33,7 +33,7 @@ What works best (measured in the handoff log): clothing alone is weak when many 
 2. Mark results **Me** / **Not me**.
 3. **Find more like my marked ones** — searches with all your marked shots, which is how other photographers' photos of you surface.
 4. Narrow with time, photographer, album; add a scene or outfit description.
-5. **My photos → Export** writes `data/exports/<collection>-<date>.txt` with source photo ids for buying originals.
+5. **My photos → Export** writes `data/exports/<collection>/<profile>/photos.csv` (UTF-8 with BOM, opens in Excel): source photo id, original file name (searchable on the site), photographer, time, album, preview/original paths and download status. For yipai360 galleries the API (`POST /api/originals`) downloads the full-size originals into `.../<profile>/originals/` (paced ≤1 lookup/s, resumable); photos refused by the site are listed as `buy on site: <reason>`.
 
 ## CLI search / evaluation
 

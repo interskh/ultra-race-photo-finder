@@ -57,3 +57,54 @@ Run-wide decision: `tests/test_web.py::test_page_is_served_and_calls_only_real_e
 
 **T1 review (orchestrator)** — fresh reviewer: 0 CRITICAL / 0 MAJOR, 215 passed; all 8 load-bearing claims held (single-transaction rollback, two-process migrate race, FK survival, scoped queries, ref-id order, matched_via on the page only). Ledger: MINOR unknown profile + bad date/scene → 400 before 404 — rejected, the page always sends a listed profile id and 400 still names the problem; safe_name collisions ("Ann B" vs "Ann_B") → routed to T2, which owns per-profile folders; text term never competes for matched_via — as designed (matched_via names a person reference); first connect during an indexer write lock may 500 once, raw IntegrityError on a failed migration — deferred (one-time, self-heals / loud by design).
 - Orchestrator real check on a disposable copy of the live index (`data/subsets/fullcopy`, `.backup` from a read-only source): migrate twice → profile 1 "Me", 10 `me` labels, person_id/label/created_at identical to before, integrity_check ok, foreign_key_check empty.
+
+## S1-T2 — originals job (fresh URL by file name, paced fetch, naming, CSV, zip, single photo) + endpoints
+
+**Decisions**
+- `yipai.request_json` (lifted; `Downloader._request_json` delegates) and `yipai.write_atomic` (`.part` → replace; Downloader uses it). Image loop lives in `originals.Fetcher.fetch`, same helpers/policy (HEADERS, primary/failover alternation, backoff_seconds, Retry-After on RETRYABLE), sequential so no cooldown/breaker state.
+- Classification: image 403 / 200 body not starting `FFD8` / no `sign` / photoId absent from filtered set → `buy on site: <reason>`; 200 starting `FFD8` but failing `looks_like_jpeg` (truncated) and exhausted 5xx/network → `failed: <reason>`; other 4xx on the image → `failed: HTTP n` (no retry). Lookup API errors (request_json `Blocked`, incl. API 401/403) → job `state: error` (single photo: 502). Marked photo with no manifest row → `failed: not in the gallery manifest` (no network).
+- Rerun retries everything not on disk (buy-on-site too: one lookup + one fetch each; handles "bought since").
+- Pacing: `Fetcher.last_lookup` (per app, shared by job + single photo) → wait `last + 1 s − clock()` before every lookup page; image fetch preceded by `img_delay` (0.2–0.6 s). All waits go through `Fetcher.pause` = `sleep` (default `stop.wait`) then raise `Cancelled` if stop is set — also used as request_json's backoff sleep so retries never fire back-to-back after cancel.
+- Lookup paging capped at 10 pages (1000 same-name photos) → `failed:` — guards a silently ignored `fileName` filter from paging the whole gallery per photo.
+- Status source of truth: `downloaded` = file on disk; other statuses = `photos.csv` (rewritten atomically under `originals.CSV_LOCK` after every attempted photo, at job end/cancel/error, by export and by single-photo). A CSV `downloaded` whose file is gone reads as null. No DB table.
+- One network job per collection: `Job.busy` Lock acquired non-blocking (check-and-set) by batch start, single photo, and folder-moving rename → 409. Rename/delete of the profile the job is running for → 409 regardless of whether its folder exists yet (the folder appears only after the first write).
+- Names: `safe_name` (moved to `originals`) = NFC, `[^\w-]+`→`_`, strip `_`, ≤40 chars, fallback `profile`; `folder_key` = casefold of it. Create/rename rejects a name whose folder key matches another profile (400, message contains "folder"). Rename moves `exports/<coll>/<old>` → `<new>` inside the DB transaction (OSError rolls back); target exists → 400 (case-only rename is a plain rename). Delete leaves the folder.
+- File: `<YYYYMMDD-HHMMSS|undated>_<safe photographer|unknown>_<source_photo_id>.jpg` ("undated" sorts after digits = nulls last like `FIRST`).
+- Single-photo buy on site → **402** with `detail = "buy on site: <reason>"`; failed → 502.
+- Zip: temp `.originals-*.zip` in the profile folder (Ext1TB, not /tmp), `originals/*.jpg` + `photos.csv`, ZIP_STORED, unlinked by BackgroundTask.
+
+**Rejected**
+- Instantiating Downloader (mkdirs photos/, opens manifest rw) or reusing `Downloader.download` (s1920 key, cooldown/breaker, "expired" relist semantics).
+- `originals` table in index.sqlite: schema change + writes to the live index from a job thread; files+CSV already survive restart and follow a folder rename.
+- Unconditional 1 s sleep between lookups: doesn't space rapid single-photo clicks across requests.
+- Keeping T1's `<collection>-<safe>-YYYYMMDD.txt`: replaced by the CSV per spec.
+
+**Assumptions**
+- yipai collection ⇔ `<collection>/manifest.sqlite` exists; the real-run copy (e.g. `data/subsets/fullcopy`) must include it or originals → 400.
+- `photoId` in the API is an int equal to manifest `photo_id` and index `source_photo_id` (probe shows int 58532728).
+- A watermarked JPEG from a paid gallery would be saved as `downloaded` (not detected); this gallery is byte-identical to 下载.
+
+**Deferred**
+- Watermark detection (e.g. compare size/dimensions with manifest `size`/`width`) — only relevant for paid galleries.
+- `/api/profiles` downloaded count (needs per-profile rows); T3 can count `original == "downloaded"` from `/api/me`.
+- Zip is built fully before streaming (~360 MB for 100 originals, one temp file).
+
+**Touches** (shapes for T3) — `src/photofinder/originals.py` (new), `sources/yipai.py`, `web/app.py`, `tests/test_originals.py` (new), `tests/test_web.py`, `README.md`.
+- `create_app(collection, fetcher=None)`; `app.state.originals` = Job. `GET /api/facets` adds `originals: bool`. `GET /api/me` photos add `original: "downloaded" | "buy on site: …" | "failed: …" | null`.
+- `POST /api/originals {profile_id}` → status (400 non-yipai / no marked photos, 404 profile, 409 running). `GET /api/originals` · `POST /api/originals/cancel` → status `{state: idle|running|done|cancelled|error, profile_id, profile, done, total, current (fname), counts: {downloaded, skipped, buy_on_site, failed}, errors: ["<source id> <fname>: <status>" …, last = job error], folder}`.
+- `GET /api/originals/zip?profile_id=` → attachment `<collection>-<safe profile>-originals.zip` (404 none, 400 non-yipai). `POST /api/photos/{id}/original {profile_id}` → JPEG attachment (402 buy on site, 409 job running, 502 API/failed, 400 non-yipai).
+- `POST /api/export {profile_id}` → `{path: ".../exports/<coll>/<safe>/photos.csv", count}`; columns `source_photo_id, original_file_name, photographer, taken_at, album, preview_path, original_path, status`.
+- Profile create/rename: new 400 on folder collision. Rename/delete → 409 for the profile being downloaded; rename of another profile → 409 only while a download runs and its folder must move.
+
+**Evidence**
+- `uv run pytest -q`: 233 passed (+18 `tests/test_originals.py`; 3 export tests in `test_web.py` rewritten for the CSV). All HTTP via MockTransport; writes under tmp_path.
+- Mutations 15/15 caught (photoId match, paging, page cap, 403/non-JPEG classification, skip-existing, valid w/o JPEG check, `.part` treated as done, cancel check in pause, 409 guard, running-profile rename/delete guard, safe-name regex, lookup pacing, collision check, rename move); restored from copies, sha256-verified.
+
+### S1-T2 fix round
+- Rename that moves a folder rewrites `photos.csv` via `write_csv(new, marked rows)` while holding `busy`, so `original_path` (and the zip's CSV) point at the new folder; if the rewrite fails the folder is moved back and the DB update rolls back.
+- `Job.cancel` does check-and-set under `Job.lock`; `claim()` clears `stop` and applies the new state under the same lock, so a late cancel can't reach a newer single-photo request or batch. `/api/photos/{id}/original` also maps `Cancelled` → 409 `"download was cancelled; try again"` (never a 500).
+- Tests: `test_rename_after_download_rewrites_csv_paths`, `test_cancel_signal_during_single_photo_is_409_not_500`, `test_cancel_checks_and_sets_stop_atomically_with_job_state` (Event subclass asserts `Job.lock` is held when `stop.set()` runs); `test_cancel_interrupts_pacing_wait_and_blocks_other_downloads` now also renames another profile that has a folder while the job holds `busy` → 409, nothing moved, name unchanged.
+- Evidence: `uv run pytest -q` 236 passed; reverting each fix (no CSV rewrite, Cancelled uncaught, pre-fix unlocked cancel, rename claim bypassed) → 4/4 caught, restored + sha256-verified.
+
+**T2 review (orchestrator)** — fresh reviewer: 0 CRITICAL / 0 MAJOR, 5 MINOR. Routed and fixed (re-check: all CLOSED, 236 passed): stale CSV paths after rename, late cancel hitting the next job / 500, untested rename claim → 409. Rejected: `statuses` uses `is_file` not `valid` (files only land via `write_atomic`; validating every original per `/api/me` costs a full read each); `Thread.start` failure leaking `busy` (speculative). Deferred (also seen): zip temp orphaned if the build raises; `valid()` reads every original on rerun; `looks_like_jpeg` EOI heuristic on padded JPEGs (inherited policy); "not in the gallery manifest" maps to 502 on single photo.
+- **Real originals run** (orchestrator, pre-fix-round T2 code, port 8001 on `data/subsets/fullcopy`): `POST /api/originals {profile_id: 1}` → done 10/10 downloaded, 0 errors, ~1 lookup/s. Each file is a JPEG with exactly the manifest width×height (6000×4002 / 4002×6000 Canon R5m2, 4608×3072 A7M4, 5100×3400 A7M5), EXIF with camera + DateTimeOriginal; names `20260926-120000_示例摄影工作室_10000000.jpg` …; `photos.csv` has the BOM, the 8 columns, chronological rows, all `downloaded`. Bytes are ~88–93% of manifest `size`: the `sign` URL carries `x-oss-process=image/watermark,…,g_sw` — the organizer's FUGA branding band along the bottom, the same bytes the site's 下载 button gives (spec fact). No unbranded source was probed (private bucket; out of scope).

@@ -1,7 +1,6 @@
 import csv
 import io
 import re
-import time
 
 import numpy as np
 import pytest
@@ -405,14 +404,17 @@ def test_my_photos_and_export(tmp_path, monkeypatch):
     assert [(p["relpath"], [q["person_id"] for q in p["persons"]]) for p in mine["photos"]] == \
         [("1.jpg", [ids[1][0], ids[1][1]]), ("4.jpg", [ids[4][0]])]
     assert mine["photos"][0]["persons"][1]["box"] == [60, 0, 110, 100]
+    assert [p["original"] for p in mine["photos"]] == [None, None]
     body = api.post("/api/export", json={"profile_id": ME}).json()
-    out = tmp_path / "data" / "exports" / f"coll-Me-{time.strftime('%Y%m%d')}.txt"
+    out = tmp_path / "data" / "exports" / "coll" / "Me" / "photos.csv"
     assert body == {"path": str(out), "count": 2}
-    p = photo_ids(conn)
-    assert out.read_text().splitlines() == [
-        "source_photo_id\tphoto_id\tpath",
-        f"1\t{p['1.jpg']}\t{c.resolve() / '1.jpg'}",
-        f"-\t{p['4.jpg']}\t{c.resolve() / '4.jpg'}",
+    raw = out.read_bytes()
+    assert raw.startswith("﻿".encode())
+    assert list(csv.reader(io.StringIO(raw.decode("utf-8-sig")))) == [
+        ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "preview_path",
+         "original_path", "status"],
+        ["1", "", "阿光", "2026-09-25 08:00:00", "9.25 赛事", str(c.resolve() / "1.jpg"), "", ""],
+        ["", "", "阿光", "", "9.25 赛事", str(c.resolve() / "4.jpg"), "", ""],
     ]
 
 
@@ -565,12 +567,10 @@ def test_export_quotes_fields_with_tabs_or_newlines(tmp_path, monkeypatch):
     conn.execute("update photos set source_photo_id = 'a\tb' where relpath = '1.jpg'")
     conn.execute("update photos set relpath = 'x\ny.jpg' where relpath = '2.jpg'")
     conn.commit()
-    p = photo_ids(conn)
-    text = open(api.post("/api/export", json={"profile_id": ME}).json()["path"], newline="").read()
-    assert list(csv.reader(io.StringIO(text), delimiter="\t")) == [
-        ["source_photo_id", "photo_id", "path"],
-        ["a\tb", str(p["1.jpg"]), str(c.resolve() / "1.jpg")],
-        ["2", str(p["x\ny.jpg"]), str(c.resolve() / "x\ny.jpg")],
+    text = open(api.post("/api/export", json={"profile_id": ME}).json()["path"], newline="", encoding="utf-8-sig").read()
+    assert [(r[0], r[5]) for r in csv.reader(io.StringIO(text))][1:] == [
+        ("a\tb", str(c.resolve() / "1.jpg")),
+        ("2", str(c.resolve() / "x\ny.jpg")),
     ]
 
 
@@ -644,8 +644,7 @@ def test_labels_and_everything_built_on_them_are_per_profile(tmp_path, monkeypat
     assert more(ann) == ["2.jpg", "3.jpg", "1.jpg"]
 
     paths = [api.post("/api/export", json={"profile_id": p}).json()["path"] for p in (ME, ann)]
-    day = time.strftime("%Y%m%d")
-    assert [p.rsplit("/", 1)[1] for p in paths] == [f"coll-Me-{day}.txt", f"coll-Ann_B-{day}.txt"]
+    assert [p.split("/")[-2:] for p in paths] == [["Me", "photos.csv"], ["Ann_B", "photos.csv"]]
     assert [open(p).read().count(".jpg") for p in paths] == [2, 1]
 
     assert api.delete(f"/api/profiles/{ann}").json()["labels_removed"] == 2
