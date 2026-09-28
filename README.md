@@ -11,7 +11,7 @@ scripts/download_yipai.sh <orderId>        # orderId is in the gallery URL
 tail -f data/yipai/<orderId>/download.log
 ```
 
-Runs detached under `caffeinate`, paced, resumable. Rerun the same command a day or two later to pick up photos uploaded after the race. Only the free 1920px previews are downloaded; buy originals on the site.
+Runs detached under `caffeinate`, paced, resumable. Rerun the same command a day or two later to pick up photos uploaded after the race. The downloader fetches only the free 1920px previews; full-size originals of the photos you mark come later from the web UI (step 3).
 
 ## 2. Index
 
@@ -30,10 +30,22 @@ uv run photofinder serve data/yipai/<orderId>     # http://127.0.0.1:8000/
 What works best (measured in the handoff log): clothing alone is weak when many runners wear the same event jacket, so iterate:
 
 1. Upload a photo of you (race day, same kit) and click your box — or start from your bib number if the index was built with `--ocr`.
-2. Mark results **Me** / **Not me**.
-3. **Find more like my marked ones** — searches with all your marked shots, which is how other photographers' photos of you surface.
+2. Mark results **✓ <name>** / **✗ Not <name>** (the active person, "Me" by default).
+3. **Find more like my marked ones** — searches with all your marked shots, which is how other photographers' photos of you surface. Each result shows a small **matched via** thumbnail: the marked photo it resembled most; click it to jump to that photo in My photos. Changed clothes (jacket on/off)? Mark one photo of each look.
 4. Narrow with time, photographer, album; add a scene or outfit description.
-5. **My photos → Export** writes `data/exports/<collection>/<profile>/photos.csv` (UTF-8 with BOM, opens in Excel): source photo id, original file name (searchable on the site), photographer, time, album, preview/original paths and download status. For yipai360 galleries the API (`POST /api/originals`) downloads the full-size originals into `.../<profile>/originals/` (paced ≤1 lookup/s, resumable); photos refused by the site are listed as `buy on site: <reason>`.
+5. **My photos** lists the marked photos with each one's original status (✓ original / `buy on site: <reason>` / `failed: …`):
+   - **Download originals** (yipai360 galleries only) fetches the full-size originals into `data/exports/<collection>/<person>/originals/<YYYYMMDD-HHMMSS>_<photographer>_<source photo id>.jpg` — one lookup per second, skips files already there, shows `n / N`, the current file and errors, and can be cancelled; rerun to resume. Photos the site refuses are listed as `buy on site: <reason>`.
+   - **Download as zip** streams that person's originals folder plus `photos.csv` to the browser (e.g. to move them to a phone).
+   - **Export CSV** writes `data/exports/<collection>/<person>/photos.csv` (UTF-8 with BOM, opens in Excel): source photo id, original file name (searchable on the site), photographer, time, album, preview/original paths and download status.
+   - In the photo viewer, **Download original** fetches one photo, saves it into the same folder and hands it to the browser.
+
+   Originals are exactly what the site's own 下载 button gives: full resolution with EXIF, but for FUGA galleries with the organizer's branding band along the bottom (the signed URL applies it). An unbranded source was not probed.
+
+**Several people.** `Searching for: [Me ▾]` in the top bar switches between saved people; **+ New person** adds one (e.g. a friend), **Rename** / **Delete** act on the active one (delete removes only that person's marks; the last person can't be deleted). Each person has their own marks, Find more, My photos, CSV and originals folder. The browser remembers the active person.
+
+**Keyboard.** On a focused result card (Tab to it) or in the photo viewer: `M` = this is <name>, `N` = not <name> (press again to clear), `←` / `→` previous / next, `Esc` closes the viewer. Shortcuts are off while typing in a text box.
+
+**Upgrading an existing index.** The first time this version opens an index made by an older version it moves the old Me / Not me marks into the person "Me" (one-way). A server still running the older code on that index can no longer save marks — restart it on the new code.
 
 ## CLI search / evaluation
 

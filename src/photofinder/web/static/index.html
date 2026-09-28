@@ -44,13 +44,17 @@ input::placeholder { color: var(--faint); }
 header { height: 48px; display: flex; align-items: center; gap: var(--s4); padding: 0 var(--s4);
   border-bottom: 1px solid var(--line); background: var(--panel); }
 .brand { font-weight: 700; font-size: 14px; }
-.coll { color: var(--muted); }
+.coll { color: var(--muted); min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .coll b { color: var(--text); font-weight: 600; }
-.tabs { margin-left: auto; display: flex; gap: var(--s1); }
+.who-pick { display: flex; align-items: center; gap: var(--s2); flex: none; color: var(--muted); }
+.who-pick select { height: 30px; max-width: 160px; padding: 0 var(--s2); border: 1px solid var(--line2); border-radius: var(--r);
+  background: var(--bg); color: var(--text); font-weight: 600; text-overflow: ellipsis; }
+.tabs { margin-left: auto; display: flex; gap: var(--s1); flex: none; }
 .tab { height: 30px; padding: 0 var(--s3); border: 1px solid transparent; border-radius: var(--r); background: none; cursor: pointer; color: var(--muted); }
 .tab[aria-selected=true] { color: var(--text); background: var(--raised); border-color: var(--line2); }
-.counts { display: flex; gap: var(--s2); }
-.pill { padding: 2px var(--s2); border-radius: 999px; border: 1px solid var(--line2); color: var(--muted); font-size: 12px; }
+.counts { display: flex; gap: var(--s2); flex: none; }
+.pill { display: inline-flex; gap: 4px; max-width: 150px; padding: 2px var(--s2); border-radius: 999px; border: 1px solid var(--line2); color: var(--muted); font-size: 12px; white-space: nowrap; }
+.pill span { overflow: hidden; text-overflow: ellipsis; }
 .pill.me b { color: var(--me); } .pill.nm b { color: var(--nm); }
 
 .layout { display: grid; grid-template-columns: 300px 1fr; height: calc(100% - 48px); }
@@ -128,7 +132,23 @@ main { overflow-y: auto; position: relative; }
 .shot img.crop { max-width: 100%; max-height: 100%; object-fit: contain; }
 .shot .thumb { flex: 0 0 42%; width: 42%; min-width: 0; border-radius: 3px; border: 1px solid rgba(255,255,255,.2); background: #000; }
 .meta .rank { color: var(--faint); font-variant-numeric: tabular-nums; }
-.meta .flag { margin-left: auto; padding: 0 6px; border-radius: 3px; font-size: 11px; font-weight: 600; color: #fff; }
+.meta .flag { margin-left: auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; padding: 0 6px; border-radius: 3px; font-size: 11px; font-weight: 600; color: #fff; }
+.meta .orig { flex: none; max-width: 62%; overflow: hidden; text-overflow: ellipsis; color: var(--warn); }
+a.btn { text-decoration: none; color: inherit; }
+.meta .orig.ok { color: var(--me); } .meta .orig.bad { color: var(--nm); }
+.card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.card.hl { outline: 3px solid var(--pick); outline-offset: 2px; }
+.shot { position: relative; }
+.via { position: absolute; right: var(--s1); bottom: var(--s1); display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 3px;
+  border: 1px solid var(--line2); border-radius: 4px; background: rgba(17,18,20,.9); color: var(--muted); font-size: 10px; line-height: 1; cursor: pointer; }
+.via:hover { color: var(--text); border-color: var(--pick); }
+.via img { width: 30px; height: 52px; object-fit: contain; background: #0b0c0d; }
+.job { margin-bottom: var(--s4); padding: var(--s3); border: 1px solid var(--line2); border-radius: var(--r); background: var(--panel); }
+.job .row2 { align-items: center; }
+.job .jt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.job ul { margin: var(--s2) 0 0; padding-left: 18px; max-height: 120px; overflow-y: auto; color: #ffd4d4; font-size: 12px; }
+.m-acts { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line); }
+.m-acts .hint { margin: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .card.lab-me .flag { background: var(--me-bg); } .card.lab-nm .flag { background: var(--nm-bg); }
 .broken { color: var(--faint); font-size: 12px; padding: var(--s2); text-align: center; }
 .meta { padding: 6px var(--s2) 0; font-size: 12px; min-height: 0; }
@@ -138,7 +158,7 @@ main { overflow-y: auto; position: relative; }
 .meta .who { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .meta .bib { color: var(--text); }
 .acts { margin-top: auto; display: flex; gap: var(--s1); padding: var(--s2); }
-.lb { flex: 1; height: 28px; border: 1px solid var(--line2); border-radius: var(--r); background: var(--raised); cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); }
+.lb { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 var(--s1); height: 28px; border: 1px solid var(--line2); border-radius: var(--r); background: var(--raised); cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); }
 .lb:hover { color: var(--text); border-color: #555a63; }
 .lb.me[aria-pressed=true] { background: var(--me-bg); border-color: var(--me-bg); color: #fff; }
 .lb.nm[aria-pressed=true] { background: var(--nm-bg); border-color: var(--nm-bg); color: #fff; }
@@ -177,16 +197,23 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .pp .sel-tag { display: none; } .pp.sel .sel-tag { display: inline; }
 .pp .bibs { color: var(--muted); font-size: 12px; }
 .pp .row { display: flex; gap: var(--s1); margin-top: 6px; flex-wrap: wrap; }
-.pp .lb { flex: none; padding: 0 var(--s2); height: 26px; }
+.pp .lb { flex: none; max-width: 120px; padding: 0 var(--s2); height: 26px; }
 </style>
 </head>
 <body>
 <header>
   <span class="brand">photofinder</span>
   <span class="coll" id="coll">Loading collection…</span>
+  <div class="who-pick">
+    <label for="prof">Searching for:</label>
+    <select id="prof"></select>
+    <button class="btn small" type="button" id="prof-new">+ New person</button>
+    <button class="btn link" type="button" id="prof-rename">Rename</button>
+    <button class="btn link" type="button" id="prof-delete">Delete</button>
+  </div>
   <span class="counts">
-    <span class="pill me">Me <b id="c-me">0</b></span>
-    <span class="pill nm">Not me <b id="c-nm">0</b></span>
+    <span class="pill me"><span class="nm-me">Me</span> <b id="c-me">0</b></span>
+    <span class="pill nm"><span class="nm-not">Not me</span> <b id="c-nm">0</b></span>
   </span>
   <nav class="tabs" role="tablist">
     <button class="tab" role="tab" id="tab-search" aria-selected="true">Search</button>
@@ -271,8 +298,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     </section>
     <section class="content" id="view-me" hidden>
       <div class="export row2" style="align-items:center">
-        <button class="btn primary" id="export">Export list</button>
-        <span class="hint" style="margin:0">Writes a text file of your photos with source photo ids (for buying originals) and file paths.</span>
+        <button class="btn primary" id="orig-start" hidden>Download originals</button>
+        <a class="btn" id="zip" hidden download>Download as zip</a>
+        <button class="btn" id="export">Export CSV</button>
+        <span class="hint" style="margin:0" id="export-hint">Originals are saved in this person’s folder under data/exports; the CSV lists source photo ids, original file names and download status.</span>
+      </div>
+      <div class="job" id="job" hidden>
+        <div class="row2"><span class="jt" id="job-text"></span><button class="btn small" type="button" id="orig-cancel" hidden>Cancel</button></div>
+        <ul id="job-errors" hidden></ul>
       </div>
       <div class="grid" id="me-grid"></div>
       <div id="me-empty"></div>
@@ -289,13 +322,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
       <button class="btn small" id="m-close">Close</button>
     </div>
     <dl class="m-meta" id="m-meta"></dl>
+    <div class="m-acts" id="m-acts" hidden><button class="btn small" type="button" id="m-orig">Download original</button><p class="hint" id="m-orig-msg"></p></div>
     <div class="m-list" id="m-list"></div>
   </div>
 </div>
 <script>
 const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
-  labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null};
+  labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
+  profiles: [], name: 'Me', job: null, pollT: null, highlight: null};
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -355,10 +390,87 @@ function renderCounts() {
   $('#c-me').textContent = fmt(f.labels.me);
   $('#c-me2').textContent = fmt(S.mePhotos);
   $('#c-nm').textContent = fmt(f.labels.not_me);
+  $('.nm-me').textContent = S.name;
+  $('.nm-not').textContent = `Not ${S.name}`;
+  $('.pill.me').title = `People marked “This is ${S.name}”`;
+  $('.pill.nm').title = `People marked “This is not ${S.name}”`;
   const n = f.labels.me;
   $('#more-n').textContent = n ? `(${n} marked)` : '';
   $('#more').disabled = !n || S.busy > 0;
-  $('#more-hint').textContent = n ? 'Hides photos already marked Me and people marked Not me.' : 'Mark at least one photo as Me to enable.';
+  $('#more').title = `Hides photos already marked ${S.name} and people marked Not ${S.name}.`;
+  $('#more-hint').textContent = n ? 'Changed clothes? Mark one photo of each look.' : `Mark at least one photo as ${S.name} to enable.`;
+  $('#orig-start').disabled = !S.mePhotos || (S.job && S.job.state === 'running');
+}
+
+const profileKey = () => `photofinder.profile.${S.facets.collection}`;
+
+function renderProfiles() {
+  const sel = $('#prof');
+  sel.innerHTML = '';
+  for (const p of S.profiles) sel.append(h('option', {value: p.id, selected: p.id === S.profile}, p.name));
+  sel.title = S.name;
+}
+
+async function useProfile(id) {
+  const p = S.profiles.find(x => x.id === id) || S.profiles[0];
+  S.profile = p.id;
+  S.name = p.name;
+  try { localStorage.setItem(profileKey(), String(p.id)); } catch (e) { }
+  S.facets.labels = {me: p.me, not_me: p.not_me};
+  S.labels = {};
+  S.details = new Map();
+  renderProfiles();
+  const me = await api(`/api/me?profile_id=${S.profile}`);
+  if (S.profile !== p.id) return;
+  setMine(me.photos);
+  renderCounts();
+  $('#zip').href = `/api/originals/zip?profile_id=${S.profile}`;
+}
+
+async function switchProfile(id) {
+  try {
+    S.profiles = (await api('/api/profiles')).profiles;
+    await useProfile(id);
+  } catch (e) { banner(e.message); return; }
+  if (S.view === 'me') loadMe();
+  else if (S.query && !(S.base.mode === 'more' && !meCount())) search(false);
+  else {
+    ++S.seq;
+    S.base = S.query = null;
+    S.results = [];
+    $('#grid').innerHTML = '';
+    $('#tail').hidden = true;
+    welcome();
+  }
+}
+
+async function newProfile() {
+  const name = prompt('Name of the person to search for (e.g. a friend):');
+  if (name == null || !name.trim()) return;
+  try {
+    const p = await post('/api/profiles', {name});
+    await switchProfile(p.id);
+  } catch (e) { banner(e.message); }
+}
+
+async function renameProfile() {
+  const name = prompt(`Rename “${S.name}” to:`, S.name);
+  if (name == null || !name.trim() || name.trim() === S.name) return;
+  try {
+    await api(`/api/profiles/${S.profile}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
+    await switchProfile(S.profile);
+  } catch (e) { banner(e.message); }
+}
+
+async function deleteProfile() {
+  const p = S.profiles.find(x => x.id === S.profile);
+  const n = S.facets.labels;
+  if (!confirm(`Delete “${p.name}”?\n\nOnly this person’s marks are removed (${n.me} marked as ${p.name}, ${n.not_me} marked Not ${p.name}). ` +
+    'Photos, other people and any downloaded originals stay.')) return;
+  try {
+    await api(`/api/profiles/${S.profile}`, {method: 'DELETE'});
+    await switchProfile(null);
+  } catch (e) { banner(e.message); }
 }
 
 function setMine(photos) {
@@ -498,7 +610,7 @@ function renderResults(added) {
       ? [`No photo has bib ${b.start_bib} read exactly. Bibs are often hidden, folded or blurred at night.`,
          'Try “Bib contains” in Filters with part of the number, upload a photo of yourself, or describe your clothing.']
       : b.mode === 'more'
-        ? ['Everything similar is already marked or hidden.', 'Loosen the filters, or mark a different photo of you as Me and try again.']
+        ? ['Everything similar is already marked or hidden.', `Loosen the filters, or mark a different photo as ${S.name} and try again.`]
         : ['Nothing matched with these filters.', 'Loosen the time range, photographer or bib filter, or try another start point.'];
     empty.append(h('div', {class: 'empty'}, h('h3', {}, 'No photos found'), ...tips.map(t => h('p', {}, t))));
   }
@@ -507,10 +619,11 @@ function renderResults(added) {
 
 function labelButtons(pid, photoId) {
   const lab = S.labels[pid] ?? null;
-  const mk = (want, cls, text) => h('button', {class: `lb ${cls}`, type: 'button', 'data-for': pid, 'data-l': want,
-    'aria-pressed': String(lab === want), title: `Mark as ${text.toLowerCase()} (click again to clear)`,
+  const mk = (want, cls, text, tip) => h('button', {class: `lb ${cls}`, type: 'button', 'data-for': pid, 'data-l': want,
+    'aria-pressed': String(lab === want), title: `${tip} (click again to clear)`,
     onclick: e => { e.stopPropagation(); setLabel(pid, want, photoId); }}, text);
-  return [mk('me', 'me', 'Me'), mk('not_me', 'nm', 'Not me')];
+  return [mk('me', 'me', `✓ ${S.name}`, `This is ${S.name} · key M`),
+    mk('not_me', 'nm', `✗ Not ${S.name}`, `This is not ${S.name} · key N`)];
 }
 
 function paint(pid) {
@@ -519,7 +632,7 @@ function paint(pid) {
     el.classList.toggle('lab-me', lab === 'me');
     el.classList.toggle('lab-nm', lab === 'not_me');
     const flag = el.querySelector(':scope .flag');
-    if (flag) { flag.textContent = lab === 'me' ? 'Me' : lab === 'not_me' ? 'Not me' : ''; flag.hidden = !lab; }
+    if (flag) { flag.textContent = lab === 'me' ? S.name : lab === 'not_me' ? `Not ${S.name}` : ''; flag.hidden = !lab; }
   });
   document.querySelectorAll(`.lb[data-for="${pid}"]`).forEach(b => b.setAttribute('aria-pressed', String(lab === b.dataset.l)));
 }
@@ -528,8 +641,10 @@ async function setLabel(pid, want, photoId) {
   if (S.pending.has(pid)) return;
   S.pending.add(pid);
   const prev = S.labels[pid] ?? null;
+  const profile = S.profile;
   try {
-    const r = await post('/api/labels', {profile_id: S.profile, person_id: pid, label: prev === want ? null : want});
+    const r = await post('/api/labels', {profile_id: profile, person_id: pid, label: prev === want ? null : want});
+    if (S.profile !== profile) return;
     S.labels[pid] = r.label;
     paint(pid);
     if (S.facets) {
@@ -559,11 +674,15 @@ function card(r, i, list) {
       onclick: open, onkeydown: e => { if (e.key === 'Enter' && e.target === el) open(); }},
     h('div', {class: 'shot'},
       h('div', {class: 'cropbox'}, h('img', {class: 'crop', src: `/api/persons/${pid}/crop`, alt: '', loading: 'lazy', onerror: broken})),
-      h('img', {class: 'thumb', src: `/api/photos/${r.photo_id}/image?max=320`, alt: 'Whole photo', loading: 'lazy', onerror: e => e.target.remove()})),
+      h('img', {class: 'thumb', src: `/api/photos/${r.photo_id}/image?max=320`, alt: 'Whole photo', loading: 'lazy', onerror: e => e.target.remove()}),
+      r.matched_via != null ? h('button', {class: 'via', type: 'button', title: `Matched via this photo you marked ${S.name}; click to show it in My photos`,
+        onclick: e => { e.stopPropagation(); showMatched(r.matched_via); }},
+        h('img', {src: `/api/persons/${r.matched_via}/crop`, alt: '', loading: 'lazy', onerror: e => e.target.remove()}), 'matched via') : null),
     h('div', {class: 'meta'},
       h('div', {class: 'l1'}, r.rank ? h('span', {class: 'rank', title: tip}, `#${r.rank}`) : null, h('span', {class: 't'}, t),
         h('span', {class: 'flag', hidden: true})),
-      h('div', {class: 'l2'}, h('span', {class: 'who', title: who(r)}, who(r)), bib ? h('span', {class: 'bib', title: 'bib read'}, `bib ${bib}`) : null)),
+      h('div', {class: 'l2'}, h('span', {class: 'who', title: who(r)}, who(r)), bib ? h('span', {class: 'bib', title: 'bib read'}, `bib ${bib}`) : null,
+        r.original ? origTag(r.original) : null)),
     h('div', {class: 'acts'}, labelButtons(pid, r.photo_id)));
   queueMicrotask(() => paint(pid));
   return el;
@@ -648,17 +767,19 @@ function welcome() {
   $('#empty').append(h('div', {class: 'empty'}, h('h3', {}, 'How to find yourself'),
     h('p', {}, 'Clothing alone finds only some of your photos (many runners wear the same jacket). Marking photos is what finds the rest:'),
     h('ol', {}, h('li', {}, h('b', {}, 'Start somewhere: '), 'search your bib number, upload a photo of you and click yourself, or describe your clothing.'),
-      h('li', {}, h('b', {}, 'Mark results: '), 'click Me on photos of you and Not me on look-alikes.'),
-      h('li', {}, h('b', {}, 'Find more like my marked ones, '), 'then mark again. Repeat until nothing new shows up.'),
-      h('li', {}, h('b', {}, 'My photos: '), 'review the photos you marked Me and export the list.'))));
+      h('li', {}, h('b', {}, 'Mark results: '), `click ✓ ${S.name} on photos of the person and ✗ Not ${S.name} on look-alikes (keys M / N on a focused card).`),
+      h('li', {}, h('b', {}, 'Find more like my marked ones, '), 'then mark again. Repeat until nothing new shows up. Changed clothes? Mark one photo of each look.'),
+      h('li', {}, h('b', {}, 'My photos: '), 'review the marked photos, download the originals and export the list.')),
+    h('p', {}, 'Searching for a friend? Use “+ New person” at the top: each person keeps their own marks.')));
 }
 
 async function loadMe() {
   $('#summary').innerHTML = '';
   $('#summary').append(h('div', {class: 'title'}, 'My photos'), h('div', {class: 'sub'}, 'Loading…'));
+  const profile = S.profile;
   try {
-    const r = await api(`/api/me?profile_id=${S.profile}`);
-    if (S.view !== 'me') return;
+    const r = await api(`/api/me?profile_id=${profile}`);
+    if (S.view !== 'me' || S.profile !== profile) return;
     setMine(r.photos);
     renderCounts();
     S.me = r.photos.map(p => {
@@ -669,20 +790,130 @@ async function loadMe() {
     const grid = $('#me-grid');
     grid.innerHTML = '';
     S.me.forEach((p, i) => grid.append(card(p, i, S.me)));
+    const got = S.me.filter(p => p.original === 'downloaded').length;
+    $('#orig-start').hidden = !S.facets.originals;
+    $('#zip').hidden = !S.facets.originals || !got;
+    $('#zip').title = `${got} original${got === 1 ? '' : 's'} downloaded for ${S.name}`;
     $('#me-empty').innerHTML = '';
     if (!S.me.length) $('#me-empty').append(h('div', {class: 'empty'}, h('h3', {}, 'No photos marked yet'),
-      h('p', {}, 'Click Me on a search result and it shows up here.')));
+      h('p', {}, `Click ✓ ${S.name} on a search result and it shows up here.`)));
     $('#summary').innerHTML = '';
-    $('#summary').append(h('div', {class: 'title'}, `My photos (${fmt(r.count)})`),
-      h('div', {class: 'sub'}, 'Photos you marked Me, in time order (Not me marks are not listed; filters don’t apply here). Click Me again to unmark; unmarked photos drop off next time you open this view.'));
+    $('#summary').append(h('div', {class: 'title'}, `My photos — ${S.name} (${fmt(r.count)})`),
+      h('div', {class: 'sub'}, `Photos marked ${S.name}, in time order` + (S.facets.originals ? `, ${fmt(got)} original${got === 1 ? '' : 's'} downloaded` : '') +
+        ` (Not ${S.name} marks are not listed; filters don’t apply here). Click ✓ again to unmark; unmarked photos drop off next time you open this view.`));
+    if (S.highlight != null) {
+      const i = S.me.findIndex(p => p.persons.some(x => x.person_id === S.highlight));
+      S.highlight = null;
+      const el = i >= 0 ? grid.children[i] : null;
+      if (el) { el.classList.add('hl'); el.scrollIntoView({block: 'center'}); el.focus({preventScroll: true}); }
+      else banner(`That reference photo is no longer marked ${S.name}.`, 'info');
+    }
   } catch (e) { banner(e.message); }
+}
+
+function showMatched(pid) {
+  S.highlight = pid;
+  if (S.view === 'me') loadMe(); else showView('me');
+}
+
+function origTag(s) {
+  const text = s === 'downloaded' ? '✓ original' : s;
+  return h('span', {class: `orig${s === 'downloaded' ? ' ok' : s.startsWith('failed') ? ' bad' : ''}`,
+    title: s === 'downloaded' ? 'Original downloaded into this person’s folder' : s}, text);
 }
 
 async function exportList() {
   try {
     const r = await post('/api/export', {profile_id: S.profile});
-    banner(`Exported ${fmt(r.count)} photos to ${r.path} — one line per photo with its source photo id (for buying originals), photo id and file path. Replaces any earlier export from today.`, 'info');
+    banner(`Exported ${fmt(r.count)} photos to ${r.path} — one row per photo with its source photo id, original file name (searchable on the site), photographer, time and download status. Opens in Excel.`, 'info');
   } catch (e) { banner(e.message); }
+}
+
+function renderJob() {
+  const j = S.job;
+  const on = !!(j && S.facets && S.facets.originals && j.state !== 'idle');
+  $('#job').hidden = !on;
+  renderCounts();
+  if (!on) return;
+  const c = j.counts;
+  const tally = `${c.downloaded} downloaded, ${c.skipped} already there, ${c.buy_on_site} buy on site, ${c.failed} failed`;
+  const head = {running: `Downloading originals for ${j.profile}: ${j.done} / ${j.total}`, done: `Originals for ${j.profile} done: ${j.done} / ${j.total}`,
+    cancelled: `Originals for ${j.profile} cancelled at ${j.done} / ${j.total}`, error: `Originals for ${j.profile} stopped with an error at ${j.done} / ${j.total}`}[j.state] || j.state;
+  const parts = [head];
+  if (j.state === 'running' && j.current) parts.push(`now ${j.current}`);
+  parts.push(tally);
+  if (j.state !== 'running' && j.folder) parts.push(`saved in ${j.folder}/originals`);
+  $('#job-text').textContent = parts.join(' · ');
+  $('#orig-cancel').hidden = j.state !== 'running';
+  const ul = $('#job-errors');
+  ul.innerHTML = '';
+  for (const e of j.errors) ul.append(h('li', {}, e));
+  ul.hidden = !j.errors.length;
+}
+
+async function pollOriginals() {
+  clearTimeout(S.pollT);
+  const was = S.job && S.job.state === 'running';
+  try { S.job = await api('/api/originals'); } catch (e) {
+    banner(e.message);
+    if (was) S.pollT = setTimeout(pollOriginals, 3000);
+    return;
+  }
+  renderJob();
+  if (S.job.state === 'running') S.pollT = setTimeout(pollOriginals, 1000);
+  else if (was && S.view === 'me') loadMe();
+}
+
+async function startOriginals() {
+  try {
+    S.job = await post('/api/originals', {profile_id: S.profile});
+    renderJob();
+    S.pollT = setTimeout(pollOriginals, 1000);
+  } catch (e) { banner(e.message); }
+}
+
+async function cancelOriginals() {
+  try {
+    S.job = await post('/api/originals/cancel', {});
+    renderJob();
+  } catch (e) { banner(e.message); }
+}
+
+async function downloadOriginal() {
+  const m = S.modal;
+  if (!m || !m.list) return;
+  const i = m.i, r = m.list[i];
+  const say = t => { if (S.modal === m && m.i === i) $('#m-orig-msg').textContent = t; };
+  $('#m-orig').disabled = true;
+  say('Fetching the original from the site…');
+  try {
+    let res;
+    try {
+      res = await fetch(`/api/photos/${r.photo_id}/original`, {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({profile_id: S.profile})});
+    } catch (e) { say(''); banner(`Cannot reach the photofinder server (${e.message}). Is it still running?`); return; }
+    if (!res.ok) {
+      let detail = `Request failed: ${res.status} ${res.statusText}`;
+      try { detail = (await res.json()).detail || detail; } catch (e) { }
+      if (res.status === 402) { say(detail.replace(/^buy on site/, 'Buy on site')); return; }
+      say('');
+      banner(detail);
+      return;
+    }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const star = /filename\*=utf-8''([^;]+)/i.exec(cd), plain = /filename="([^"]+)"/i.exec(cd);
+    const name = star ? decodeURIComponent(star[1]) : plain ? plain[1] : `${r.source_photo_id || r.photo_id}.jpg`;
+    const url = URL.createObjectURL(await res.blob());
+    const a = h('a', {href: url, download: name});
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    say(`Saved ${name} into ${S.name}’s originals folder and sent it to your browser’s downloads.`);
+    if (S.view === 'me') loadMe();
+  } catch (e) { say(''); banner(e.message); } finally {
+    if (S.modal === m) $('#m-orig').disabled = false;
+  }
 }
 
 async function openModal(list, i) {
@@ -695,6 +926,9 @@ async function openModal(list, i) {
   $('#m-prev').hidden = $('#m-next').hidden = false;
   $('#m-prev').disabled = i === 0;
   $('#m-next').disabled = i === list.length - 1;
+  $('#m-acts').hidden = !S.facets.originals;
+  $('#m-orig-msg').textContent = 'Full-size file from the site, as its own download button gives it.';
+  $('#m-orig').disabled = false;
   $('#m-frame').innerHTML = '';
   $('#m-frame').append(h('img', {src: `/api/photos/${r.photo_id}/image`, alt: `Photo ${r.source_photo_id || r.photo_id}`, onerror: broken}));
   $('#m-meta').innerHTML = '';
@@ -767,7 +1001,7 @@ function openUpload() {
   $('#modal').hidden = false;
   $('#modal').setAttribute('aria-label', 'Choose yourself in your uploaded photo');
   $('#m-pos').textContent = 'Your uploaded photo';
-  $('#m-prev').hidden = $('#m-next').hidden = true;
+  $('#m-prev').hidden = $('#m-next').hidden = $('#m-acts').hidden = true;
   const frame = $('#m-frame');
   frame.innerHTML = '';
   frame.append(h('img', {src: upSrc(u), alt: 'Your uploaded photo', onerror: broken}));
@@ -860,26 +1094,56 @@ function wire() {
   $('#tab-search').addEventListener('click', () => showView('search'));
   $('#tab-me').addEventListener('click', () => showView('me'));
   $('#export').addEventListener('click', exportList);
+  $('#orig-start').addEventListener('click', startOriginals);
+  $('#orig-cancel').addEventListener('click', cancelOriginals);
+  $('#m-orig').addEventListener('click', downloadOriginal);
+  $('#prof').addEventListener('change', e => switchProfile(Number(e.target.value)));
+  $('#prof-new').addEventListener('click', newProfile);
+  $('#prof-rename').addEventListener('click', renameProfile);
+  $('#prof-delete').addEventListener('click', deleteProfile);
   $('#m-close').addEventListener('click', closeModal);
   $('#m-prev').addEventListener('click', () => step(-1));
   $('#m-next').addEventListener('click', () => step(1));
   $('#modal').addEventListener('click', e => { if (e.target.id === 'modal' || e.target.id === 'stage') closeModal(); });
-  document.addEventListener('keydown', e => {
-    if (!S.modal) return;
-    if (e.key === 'Escape') closeModal();
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
-  });
+  document.addEventListener('keydown', onKey);
+}
+
+function onKey(e) {
+  const t = e.target;
+  if (e.metaKey || e.ctrlKey || e.altKey || t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const want = k === 'm' ? 'me' : k === 'n' ? 'not_me' : null;
+  const m = S.modal;
+  if (m) {
+    if (k === 'Escape') closeModal();
+    else if (k === 'ArrowLeft') { e.preventDefault(); step(-1); }
+    else if (k === 'ArrowRight') { e.preventDefault(); step(1); }
+    else if (want && m.list && m.d && typeof m.sel === 'number') setLabel(m.sel, want, m.d.photo_id);
+    return;
+  }
+  const c = t.closest && t.closest('.card');
+  if (!c) return;
+  const cards = [...c.parentElement.children];
+  const i = cards.indexOf(c);
+  const r = (c.parentElement.id === 'me-grid' ? S.me : S.results)[i];
+  if (want && r) setLabel(r.person_id, want, r.photo_id);
+  else if (k === 'ArrowLeft' || k === 'ArrowRight') {
+    e.preventDefault();
+    const next = cards[i + (k === 'ArrowLeft' ? -1 : 1)];
+    if (next) { next.focus(); next.scrollIntoView({block: 'nearest'}); }
+  }
 }
 
 async function init() {
   wire();
   welcome();
   try {
-    let me;
-    S.profile = (await api('/api/profiles')).profiles[0].id;
-    [S.facets, me] = await Promise.all([api(`/api/facets?profile_id=${S.profile}`), api(`/api/me?profile_id=${S.profile}`)]);
-    setMine(me.photos);
+    let p;
+    [p, S.facets] = await Promise.all([api('/api/profiles'), api('/api/facets')]);
+    S.profiles = p.profiles;
+    let saved = null;
+    try { saved = Number(localStorage.getItem(profileKey())); } catch (e) { }
+    await useProfile(saved);
   } catch (e) {
     $('#coll').textContent = 'Collection unavailable';
     banner(e.message);
@@ -887,8 +1151,10 @@ async function init() {
   }
   renderCounts();
   renderFacets();
+  welcome();
   for (const w of S.facets.warnings) banner(w, 'warn');
   if (!S.facets.scenes) $('#q-scene').placeholder = 'Scene search unavailable (not indexed)';
+  if (S.facets.originals) pollOriginals();
 }
 
 init();

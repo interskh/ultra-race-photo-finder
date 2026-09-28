@@ -108,3 +108,38 @@ Run-wide decision: `tests/test_web.py::test_page_is_served_and_calls_only_real_e
 
 **T2 review (orchestrator)** — fresh reviewer: 0 CRITICAL / 0 MAJOR, 5 MINOR. Routed and fixed (re-check: all CLOSED, 236 passed): stale CSV paths after rename, late cancel hitting the next job / 500, untested rename claim → 409. Rejected: `statuses` uses `is_file` not `valid` (files only land via `write_atomic`; validating every original per `/api/me` costs a full read each); `Thread.start` failure leaking `busy` (speculative). Deferred (also seen): zip temp orphaned if the build raises; `valid()` reads every original on rerun; `looks_like_jpeg` EOI heuristic on padded JPEGs (inherited policy); "not in the gallery manifest" maps to 502 on single photo.
 - **Real originals run** (orchestrator, pre-fix-round T2 code, port 8001 on `data/subsets/fullcopy`): `POST /api/originals {profile_id: 1}` → done 10/10 downloaded, 0 errors, ~1 lookup/s. Each file is a JPEG with exactly the manifest width×height (6000×4002 / 4002×6000 Canon R5m2, 4608×3072 A7M4, 5100×3400 A7M5), EXIF with camera + DateTimeOriginal; names `20260926-120000_示例摄影工作室_10000000.jpg` …; `photos.csv` has the BOM, the 8 columns, chronological rows, all `downloaded`. Bytes are ~88–93% of manifest `size`: the `sign` URL carries `x-oss-process=image/watermark,…,g_sw` — the organizer's FUGA branding band along the bottom, the same bytes the site's 下载 button gives (spec fact). No unbranded source was probed (private bucket; out of scope).
+
+## S1-T3 — UI: profile switcher, matched via, originals panel, viewer download, keyboard; docs
+
+**Decisions**
+- Init fetches `/api/profiles` + `/api/facets` (no `profile_id`) in parallel; active id from `localStorage["photofinder.profile.<collection>"]` (per collection: same origin serves different indexes), missing/stale → `profiles[0]`. `S.facets.labels` is seeded from the profile object so `meCount`/`previous` counting stay as they were.
+- Switch = refetch `/api/profiles`, clear `S.labels`/`S.details` (per-profile label caches), reseed `/api/me`; then My photos → `loadMe`; search view → re-run the *same* `S.query` (≈30 ms; new profile's labels/negatives apply) — except Find more with 0 marks in the new profile → clear to the welcome view. Rename/delete go through the same switch path, which re-renders every "✓ <name>" button.
+- `setLabel` / `loadMe` drop responses whose profile is no longer active (in-flight POST would otherwise paint into the new profile); the clear-to-welcome switch bumps `S.seq` so an in-flight search is dropped too.
+- New/Rename use `prompt`, Delete uses `confirm` (text: only this person's marks are removed, counts, originals stay). No client-side last-profile guard: the API's 400 message goes to the banner.
+- Matched via: absolute chip bottom-right of `.shot` (card height is fixed; the crop is not covered, only a corner of the context thumb). Click → `S.highlight` → My photos; `loadMe` finds the photo whose `persons` contains the id (cards carry `persons[0]` only), outlines (`.hl`), centres and focuses it; missing → info banner.
+- Find more hint line = "Changed clothes? Mark one photo of each look."; the old "hides marked photos" text moved to the button's title.
+- Originals panel polls `GET /api/originals` via one `setTimeout` chain (cleared before each reschedule), 1 s while running, stops otherwise, 3 s retry after a transient fetch error; started on load when `facets.originals` (resumes a running job). running → not running refreshes My photos. The panel shows any job (it is per collection; other network actions 409 while it runs).
+- Zip is an `<a download>` whose href is set from JS per profile, hidden when no photo has `original == "downloaded"` (a 404 behind `download` fails silently in Chrome).
+- Single original: own `fetch` (not `api()`), filename from `filename*=utf-8''…` (Starlette emits it for CJK names) or `filename="…"`; blob + object URL + `a[download]`; 402 → "Buy on site: <reason>" inline in the viewer, others → banner.
+- Keyboard: one `onKey` replaces the old modal-only listener; ignored with modifiers or in input/textarea/select/contenteditable. Viewer: M/N on `S.modal.sel` (no-op in the upload chooser). Grid: M/N/←/→ on the focused card (or a button inside it), index into `S.results`/`S.me`.
+- Original status sits on the card's second line (first line was too narrow next to the date + flag in My photos).
+
+**Rejected**
+- Re-running via `run(S.base)` on switch: re-reads unapplied form fields. Clearing results on every switch: loses a cheap, still-valid view.
+- Inline form / popover for new/rename: more markup for a rare action; native dialogs are keyboard-accessible.
+- Method-aware drift test (parse `method:` from JS): brittle; PATCH/DELETE sharing a path is covered by the Playwright run.
+
+**Assumptions**
+- `/api/me` `original` is the only status source (T2); single-photo downloads of unmarked photos save a file but don't appear in My photos. Check: open a non-marked result, Download original.
+
+**Deferred**
+- The via chip covers the bottom corner of a tall context thumb (seen in screenshots; readable). Label counts in two tabs still drift until reload.
+
+**Touches** — `src/photofinder/web/static/index.html`, `tests/test_web.py` (drift test back to `used == routes`), `README.md`, `docs/ROADMAP.md`, `CLAUDE.md`. No API change.
+
+**Evidence**
+- `uv run pytest -q` 236 passed; `node --check` on the extracted script OK (v24.14.0).
+- Drift mutants (page path removed: cancel, zip href, single original; bogus path added): 4/4 caught; removing only the DELETE call survives (PATCH shares the path) — known limit. Restored from a copy, sha256 verified.
+- Intercepted Playwright (Chrome, every `/` and `/api/*` fulfilled by a fake): 55 checks pass, 0 page errors — profile fallback/remember/stale, dup-name banner, 409 rename/delete while downloading, create/switch/rename/delete (confirm text), last-profile 400 message, every call after a switch sends the new `profile_id`, label text/tooltip + ellipsis on a 32-char name, matched via → highlight + focus, statuses, progress n/N + current file + counts + errors, polling stops, statuses refetched at done, resume on load, cancel, CSV path, zip href per profile, viewer 200 download (`suggested_filename` = CJK name) and 402, 409 banner, M/N toggle, ←/→, Esc, no shortcuts while typing.
+- Hybrid pass on own port-8002 server (`data/subsets/fullcopy`, all writes intercepted, stopped after): Find more 60 results all with matched via; highlight landed; 10 × "✓ original"; exports tree + labels sha256 identical before/after.
+- Screens: `data/exports/screens/ppl-t3-0[1-8]-*.png` (fixture) and `ppl-t3-real-0[1-5]-*.png` (real thumbnails).

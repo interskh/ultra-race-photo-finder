@@ -483,7 +483,7 @@ def test_page_is_served_and_calls_only_real_endpoints(tmp_path):
     script = re.search(r"<script>(.*)</script>", res.text, re.S).group(1)
     used = {re.sub(r"\$\{[^}]*\}", "{}", p) for p in re.findall(r"/api/[^\s'\"`?]*", script)}
     routes = {re.sub(r"\{[^}]+\}", "{}", r.path) for r in api.routes if r.path.startswith("/api/")}
-    assert used <= routes
+    assert used == routes
 
 
 def test_load_more_excludes_seen_photos_so_labelling_does_not_skip_results(tmp_path):
