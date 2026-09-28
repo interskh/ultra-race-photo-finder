@@ -306,7 +306,7 @@ def test_partial_ocr_warning_on_bib_filter(tmp_path):
     conn.execute("update persons set ocr_at = null where id = ?", (ids[4][0],))
     conn.commit()
     body = client(c).post("/api/search", json={"persons": [ids[1][0]], "bib": "200"}).json()
-    assert body["warnings"] == ["ocr_bibs incomplete: 1 of 5 persons not read yet; rerun `photofinder index`"]
+    assert body["warnings"] == ["ocr_bibs incomplete: 1 of 5 persons not read yet; bib search only covers read persons (`photofinder index --ocr` to finish)"]
 
 
 def test_text_query_encodes_once_on_model_worker(tmp_path, monkeypatch):

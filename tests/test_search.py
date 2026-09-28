@@ -588,7 +588,7 @@ def test_cli_partial_ocr_warns_and_still_filters(tmp_path, monkeypatch, capsys):
     Fakes(monkeypatch, texts={"red": Y})
     cli.main(["search", str(c), "--text", "red", "--bib", "001", "--out", str(tmp_path / "s.jpg")])
     lines = capsys.readouterr().out.splitlines()
-    assert "ocr_bibs incomplete: 2 of 5 persons not read yet; rerun `photofinder index`" in lines
+    assert "ocr_bibs incomplete: 2 of 5 persons not read yet; bib search only covers read persons (`photofinder index --ocr` to finish)" in lines
     assert sorted(ln.split()[2] for ln in lines if ln.lstrip()[:1].isdigit()) == ["1.jpg", "2.jpg"]
     cli.main(["search", str(c), "--text", "red", "--out", str(tmp_path / "s.jpg")])
     assert "ocr_bibs incomplete" not in capsys.readouterr().out

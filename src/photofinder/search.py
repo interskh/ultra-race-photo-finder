@@ -78,9 +78,9 @@ def check_filters(db: sqlite3.Connection, filters: Filters | None) -> str | None
     total, unread = db.execute("""select count(*), count(*) - count(p.ocr_at) from persons p
                                   join photos ph on ph.id = p.photo_id where ph.status = 'ok'""").fetchone()
     if total == unread:
-        raise MissingEmbeddings("index has no bib OCR yet (stage ocr_bibs); run `photofinder index <collection>` first")
+        raise MissingEmbeddings("index has no bib OCR yet (stage ocr_bibs); run `photofinder index <collection> --ocr` first")
     if unread:
-        return f"ocr_bibs incomplete: {unread} of {total} persons not read yet; rerun `photofinder index`"
+        return f"ocr_bibs incomplete: {unread} of {total} persons not read yet; bib search only covers read persons (`photofinder index --ocr` to finish)"
     return None
 
 
@@ -128,7 +128,7 @@ def load_persons(db: sqlite3.Connection) -> Persons:
                          where ph.status = 'ok' order by p.id""").fetchall()
     if not rows:
         raise MissingEmbeddings("index has no person embeddings (stage embed_persons); "
-                                "run `photofinder index <collection>` first")
+                                "run `photofinder index <collection> --ocr` first")
     ids, photo_ids, x1, y1, x2, y2, osnet, siglip = zip(*rows)
     persons = Persons(np.array(ids), np.array(photo_ids), np.array([x1, y1, x2, y2], dtype=np.float32).T,
                       {"osnet": matrix(osnet), "siglip": matrix(siglip)})
@@ -142,7 +142,7 @@ def load_scenes(db: sqlite3.Connection, persons: Persons) -> Persons:
                          where ph.status = 'ok'""").fetchall()
     if not rows:
         raise MissingEmbeddings("index has no scene embeddings (stage embed_scenes); "
-                                "run `photofinder index <collection>` first")
+                                "run `photofinder index <collection> --ocr` first")
     photo_ids, blobs = zip(*rows)
     vecs = matrix(blobs)
     vecs = np.vstack([vecs, np.zeros((1, vecs.shape[1]), vecs.dtype)])
