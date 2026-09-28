@@ -11,7 +11,7 @@
   --bg: #111214; --panel: #17181b; --raised: #1e2024; --line: #2b2e33; --line2: #3a3e45;
   --text: #e7e8ea; --muted: #a0a6ae; --faint: #7d838c;
   --accent: #2f6fe0; --accent-hi: #3d7cf0; --focus: #8db4ff;
-  --me: #22c55e; --me-bg: #15803d; --nm: #ef4444; --nm-bg: #b91c1c; --warn: #f5b041; --pick: #ffd21f;
+  --me: #22c55e; --me-bg: #15803d; --nm: #ef4444; --nm-bg: #b91c1c; --warn: #f5b041; --pick: #ffd21f; --sel: #22d3ee;
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
   --r: 6px;
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
@@ -83,9 +83,11 @@ aside.side { overflow-y: auto; border-right: 1px solid var(--line); background: 
 .box:hover .tag, .box.hov .tag, .box.hit .tag, .box.sel .tag { display: block; }
 .box.lab-me { border-color: var(--me); } .box.lab-nm { border-color: var(--nm); }
 .box:hover, .box.hov { border: 2px solid #fff; z-index: 2; }
-.box.hit, .box.sel { border: 3px solid var(--pick); z-index: 3; }
-.box.sel { box-shadow: 0 0 0 9999px rgba(0,0,0,.5); z-index: 1; }
-.box.hit .tag, .box.sel .tag { background: var(--pick); color: #111; }
+.box.hit { border: 3px solid var(--pick); z-index: 3; }
+.box.sel { border: 3px solid var(--sel); box-shadow: 0 0 0 9999px rgba(0,0,0,.5); z-index: 1; }
+.box.hit.sel { border-color: var(--pick); }
+.box.hit .tag { background: var(--pick); color: #111; } .box.sel .tag { background: var(--sel); color: #111; }
+.box.hit.sel .tag { background: var(--pick); }
 span.box { pointer-events: none; }
 
 main { overflow-y: auto; position: relative; }
@@ -161,14 +163,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .m-list { overflow-y: auto; flex: 1; padding: var(--s2); }
 .m-list h2 { position: sticky; top: calc(-1 * var(--s2)); z-index: 1; margin: calc(-1 * var(--s2)) calc(-1 * var(--s2)) var(--s2);
   padding: var(--s3) var(--s3) var(--s2); background: var(--panel); border-bottom: 1px solid var(--line); }
-.pp { display: grid; grid-template-columns: 56px 1fr; gap: var(--s2); padding: var(--s2); border: 1px solid transparent; border-radius: var(--r); }
-.pp.sel { border-color: var(--line2); background: var(--raised); }
+.pp { display: grid; grid-template-columns: 56px 1fr; gap: var(--s2); padding: var(--s2); border: 1px solid transparent; border-radius: var(--r);
+  scroll-margin-top: 48px; }
+.pp.sel { border-color: var(--sel); background: var(--raised); }
+.m-list .legend { margin: 0 var(--s1) var(--s2); }
+.legend .k-hit, .pp .hit-tag { color: var(--pick); } .legend .k-sel, .pp .sel-tag { color: var(--sel); }
 .pp.lab-me { box-shadow: inset 3px 0 0 var(--me); } .pp.lab-nm { box-shadow: inset 3px 0 0 var(--nm); }
 .pp img, .pp .cthumb { width: 56px; height: 96px; object-fit: contain; background: #0b0c0d no-repeat; border-radius: 3px; cursor: pointer; }
 .pp .cthumb { display: block; }
 .m-list .whole { margin: 0 0 var(--s2); }
 .pp .nm-line { font-weight: 600; }
-.pp .nm-line .hit-tag { color: var(--focus); font-weight: 500; margin-left: var(--s1); }
+.pp .nm-line .hit-tag, .pp .nm-line .sel-tag { font-weight: 500; margin-left: var(--s1); }
+.pp .sel-tag { display: none; } .pp.sel .sel-tag { display: inline; }
 .pp .bibs { color: var(--muted); font-size: 12px; }
 .pp .row { display: flex; gap: var(--s1); margin-top: 6px; flex-wrap: wrap; }
 .pp .lb { flex: none; padding: 0 var(--s2); height: 26px; }
@@ -224,7 +230,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
         <label class="field" for="q-scene" style="margin-top:8px">Scene</label>
         <input type="text" id="q-scene" placeholder="e.g. finish arch, 雪山" autocomplete="off">
         <div class="row2" style="margin-top:8px"><button class="btn" data-run type="submit">Search description</button></div>
-        <p class="hint">Combines with the start point shown above, or runs alone if none is shown. The first one loads a model (about 15 s).</p>
+        <p class="hint">If a “Combining with” box is shown above, the description is combined with it; otherwise it runs alone. The first one loads a model (about 15 s).</p>
       </form>
     </section>
     <section class="sec">
@@ -664,14 +670,14 @@ async function loadMe() {
       h('p', {}, 'Click Me on a search result and it shows up here.')));
     $('#summary').innerHTML = '';
     $('#summary').append(h('div', {class: 'title'}, `My photos (${fmt(r.count)})`),
-      h('div', {class: 'sub'}, 'Photos you marked Me, in time order (Not me marks are not listed). Click Me again to unmark; unmarked photos drop off next time you open this view.'));
+      h('div', {class: 'sub'}, 'Photos you marked Me, in time order (Not me marks are not listed; filters don’t apply here). Click Me again to unmark; unmarked photos drop off next time you open this view.'));
   } catch (e) { banner(e.message); }
 }
 
 async function exportList() {
   try {
     const r = await post('/api/export', {});
-    banner(`Exported ${fmt(r.count)} photos to ${r.path} — one line per photo with its source photo id (for buying originals), photo id and file path.`, 'info');
+    banner(`Exported ${fmt(r.count)} photos to ${r.path} — one line per photo with its source photo id (for buying originals), photo id and file path. Replaces any earlier export from today.`, 'info');
   } catch (e) { banner(e.message); }
 }
 
@@ -717,6 +723,8 @@ function renderModal() {
   list.innerHTML = '';
   list.append(h('h2', {}, `${d.persons.length} ${d.persons.length === 1 ? 'person' : 'people'} in this photo`));
   if (!d.persons.length) list.append(h('p', {class: 'hint'}, 'No person was detected in this photo.'));
+  else list.append(legend('why this photo was returned (matched)'));
+  list.scrollTop = 0;
   const runner = `the selected runner (${hms(d.taken_at)}, ${who(d)})`;
   d.persons.forEach((p, n) => {
     const pid = p.person_id;
@@ -726,26 +734,24 @@ function renderModal() {
     list.append(ppRow(pid, pid === m.sel,
       h('img', {src: `/api/persons/${pid}/crop`, alt: '', loading: 'lazy', onclick: () => selectPerson(pid), onerror: broken}),
       h('div', {},
-        h('div', {class: 'nm-line'}, `Person ${n + 1}`, pid === m.hit ? h('span', {class: 'hit-tag'}, 'matched') : null),
+        h('div', {class: 'nm-line'}, `Person ${n + 1}`, pid === m.hit ? h('span', {class: 'hit-tag'}, 'matched') : null, h('span', {class: 'sel-tag'}, 'selected')),
         h('div', {class: 'bibs'}, p.bibs.length ? 'Bib ' + p.bibs.map(b => `${b.text} (${Math.round(b.conf * 100)}%)`).join(', ') : 'No bib read'),
         h('div', {class: 'row'}, labelButtons(pid, d.photo_id),
           h('button', {class: 'btn small', type: 'button', 'data-run': true, disabled: S.busy > 0,
             onclick: () => { closeModal(); run({persons: [pid], label: runner}); }}, 'Find people like this')))));
     paint(pid);
   });
-  showSel();
+}
+
+function legend(hit) {
+  return h('p', {class: 'hint legend'}, h('b', {class: 'k-hit'}, 'Yellow'), `: ${hit}. `,
+    h('b', {class: 'k-sel'}, 'Cyan'), ': the person you selected.');
 }
 
 function ppRow(key, sel, ...kids) {
   const hov = on => { const b = $(`#m-frame .box[data-pid="${key}"]`); if (b) b.classList.toggle('hov', on); };
   return h('div', {class: `pp${sel ? ' sel' : ''}`, 'data-pid': typeof key === 'number' ? key : null, 'data-pp': key,
     onmouseenter: () => hov(true), onmouseleave: () => hov(false)}, ...kids);
-}
-
-function showSel() {
-  const el = $(`#m-list [data-pp="${S.modal.sel}"]`);
-  if (el) el.scrollIntoView({block: 'center'});
-  return el;
 }
 
 function openUpload() {
@@ -770,7 +776,8 @@ function openUpload() {
   const n = u.boxes.length;
   list.append(h('h2', {}, `${n} ${n === 1 ? 'person' : 'people'} in your photo`),
     h('div', {class: 'whole'}, h('button', {class: 'btn small', type: 'button', 'data-run': true, disabled: S.busy > 0,
-      onclick: () => { closeModal(); useUpload('whole'); }}, 'Use whole photo')));
+      onclick: () => { closeModal(); useUpload('whole'); }}, 'Use whole photo')), legend('the person searched now'));
+  list.scrollTop = 0;
   u.boxes.forEach(b => {
     const k = `u${b.index}`;
     frame.append(boxEl(b.box, u.width, u.height, {pid: k, label: String(b.index + 1), hit: k === S.modal.hit,sel: k === S.modal.sel,
@@ -779,11 +786,10 @@ function openUpload() {
       h('span', {class: 'cthumb', role: 'img', 'aria-label': `Person ${b.index + 1}`, style: cropThumb(upSrc(u), b.box, u.width, u.height),
         onclick: () => selectPerson(k)}),
       h('div', {},
-        h('div', {class: 'nm-line'}, `Person ${b.index + 1}`, k === S.modal.hit ? h('span', {class: 'hit-tag'}, 'searching now') : null),
-        h('div', {class: 'row'}, h('button', {class: 'btn small primary', type: 'button', 'data-run': true, disabled: S.busy > 0,
+        h('div', {class: 'nm-line'}, `Person ${b.index + 1}`, k === S.modal.hit ? h('span', {class: 'hit-tag'}, 'searching now') : null, h('span', {class: 'sel-tag'}, 'selected')),
+        h('div', {class: 'row'}, h('button', {class: `btn small srch${k === S.modal.sel ? ' primary' : ''}`, type: 'button', 'data-run': true, disabled: S.busy > 0,
           onclick: () => { closeModal(); useUpload(b.index); }}, 'Search as me')))));
   });
-  showSel();
   if (first) $('#m-close').focus();
 }
 
@@ -791,8 +797,9 @@ function selectPerson(pid) {
   S.modal.sel = pid;
   document.querySelectorAll('#m-frame .box').forEach(b => b.classList.toggle('sel', b.dataset.pid === String(pid)));
   document.querySelectorAll('#m-list .pp').forEach(el => el.classList.toggle('sel', el.dataset.pp === String(pid)));
-  const el = showSel();
-  if (el) { const b = el.querySelector('button'); if (b) b.focus({preventScroll: true}); }
+  document.querySelectorAll('#m-list .srch').forEach(b => b.classList.toggle('primary', b.closest('.pp').dataset.pp === String(pid)));
+  const el = $(`#m-list [data-pp="${pid}"]`);
+  if (el) { el.scrollIntoView({block: 'nearest'}); const b = el.querySelector('button'); if (b) b.focus({preventScroll: true}); }
 }
 
 function step(d) {

@@ -651,3 +651,11 @@ Slice 3 SLICE_BASE=1c9b6a8
 - `src/photofinder/web/static/index.html` only. No backend/API change. Evidence: `uv run pytest -q` 194 passed (drift test unchanged and green); `node --check` OK (v24.14.0); mutations n/a (no backend logic).
 - Headless Chrome (playwright, channel=chrome) vs own server race925:8771 (stopped after): bib 8039 → "took 35 ms"; viewer aria-label set, 16-person photo with only the matched box labelled, sticky heading, row centred; Find people like this → title "People like the selected runner (19:46:43, 示例影像)", bib input cleared, chip shown, Clear hides it; upload 8015319.jpg → picker auto-opens (11 boxes, Prev/Next hidden), box click selects, Search as me → "People like person 4 in your uploaded photo", preview shows only box 4, reopen keeps selection, Esc closes; 0 console errors. Found+fixed: CSS crop thumbs showed neighbours (contain-fit) → thumb sized to the crop aspect.
 - Local counts with `/api/labels` intercepted by `page.route` (no DB write): 4/4/1 → Me A 5/5/1 → Me B same photo 6/5/1 → unmark A 5/5/1 → B Not me 4/4/2 → clear 4/4/1 (me persons / me photos / not_me).
+
+### S3-T3 polish
+
+- Viewer: matched/searched box = yellow `--pick`, user-selected = cyan `--sel` (+ shade); both → yellow. List rows get a "selected" tag (CSS-only, `.pp.sel .sel-tag`) next to "matched"/"searching now", and a Yellow/Blue legend line under the heading.
+- Lists never auto-scroll on open (`scrollTop = 0`; the old `showSel` removed); only a box click scrolls, `block:'nearest'` with `.pp { scroll-margin-top: 48px }` so the row clears the sticky heading. Rejected: keeping the open-time centring with a margin fix: the brief preferred no scroll, and the matched box is already obvious in the image.
+- Upload chooser: "Search as me" is secondary (`.srch`); only the selected row's button gets `primary` (toggled in `selectPerson`).
+- Copy: Describe hint names the "Combining with" box; My photos sub-line says filters don't apply (chose the note over dimming the panel: simpler, no state); export banner adds "Replaces any earlier export from today."
+- Evidence: pytest 194 passed, `node --check` OK; headless Chrome on own race925:8771 (stopped): list scrollTop 0 on open for viewer and chooser, 0 primary buttons before a pick, `['u9']` after; screenshots show yellow matched vs cyan selected; 0 page errors. No labels written.
