@@ -151,3 +151,22 @@ Run-wide decision: `tests/test_web.py::test_page_is_served_and_calls_only_real_e
 - `Fetcher.original` unlinks the destination before the attempt (it only runs when the existing file failed `valid()`), so a failed refetch leaves no file: CSV/`/api/me` show `failed: …` and the zip omits it.
 - Tests: `test_single_download_in_progress_blocks_rename_and_start`, `test_start_resolves_profile_folder_after_claiming` (rename injected between the start's reads via a `rows_of` hook), `test_invalid_existing_file_is_removed_when_refetch_fails`; the cancel/pacing test now uses a profile that has a folder for the rename-409 case.
 - Evidence: `uv run pytest -q` 239 passed; reverting each fix (claim only if folder exists, start reads before claim, uniform "already running" message, invalid file kept) → 4/4 caught, restored + sha256-verified.
+
+### Gate fix round 1 — page
+
+**Decisions**
+- Switch is committed only after `/api/profiles` and `/api/me` for the target both succeed (`useProfile(id, profiles)`); failure → banner + `renderProfiles()` (select rolls back), nothing else changes. A switch sequence number (`S.pseq`) drops late responses from an earlier choice.
+- Whatever view is active, a switch/rename/delete bumps `S.seq`, empties the Search grid, then re-runs the same `S.query` for the new person (or, Find more with 0 marks / no query → clears `S.base`/`S.start`, hides the "Combining with" chip, welcome view). `renderResults` writes the summary only while the Search view is shown, so a background re-run can't overwrite My photos' heading.
+- Photo detail cache: `openModal` captures the profile and the Map at request time; a late response lands in the discarded Map and is not rendered if the profile changed.
+- Originals panel: the job is shown in full only when `job.profile_id` is the active person (heading uses the current name); a job running for someone else shows one line ("Downloading originals for another person…"), no counts/folder/cancel; finished jobs of others are hidden. The folder is shown only while `job.profile` (name at start) equals the current name — after a rename the server's path is stale.
+- My photos button row wraps (`flex-wrap`, buttons `flex: none`), hint takes the rest.
+- README: matched via only when the search uses ≥2 marked people.
+
+**Rejected**
+- Re-rendering the stale Search grid with new button text only: results and scores were computed with the old person's refs/negatives.
+- Keying the detail cache by `profile:photo`: the Map is already replaced per switch; guarding the write is smaller.
+
+**Evidence**
+- `uv run pytest -q` 239 passed; `node --check` OK; drift test (`used == routes`) green.
+- New intercepted Playwright checks (`<scratch>/pw_t3_fix.py`): 26/26 on this page, 12/26 on 6fa3747's page (every item 1–6 and 3 fails there: stale "✓ Me"/Not-me border/chip after switch and delete on My photos, Me's job shown to others and stale after rename, select not rolled back + label posted to the failed person, late detail cached under the new person, late earlier switch winning, 1100 px buttons narrower than their text). Original run: 55/55, 0 page errors.
+- Screens: `data/exports/screens/ppl-t3-fix-01-switch-cleared.png`, `-02-other-person-running.png`, `-03-my-photos-1100.png` (looked at: row wraps cleanly, no overlap).

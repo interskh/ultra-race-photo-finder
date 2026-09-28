@@ -31,7 +31,7 @@ What works best (measured in the handoff log): clothing alone is weak when many 
 
 1. Upload a photo of you (race day, same kit) and click your box — or start from your bib number if the index was built with `--ocr`.
 2. Mark results **✓ <name>** / **✗ Not <name>** (the active person, "Me" by default).
-3. **Find more like my marked ones** — searches with all your marked shots, which is how other photographers' photos of you surface. Each result shows a small **matched via** thumbnail: the marked photo it resembled most; click it to jump to that photo in My photos. Changed clothes (jacket on/off)? Mark one photo of each look.
+3. **Find more like my marked ones** — searches with all your marked shots, which is how other photographers' photos of you surface. When the search uses two or more marked people, each result shows a small **matched via** thumbnail: the marked photo it resembled most; click it to jump to that photo in My photos. Changed clothes (jacket on/off)? Mark one photo of each look.
 4. Narrow with time, photographer, album; add a scene or outfit description.
 5. **My photos** lists the marked photos with each one's original status (✓ original / `buy on site: <reason>` / `failed: …`):
    - **Download originals** (yipai360 galleries only) fetches the full-size originals into `data/exports/<collection>/<person>/originals/<YYYYMMDD-HHMMSS>_<photographer>_<source photo id>.jpg` — one lookup per second, skips files already there, shows `n / N`, the current file and errors, and can be cancelled; rerun to resume. Photos the site refuses are listed as `buy on site: <reason>`.

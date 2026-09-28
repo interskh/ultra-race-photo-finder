@@ -135,6 +135,9 @@ main { overflow-y: auto; position: relative; }
 .meta .flag { margin-left: auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; padding: 0 6px; border-radius: 3px; font-size: 11px; font-weight: 600; color: #fff; }
 .meta .orig { flex: none; max-width: 62%; overflow: hidden; text-overflow: ellipsis; color: var(--warn); }
 a.btn { text-decoration: none; color: inherit; }
+.export { flex-wrap: wrap; }
+.row2.export > .btn { flex: none; min-width: auto; }
+.export .hint { flex: 1 1 260px; }
 .meta .orig.ok { color: var(--me); } .meta .orig.bad { color: var(--nm); }
 .card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .card.hl { outline: 3px solid var(--pick); outline-offset: 2px; }
@@ -330,7 +333,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
-  profiles: [], name: 'Me', job: null, pollT: null, highlight: null};
+  profiles: [], name: 'Me', job: null, pollT: null, highlight: null, pseq: 0};
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -411,37 +414,47 @@ function renderProfiles() {
   sel.title = S.name;
 }
 
-async function useProfile(id) {
-  const p = S.profiles.find(x => x.id === id) || S.profiles[0];
+async function useProfile(id, profiles) {
+  const seq = ++S.pseq;
+  const p = profiles.find(x => x.id === id) || profiles[0];
+  const me = await api(`/api/me?profile_id=${p.id}`);
+  if (seq !== S.pseq) return false;
+  S.profiles = profiles;
   S.profile = p.id;
   S.name = p.name;
   try { localStorage.setItem(profileKey(), String(p.id)); } catch (e) { }
   S.facets.labels = {me: p.me, not_me: p.not_me};
   S.labels = {};
   S.details = new Map();
-  renderProfiles();
-  const me = await api(`/api/me?profile_id=${S.profile}`);
-  if (S.profile !== p.id) return;
   setMine(me.photos);
+  renderProfiles();
   renderCounts();
+  renderJob();
   $('#zip').href = `/api/originals/zip?profile_id=${S.profile}`;
+  return true;
 }
 
 async function switchProfile(id) {
+  const seq = ++S.pseq;
   try {
-    S.profiles = (await api('/api/profiles')).profiles;
-    await useProfile(id);
-  } catch (e) { banner(e.message); return; }
-  if (S.view === 'me') loadMe();
-  else if (S.query && !(S.base.mode === 'more' && !meCount())) search(false);
-  else {
-    ++S.seq;
-    S.base = S.query = null;
-    S.results = [];
-    $('#grid').innerHTML = '';
-    $('#tail').hidden = true;
-    welcome();
+    const profiles = (await api('/api/profiles')).profiles;
+    if (seq !== S.pseq || !await useProfile(id, profiles)) return;
+  } catch (e) {
+    if (seq + 1 >= S.pseq) { banner(e.message); renderProfiles(); }
+    return;
   }
+  ++S.seq;
+  S.results = [];
+  $('#grid').innerHTML = '';
+  $('#empty').innerHTML = '';
+  $('#tail').hidden = true;
+  if (S.query && !(S.base.mode === 'more' && !meCount())) search(false);
+  else {
+    S.base = S.query = S.start = null;
+    renderStart();
+    if (S.view === 'search') welcome();
+  }
+  if (S.view === 'me') loadMe();
 }
 
 async function newProfile() {
@@ -614,7 +627,7 @@ function renderResults(added) {
         : ['Nothing matched with these filters.', 'Loosen the time range, photographer or bib filter, or try another start point.'];
     empty.append(h('div', {class: 'empty'}, h('h3', {}, 'No photos found'), ...tips.map(t => h('p', {}, t))));
   }
-  summary();
+  if (S.view === 'search') summary();
 }
 
 function labelButtons(pid, photoId) {
@@ -831,20 +844,26 @@ async function exportList() {
 
 function renderJob() {
   const j = S.job;
-  const on = !!(j && S.facets && S.facets.originals && j.state !== 'idle');
+  const mine = !!(j && j.profile_id === S.profile);
+  const on = !!(j && S.facets && S.facets.originals && (mine ? j.state !== 'idle' : j.state === 'running'));
   $('#job').hidden = !on;
   renderCounts();
   if (!on) return;
+  $('#orig-cancel').hidden = !mine || j.state !== 'running';
+  $('#job-errors').hidden = !mine;
+  if (!mine) {
+    $('#job-text').textContent = 'Downloading originals for another person… Downloads for this person wait until it finishes.';
+    return;
+  }
   const c = j.counts;
   const tally = `${c.downloaded} downloaded, ${c.skipped} already there, ${c.buy_on_site} buy on site, ${c.failed} failed`;
-  const head = {running: `Downloading originals for ${j.profile}: ${j.done} / ${j.total}`, done: `Originals for ${j.profile} done: ${j.done} / ${j.total}`,
-    cancelled: `Originals for ${j.profile} cancelled at ${j.done} / ${j.total}`, error: `Originals for ${j.profile} stopped with an error at ${j.done} / ${j.total}`}[j.state] || j.state;
+  const head = {running: `Downloading originals for ${S.name}: ${j.done} / ${j.total}`, done: `Originals for ${S.name} done: ${j.done} / ${j.total}`,
+    cancelled: `Originals for ${S.name} cancelled at ${j.done} / ${j.total}`, error: `Originals for ${S.name} stopped with an error at ${j.done} / ${j.total}`}[j.state] || j.state;
   const parts = [head];
   if (j.state === 'running' && j.current) parts.push(`now ${j.current}`);
   parts.push(tally);
-  if (j.state !== 'running' && j.folder) parts.push(`saved in ${j.folder}/originals`);
+  if (j.state !== 'running' && j.folder && j.profile === S.name) parts.push(`saved in ${j.folder}/originals`);
   $('#job-text').textContent = parts.join(' · ');
-  $('#orig-cancel').hidden = j.state !== 'running';
   const ul = $('#job-errors');
   ul.innerHTML = '';
   for (const e of j.errors) ul.append(h('li', {}, e));
@@ -935,11 +954,12 @@ async function openModal(list, i) {
   $('#m-list').innerHTML = '';
   $('#m-list').append(h('p', {class: 'hint'}, 'Loading people…'));
   if (first) $('#m-close').focus();
-  let d = S.details.get(r.photo_id);
+  const profile = S.profile, cache = S.details;
+  let d = cache.get(r.photo_id);
   try {
-    if (!d) { d = await api(`/api/photos/${r.photo_id}?profile_id=${S.profile}`); S.details.set(r.photo_id, d); }
+    if (!d) { d = await api(`/api/photos/${r.photo_id}?profile_id=${profile}`); cache.set(r.photo_id, d); }
   } catch (e) { banner(e.message); return; }
-  if (!S.modal || S.modal.list !== list || S.modal.i !== i) return;
+  if (S.profile !== profile || !S.modal || S.modal.list !== list || S.modal.i !== i) return;
   for (const p of d.persons) if (!(p.person_id in S.labels)) S.labels[p.person_id] = p.label;
   S.modal.d = d;
   renderModal();
@@ -1140,10 +1160,9 @@ async function init() {
   try {
     let p;
     [p, S.facets] = await Promise.all([api('/api/profiles'), api('/api/facets')]);
-    S.profiles = p.profiles;
     let saved = null;
     try { saved = Number(localStorage.getItem(profileKey())); } catch (e) { }
-    await useProfile(saved);
+    await useProfile(saved, p.profiles);
   } catch (e) {
     $('#coll').textContent = 'Collection unavailable';
     banner(e.message);
