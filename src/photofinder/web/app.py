@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import io
 import secrets
 import time
@@ -6,14 +7,14 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from photofinder import config, db, models, search
 from photofinder.index.stages import now
@@ -25,10 +26,11 @@ CROP_HEIGHT = 256
 CROP_PAD = 0.1
 CACHE = {"Cache-Control": "private, max-age=86400"}
 FIRST = "order by ph.taken_at is null, ph.taken_at, ph.id"
+Id = Annotated[int, Field(ge=0, le=2 ** 63 - 1)]
 
 
 class SearchQuery(BaseModel):
-    persons: list[int] = []
+    persons: list[Id] = []
     upload: str | None = None
     box: int | Literal["whole"] = 0
     text: str | None = None
@@ -42,10 +44,11 @@ class SearchQuery(BaseModel):
     mode: Literal["similar", "more"] = "similar"
     top: int = 60
     offset: int = 0
+    seen: list[Id] = []
 
 
 class LabelBody(BaseModel):
-    person_id: int
+    person_id: Id
     label: Literal["me", "not_me"] | None = None
 
 
@@ -191,9 +194,10 @@ def create_app(collection: Path) -> FastAPI:
                 "boxes": [{"index": i, "box": list(b[:4]), "conf": b[4]} for i, b in enumerate(boxes)]}
 
     def get_upload(token):
-        if token not in uploads:
+        up = uploads.get(token)
+        if up is None:
             raise bad("upload expired or unknown; upload the photo again", 404)
-        return uploads[token]
+        return up
 
     @app.get("/api/uploads/{token}/image")
     def upload_image(token: str):
@@ -203,19 +207,23 @@ def create_app(collection: Path) -> FastAPI:
         with connect() as conn:
             labels = conn.execute("select l.person_id, l.label, p.photo_id from labels l "
                                   "join persons p on p.id = l.person_id").fetchall()
+        embedded = lambda ids: [p for p, ok in zip(ids, np.isin(ids, persons.ids)) if ok]
         me = [p for p, label, _ in labels if label == "me"]
         not_me = [p for p, label, _ in labels if label == "not_me"]
-        ids = list(q.persons)
+        me_emb, not_me_emb = embedded(me), embedded(not_me)
         if q.mode == "more":
             if not me:
                 raise bad("no person is marked as me yet; mark at least one person as me first")
-            ids += me
-        refs = {}
-        if ids:
-            unknown = sorted(set(ids) - set(persons.ids[np.isin(persons.ids, ids)].tolist()))
-            if unknown:
-                raise bad(f"person {unknown[0]} is not an indexed person with embeddings")
-            refs = search.person_refs(persons, ids)
+            if not me_emb:
+                raise bad("the people marked as me have no embeddings yet; rerun `photofinder index`")
+        skipped = len(not_me) - len(not_me_emb) + (len(me) - len(me_emb) if q.mode == "more" else 0)
+        note = f"{skipped} marked {'person has' if skipped == 1 else 'people have'} no embeddings yet; " \
+               "rerun `photofinder index`" if skipped else None
+        unknown = sorted(set(q.persons) - set(embedded(q.persons)))
+        if unknown:
+            raise bad(f"person {unknown[0]} is not an indexed person with embeddings")
+        ids = list(q.persons) + (me_emb if q.mode == "more" else [])
+        refs = search.person_refs(persons, ids) if ids else {}
         if q.upload:
             up = get_upload(q.upload)
             row = len(up["boxes"]) if q.box == "whole" else q.box
@@ -225,14 +233,14 @@ def create_app(collection: Path) -> FastAPI:
             for k in ("osnet", "siglip"):
                 v = up[k][row:row + 1]
                 refs[k] = np.vstack([refs[k], v]) if k in refs else v
-        negatives = search.person_refs(persons, not_me)["osnet"] if not_me else None
+        negatives = search.person_refs(persons, not_me_emb)["osnet"] if not_me_emb else None
         exclude = {photo for _, label, photo in labels if label == "me"} if q.mode == "more" else set()
         drop = not_me if q.mode == "more" else []
-        return refs, negatives, exclude, drop
+        return refs, negatives, exclude | set(q.seen), drop, note
 
-    def ranked(q, filters, top, offset, refs, negatives, exclude, drop):
+    def ranked(q, filters, top, offset, refs, negatives, exclude, drop, note):
         with connect() as conn:
-            warnings = [search.check_filters(conn, filters)]
+            warnings = [note, search.check_filters(conn, filters)]
             if "scene" in refs:
                 warnings.append(search.check_scenes(conn))
             mask = search.filter_mask(conn, persons, filters)
@@ -245,7 +253,8 @@ def create_app(collection: Path) -> FastAPI:
             picked = [int(rows[i]) for i in
                       search.best_per_photo(persons.photo_ids[rows], scores[rows], offset + top, exclude)][offset:]
             timing = time.monotonic() - t0
-            results = hydrate(conn, [(int(persons.ids[i]), float(scores[i])) for i in picked], offset)
+            results = hydrate(conn, [(int(persons.ids[i]), float(scores[i])) for i in picked],
+                              offset + len(set(q.seen)))
         return {"results": results, "warnings": [w for w in warnings if w], "timing": round(timing, 4)}
 
     def bib_start(q, filters, top, offset):
@@ -280,29 +289,31 @@ def create_app(collection: Path) -> FastAPI:
         texts = {k: v.strip() for k, v in (("text", q.text), ("scene", q.scene)) if v and v.strip()}
         if "scene" in texts and scene_error:
             raise bad(scene_error)
-        refs, negatives, exclude, drop = await run_in_threadpool(prepare, q)
+        refs, negatives, exclude, drop, note = await run_in_threadpool(prepare, q)
         if not refs and not texts:
             raise bad("give a person, an uploaded box, text, scene or start_bib to search")
         if texts:
             vecs = await on_models(models.encode_text, list(texts.values()))
             refs.update({k: v[None] for k, v in zip(texts, vecs)})
-        return await run_in_threadpool(ranked, q, filters, top, offset, refs, negatives, exclude, drop)
+        return await run_in_threadpool(ranked, q, filters, top, offset, refs, negatives, exclude, drop, note)
 
     @app.post("/api/labels")
     def set_label(body: LabelBody):
         with connect() as conn, conn:
+            conn.execute("begin immediate")
             if not conn.execute("select 1 from persons where id = ?", (body.person_id,)).fetchone():
                 raise bad(f"person {body.person_id} not found", 404)
+            previous = conn.execute("select label from labels where person_id = ?", (body.person_id,)).fetchone()
             if body.label is None:
                 conn.execute("delete from labels where person_id = ?", (body.person_id,))
             else:
                 conn.execute("insert into labels(person_id, label, created_at) values (?, ?, ?) on conflict(person_id) "
                              "do update set label = excluded.label, created_at = excluded.created_at",
                              (body.person_id, body.label, now()))
-        return {"person_id": body.person_id, "label": body.label}
+        return {"person_id": body.person_id, "label": body.label, "previous": previous and previous[0]}
 
     @app.get("/api/photos/{photo_id}")
-    def photo(photo_id: int):
+    def photo(photo_id: Id):
         with connect() as conn:
             meta = photo_meta(conn, [photo_id]).get(photo_id)
             if meta is None:
@@ -328,7 +339,7 @@ def create_app(collection: Path) -> FastAPI:
             raise bad(f"photo {photo_id} file is missing or unreadable", 404)
 
     @app.get("/api/photos/{photo_id}/image")
-    def photo_image(photo_id: int, size: int | None = Query(None, alias="max", ge=16, le=8192)):
+    def photo_image(photo_id: Id, size: int | None = Query(None, alias="max", ge=16, le=8192)):
         path = photo_path(photo_id)
         if size is None:
             try:
@@ -342,7 +353,7 @@ def create_app(collection: Path) -> FastAPI:
         return Response(jpeg(img), media_type="image/jpeg", headers=CACHE)
 
     @app.get("/api/persons/{person_id}/crop")
-    def person_crop(person_id: int):
+    def person_crop(person_id: Id):
         with connect() as conn:
             row = conn.execute("select ph.id, ph.relpath, p.x1, p.y1, p.x2, p.y2 from persons p "
                                "join photos ph on ph.id = p.photo_id where p.id = ?", (person_id,)).fetchone()
@@ -382,8 +393,10 @@ def create_app(collection: Path) -> FastAPI:
             raise bad("no photos marked as me yet; nothing to export")
         out = config.DATA_ROOT / "exports" / f"{collection.name}-{time.strftime('%Y%m%d')}.txt"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("source_photo_id\tphoto_id\tpath\n" + "".join(
-            f"{meta[i]['source_photo_id'] or '-'}\t{i}\t{collection / meta[i]['relpath']}\n" for i in ids))
+        with open(out, "w", newline="") as f:
+            writer = csv.writer(f, delimiter="\t", lineterminator="\n")
+            writer.writerow(["source_photo_id", "photo_id", "path"])
+            writer.writerows([meta[i]["source_photo_id"] or "-", i, collection / meta[i]["relpath"]] for i in ids)
         return {"path": str(out), "count": len(ids)}
 
     return app

@@ -1,3 +1,4 @@
+import csv
 import io
 import re
 import time
@@ -478,3 +479,104 @@ def test_page_is_served_and_calls_only_real_endpoints(tmp_path):
     used = {re.sub(r"\$\{[^}]*\}", "{}", p) for p in re.findall(r"/api/[^\s'\"`?]*", script)}
     routes = {re.sub(r"\{[^}]+\}", "{}", r.path) for r in api.routes if r.path.startswith("/api/")}
     assert used == routes
+
+
+def test_load_more_excludes_seen_photos_so_labelling_does_not_skip_results(tmp_path):
+    c, _, ids = make_index(tmp_path, [(k, (0, 0, 50, 100), [1, 0.2 * (k - 1), 0, 0], [1, 0.2 * (k - 1), 0])
+                                      for k in range(1, 7)], photos=6)
+    api = client(c)
+    label(api, ids[1][0], "me")
+    first = api.post("/api/search", json={"mode": "more", "top": 2}).json()["results"]
+    assert [r["relpath"] for r in first] == ["2.jpg", "3.jpg"]
+    label(api, ids[2][0], "me")
+    seen = [r["photo_id"] for r in first]
+    page = api.post("/api/search", json={"mode": "more", "top": 2, "seen": seen}).json()["results"]
+    assert [(r["rank"], r["relpath"]) for r in page] == [(3, "4.jpg"), (4, "5.jpg")]
+
+
+def add_unembedded_person(conn, photo):
+    pid = conn.execute("insert into persons(photo_id, x1, y1, x2, y2, conf) select id, 0, 0, 9, 9, 0.9 "
+                       "from photos where relpath = ?", (f"{photo}.jpg",)).lastrowid
+    conn.commit()
+    return pid
+
+
+def test_labels_on_unembedded_persons_are_skipped_with_a_warning(tmp_path):
+    c, conn, ids = more_index(tmp_path)
+    api = client(c)
+    ghost_me, ghost_not = add_unembedded_person(conn, 3), add_unembedded_person(conn, 4)
+    label(api, ghost_me, "me")
+    res = api.post("/api/search", json={"mode": "more"})
+    assert res.status_code == 400 and "no embeddings yet" in res.json()["detail"]
+    assert api.post("/api/search", json={"persons": [ghost_me]}).status_code == 400
+    label(api, ids[1][0], "me")
+    label(api, ghost_not, "not_me")
+    body = api.post("/api/search", json={"mode": "more"}).json()
+    assert body["warnings"] == ["2 marked people have no embeddings yet; rerun `photofinder index`"]
+    assert [r["relpath"] for r in body["results"]] == ["2.jpg", "4.jpg"]
+    body = api.post("/api/search", json={"persons": [ids[1][0]]}).json()
+    assert body["warnings"] == ["1 marked person has no embeddings yet; rerun `photofinder index`"]
+    assert body["results"][0]["relpath"] == "1.jpg"
+
+
+def test_label_response_carries_previous_label(tmp_path):
+    c, _, ids = make_index(tmp_path, [(1, (0, 0, 50, 100), A, X)])
+    api = client(c)
+    pid = ids[1][0]
+    seq = [label(api, pid, v).json() for v in ("me", "me", "not_me", None, None)]
+    assert [(r["previous"], r["label"]) for r in seq] == \
+        [(None, "me"), ("me", "me"), ("me", "not_me"), ("not_me", None), (None, None)]
+
+
+def test_not_me_never_boosts_a_candidate_without_osnet(tmp_path, monkeypatch):
+    nan = [float("nan")] * 4
+    c, _, ids = make_index(tmp_path, [(1, (0, 0, 50, 100), nan, X), (2, (0, 0, 50, 100), A, X),
+                                      (3, (0, 0, 50, 100), B, X)])
+    FakeModels(monkeypatch, texts={"red jacket": X})
+    api = client(c)
+    label(api, ids[3][0], "not_me")
+    results = api.post("/api/search", json={"text": "red jacket"}).json()["results"]
+    scores = {r["relpath"]: r["score"] for r in results}
+    assert results[0]["relpath"] == "2.jpg"
+    assert scores["1.jpg"] == pytest.approx(scores["3.jpg"], abs=5e-3) and scores["1.jpg"] < scores["2.jpg"]
+
+
+def test_ids_beyond_int64_are_400_not_500(tmp_path):
+    c, _, _ = make_index(tmp_path, [(1, (0, 0, 50, 100), A, X)])
+    api = client(c)
+    big = 2 ** 63
+    for url in (f"/api/photos/{big}", f"/api/photos/{big}/image", f"/api/persons/{big}/crop"):
+        assert api.get(url).status_code == 400, url
+    assert api.post("/api/labels", json={"person_id": big, "label": "me"}).status_code == 400
+    assert api.post("/api/search", json={"persons": [big]}).status_code == 400
+    assert api.post("/api/search", json={"persons": [1], "seen": [big]}).status_code == 400
+    assert api.get(f"/api/photos/{big - 1}").status_code == 404
+
+
+def test_export_quotes_fields_with_tabs_or_newlines(tmp_path, monkeypatch):
+    c, conn, ids = make_index(tmp_path, [(1, (0, 0, 50, 100), A, X), (2, (0, 0, 50, 100), B, Y)])
+    monkeypatch.setattr(config, "DATA_ROOT", tmp_path / "data")
+    api = client(c)
+    label(api, ids[1][0], "me")
+    label(api, ids[2][0], "me")
+    conn.execute("update photos set source_photo_id = 'a\tb' where relpath = '1.jpg'")
+    conn.execute("update photos set relpath = 'x\ny.jpg' where relpath = '2.jpg'")
+    conn.commit()
+    p = photo_ids(conn)
+    text = open(api.post("/api/export").json()["path"], newline="").read()
+    assert list(csv.reader(io.StringIO(text), delimiter="\t")) == [
+        ["source_photo_id", "photo_id", "path"],
+        ["a\tb", str(p["1.jpg"]), str(c.resolve() / "1.jpg")],
+        ["2", str(p["x\ny.jpg"]), str(c.resolve() / "x\ny.jpg")],
+    ]
+
+
+def test_upload_evicted_between_check_and_read_is_404(tmp_path, monkeypatch):
+    class Evicting(web.OrderedDict):
+        def __contains__(self, key):
+            return True
+    monkeypatch.setattr(web, "OrderedDict", Evicting)
+    c, _, _ = upload_index(tmp_path)
+    api = client(c)
+    assert api.get("/api/uploads/gone/image").status_code == 404
+    assert api.post("/api/search", json={"upload": "gone"}).status_code == 404

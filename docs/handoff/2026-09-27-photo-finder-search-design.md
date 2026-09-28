@@ -672,3 +672,34 @@ Slice 3 SLICE_BASE=1c9b6a8
 - UI verdict (orchestrator, from the screenshots): calm dark UI, photos dominate, clear primary action; cards now show crop and whole photo side by side; viewer boxes land exactly on runners (single and 18-person photos), matched = yellow, selected = cyan; upload chooser is usable in a crowd; state feedback (counts, chips, banners, real timings) is consistent. Good enough to use; the limiting factor is appearance-model recall, not the page.
 - Cleanup: the E2E labels (4 me / 1 not_me) and `data/exports/race925-20260928.txt` were deleted; race925 labels = 0. Servers stopped.
 - Deferred from E2E: duplicate YOLO detections (box inside box, same runner) — index stage; uploads show no OCR bib reads; an uploaded photo that is itself indexed returns itself as #1 (bytes upload, no file identity); label changes in another tab drift the header counts until reload.
+
+## S3-gate fix round 1 — paging, unembedded labels, label race, NaN negatives, ids, export, stale views
+
+**Decisions**
+- A: scored searches take `seen: list[photo_id]` as extra excludes; the page's Load more sends `offset 0 + seen = every photo in the grid` (bib start keeps `offset`, labels don't move it). Rank base = `offset + len(set(seen))`, so page 2 numbers from #61.
+- B: only `q.persons` is validated against embedded persons (400 as before). me/not_me labels without embeddings are skipped for refs/negatives and reported as a warning ("N marked people have no embeddings yet; rerun `photofinder index`"; counts not_me always, me only in `more`); `more` with labels but zero embedded me → 400 "the people marked as me have no embeddings yet…". Me-photo exclusion and not_me masking still use all labels (the user marked them).
+- C: `/api/labels` runs `begin immediate`, reads the old label, writes, and returns `previous`; the page adjusts counts from `r.previous`/`r.label` and ignores clicks for a person while its POST is in flight (`S.pending`).
+- D: invalid (NaN-osnet) rows get the MAX valid normalized negative (max penalty): consistent with `rank_invalid_last` (an invalid row never beats a valid one); 0-fill would, in single-term raw-cosine mode, charge them less than any valid row.
+- E: `loadMe` drops its response when `S.view !== 'me'`. J: summary reads filters from `S.query` and a `S.descIgnored` snapshot taken in `run()`.
+- F: `Id = Annotated[int, Field(ge=0, le=2**63-1)]` on photo/crop path ids, `LabelBody.person_id`, `persons[]`, `seen[]` → 400 via the existing validation handler.
+- G: export via `csv.writer(delimiter='\t', lineterminator='\n')` (minimal quoting; plain rows unchanged). H: `get_upload` = one `uploads.get()`.
+- I (corrections to S3-T1, append-only): negatives apply in similar mode not "because the formula is general" but because a Not-me is never the user, so penalizing is always safe; `me` labels join refs only in `more` because similar means "people like THIS person". And the T1 "Rejected — targeted unload vs `unload()`" line reads inverted: the code DOES the targeted unload (`unload("yolo")`, keeping OSNet/SigLIP); the rejected option was unloading everything.
+
+**Rejected**
+- Page-side offset recomputation (count labelled-away cards): not_me marks in similar mode reorder the list, so no offset is correct; ids are.
+- 0-fill for invalid negatives (see D). Request token for `loadMe`: view check covers the reported race; a double My-photos click re-renders identical data.
+- Rejecting `seen` with `start_bib`: the page never sends it; ignored.
+
+**Assumptions**
+- `seen` lists stay small enough for one JSON body (≤ a few thousand ids at 60/page). Check: payload size after many Load mores.
+- `begin immediate` serializes concurrent label writes across threadpool connections (WAL, timeout 30 s).
+
+**Deferred**
+- No concurrency test for the label transaction (only the `previous` field is tested); the in-flight guard + `previous` counting fix the reported double-click either way.
+
+**Evidence**
+- `uv run pytest -q`: 201 passed (+7 in `tests/test_web.py`; each failed on the pre-fix code: A/B/D/G assertion, C KeyError, F OverflowError, H KeyError). Mutations 8/8 caught (seen-exclude, unembedded filter, previous, neg fill, id bound, csv, rank base, get_upload check-then-read); restored from copies, sha256-verified.
+- JS (A, C, E, J): headless Chrome (playwright, channel=chrome) against a fully intercepted fixture (`/`, all `/api/*` routed; no server, no DB) on the pre- and post-fix `index.html`. Pre → post: Load more body offset 60/seen 0 → offset 0/seen 60 (cards appended, card 61 = #61); double-click Me with held `/api/labels`: 2 requests, me 1→3 → 1 request, 1→2, clear → 1; unapplied filter: "filtered" shown → not shown; stale `/api/me` after switching back: heading "My photos (0)" → "More like my marked photos". 0 page errors. `node --check` OK.
+
+**Touches**
+- `src/photofinder/web/app.py` (SearchQuery.seen, Id, prepare/ranked signatures, labels response `previous`, export writer), `src/photofinder/search.py` (`score` negatives), `src/photofinder/web/static/index.html`, `tests/test_web.py`. API change: `/api/labels` response adds `previous`; `/api/search` accepts `seen`.

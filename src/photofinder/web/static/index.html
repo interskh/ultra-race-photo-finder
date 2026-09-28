@@ -295,7 +295,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <script>
 const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
-  labels: {}, mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search'};
+  labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search'};
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -420,9 +420,10 @@ function run(base) {
   }
   S.base = base;
   S.query = q;
+  S.descIgnored = !!(q.start_bib && (describe().text || describe().scene));
   renderStart();
   showView('search');
-  search(0);
+  search(false);
 }
 
 function renderStart() {
@@ -445,21 +446,21 @@ function summary() {
     if (q.scene) parts.push(`scene “${q.scene}”`);
   }
   if (parts.length) title += (isStart(b) ? ' + ' : ': ') + parts.join(' + ');
-  const f = filters();
   const sub = [`${fmt(S.results.length)}${S.total != null ? ' of ' + fmt(S.total) : ''} photos shown`];
   if (b.start_bib) sub.push('exact bib reads, in time order');
   if (b.mode === 'more') sub.push('marked photos hidden');
-  if (f.start || f.end || f.bib || f.photographers.length || f.albums.length) sub.push('filtered');
-  if (b.start_bib && (describe().text || describe().scene)) sub.push('description not used with a bib search');
+  if (q.start || q.end || q.bib || q.photographers.length || q.albums.length) sub.push('filtered');
+  if (b.start_bib && S.descIgnored) sub.push('description not used with a bib search');
   if (S.timing != null) sub.push(`took ${took(S.timing)}`);
   $('#summary').innerHTML = '';
   $('#summary').append(h('div', {class: 'title', title}, title), h('div', {class: 'sub'}, sub.join(' · ')));
 }
 
-async function search(offset) {
-  const q = {...S.query, offset};
+async function search(append) {
+  const q = S.query.start_bib ? {...S.query, offset: append ? S.results.length : 0}
+    : {...S.query, offset: 0, seen: append ? S.results.map(r => r.photo_id) : []};
   const seq = ++S.seq;
-  S.appending = offset > 0;
+  S.appending = append;
   setBusy(q.text || q.scene ? 'Searching… the first description or scene search loads the text model (about 15 s).' : 'Searching…');
   try {
     const t0 = performance.now();
@@ -468,12 +469,12 @@ async function search(offset) {
     const ms = performance.now() - t0;
     for (const w of r.warnings || []) banner(w, 'warn');
     for (const x of r.results) S.labels[x.person_id] = x.label;
-    if (offset) S.results.push(...r.results);
+    if (append) S.results.push(...r.results);
     else S.results = r.results;
     S.total = r.total ?? null;
     S.timing = ms / 1000;
     S.done = S.total != null ? S.results.length >= S.total : r.results.length < q.top;
-    renderResults(offset ? r.results : null);
+    renderResults(append ? r.results : null);
   } catch (e) {
     if (seq === S.seq) banner(e.message);
   } finally {
@@ -524,13 +525,15 @@ function paint(pid) {
 }
 
 async function setLabel(pid, want, photoId) {
+  if (S.pending.has(pid)) return;
+  S.pending.add(pid);
   const prev = S.labels[pid] ?? null;
   try {
     const r = await post('/api/labels', {person_id: pid, label: prev === want ? null : want});
     S.labels[pid] = r.label;
     paint(pid);
     if (S.facets) {
-      if (prev) S.facets.labels[prev]--;
+      if (r.previous) S.facets.labels[r.previous]--;
       if (r.label) S.facets.labels[r.label]++;
     }
     const mine = S.mine.get(photoId) || new Set();
@@ -538,7 +541,7 @@ async function setLabel(pid, want, photoId) {
     if (mine.size) S.mine.set(photoId, mine); else S.mine.delete(photoId);
     S.mePhotos = S.mine.size;
     renderCounts();
-  } catch (e) { banner(e.message); }
+  } catch (e) { banner(e.message); } finally { S.pending.delete(pid); }
 }
 
 function broken(e) {
@@ -655,6 +658,7 @@ async function loadMe() {
   $('#summary').append(h('div', {class: 'title'}, 'My photos'), h('div', {class: 'sub'}, 'Loading…'));
   try {
     const r = await api('/api/me');
+    if (S.view !== 'me') return;
     setMine(r.photos);
     renderCounts();
     S.me = r.photos.map(p => {
@@ -852,7 +856,7 @@ function wire() {
   });
   ['f-start', 'f-end', 'f-bib'].forEach(id => $('#' + id).addEventListener('input', countFilters));
   $('#more').addEventListener('click', () => run({mode: 'more', label: 'your marked photos (Find more)'}));
-  $('#load-more').addEventListener('click', () => search(S.results.length));
+  $('#load-more').addEventListener('click', () => search(true));
   $('#tab-search').addEventListener('click', () => showView('search'));
   $('#tab-me').addEventListener('click', () => showView('me'));
   $('#export').addEventListener('click', exportList);
