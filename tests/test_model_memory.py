@@ -185,6 +185,15 @@ def test_a_new_worker_waits_for_the_old_one_to_exit():
     assert log[0][1] is log[1][1] is not log[2][1]
 
 
+def test_a_stuck_old_worker_does_not_block_new_requests_forever(monkeypatch):
+    monkeypatch.setattr(web, "STOP_WAIT", 0.3)
+    never = threading.Event()
+    w = web.ModelWorker(0.05, lambda: SlowStopPool([], never))
+    w.submit(sum, [1]).result()
+    assert wait_until(lambda: w.status()["running"] is False)
+    assert w.submit(sum, [2]).result(timeout=5) == 2
+
+
 def test_real_worker_runs_in_a_child_process_that_exits_when_idle():
     w = web.ModelWorker(0.5, REAL_POOL)
     child = w.submit(os.getpid).result(timeout=60)

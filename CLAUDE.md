@@ -20,4 +20,4 @@ Personal tool to find the user's own photos in race-photo galleries (faces often
 - Never modify a collection that a running downloader/indexer is writing; experiment on `data/subsets/*`. `index` holds a per-collection lock.
 - One heavy model job at a time (16 GB unified memory); the memory guard throttles on system pressure.
 - Server models run in a spawned child process (`web.app.ModelWorker`, one `ProcessPoolExecutor(1)`), stopped after `IDLE_UNLOAD` (300 s) without model work; never unload/reload models inside a long-lived process (each cycle keeps ~1 GB, measured). `serve` sets `models.half_precision` (SigLIP2 `pure_fp16` on MPS); indexing stays fp32. `GET /api/models` drives the UI's loading indicator. Tests swap in a thread pool (`test_web.no_real_models`). Details: `docs/handoff/2026-09-28-model-memory.md`.
-- Tests: `uv run pytest -q` (256 passing + 1 opt-in real-model test, `PHOTOFINDER_REAL_MODELS=1`, as of 2026-09-29).
+- Tests: `uv run pytest -q` (257 passing + 1 opt-in real-model test, `PHOTOFINDER_REAL_MODELS=1`, as of 2026-09-29).

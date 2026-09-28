@@ -36,6 +36,7 @@ NAME_MAX = 40
 FIRST = "order by ph.taken_at is null, ph.taken_at, ph.id"
 Id = Annotated[int, Field(ge=0, le=2 ** 63 - 1)]
 IDLE_UNLOAD = 300.0
+STOP_WAIT = 30.0
 
 log = logging.getLogger("web")
 
@@ -212,8 +213,8 @@ class ModelWorker:
                 self.pool, self.ready = self.factory(), set()
             pool, stopping = self.pool, self.stopping
             self.running.append(name)
-        if stopping is not None:
-            stopping.wait()
+        if stopping is not None and not stopping.wait(STOP_WAIT):
+            log.warning("old model worker still exiting after %.0fs; starting the new one anyway", STOP_WAIT)
         try:
             fut = pool.submit(fn, *args)
         except BrokenProcessPool:

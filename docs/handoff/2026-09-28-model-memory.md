@@ -24,6 +24,7 @@ The `serve` process sat at 2851 MB: SigLIP2 fp32 on MPS (IOAccelerator 1465 MB, 
 
 - **Deadlock (both reviewers, confirmed in CPython 3.13 `concurrent/futures/process.py:505`):** `terminate_broken` holds the pool's `_shutdown_lock` while it fails pending futures, which runs `finished()` (needs `ModelWorker.lock`), while `submit()` held `ModelWorker.lock` and called `pool.submit()` (needs `_shutdown_lock`). Fix: never call into the pool while holding `ModelWorker.lock`. `submit` reserves a `running` slot under the lock, then submits outside it; a pool that's already broken is replaced and the call retried. `on_models` calls `submit` via `run_in_threadpool`, so the event loop never blocks on it.
 - **Overlapping children (Codex):** a request arriving while the idle child was still exiting started a new child alongside it. `check()` now publishes a `stopping` event, and a new child's first submit waits for it.
+- **Recheck (Codex):** the `stopping` wait had no timeout, so a hung old child would block requests forever. It now waits at most `STOP_WAIT` (30 s), logs a warning, and proceeds.
 - **Indicator after an upload (both):** readiness is tracked per model (`NEEDS`: `encode_text` → siglip; `detect_and_embed` → yolo, osnet, siglip), so a text search after an upload isn't reported as loading.
 - Not a defect: the reviewer said scene search doesn't start the worker. It does, because scene text goes through `encode_text` (the live scene search took 17.9 s to load).
 
