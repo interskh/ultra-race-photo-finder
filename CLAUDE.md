@@ -1,0 +1,21 @@
+# photofinder — agent notes
+
+Personal tool to find the user's own photos in race-photo galleries (faces often covered, night races) by clothing, bib, time, photographer and scene. Local only, Apple M4 16 GB.
+
+## Read first
+- `README.md` — usage (download → index → serve).
+- `docs/ROADMAP.md` — current status, what's running, ranked next steps, known issues.
+- `docs/superpowers/specs/2026-09-27-photo-finder-search-design.md` — architecture, data model, scoring.
+- `docs/handoff/2026-09-27-photo-finder-search-design.md` — decisions, model identifiers, measured timings/recall, rejected alternatives. Grep it before re-deciding anything.
+
+## Layout
+- `src/photofinder/sources/yipai.py` downloader · `index/stages.py` indexing stages · `models.py` model loaders · `search.py` scoring/filters · `evaluate.py` bib-based recall eval · `web/app.py` + `web/static/index.html` UI · `cli.py` entrypoint (`photofinder index|search|eval|serve`).
+- Data (gitignored) under `data/`: `yipai/<orderId>/{photos/, manifest.sqlite, index.sqlite, download.log, index.log}`, `subsets/` (symlink subsets for experiments: `first2000`, `race925`, `scenemix`), `models/` (all weights/caches), `exports/`.
+
+## Rules
+- Everything large goes on `/Volumes/Ext1TB` — photos, indexes, weights (`config.setup_model_env()` points HF/torch/ultralytics caches at `data/models`). Never download into `~`.
+- uv only. The shell sets `UV_FROZEN=1`; lock-changing commands need `UV_FROZEN=0 uv add ...`.
+- Don't hammer yipai360: keep the downloader's pacing (6 workers, page delay, breaker). Only free 1920px previews are downloaded.
+- Never modify a collection that a running downloader/indexer is writing; experiment on `data/subsets/*`. `index` holds a per-collection lock.
+- One heavy model job at a time (16 GB unified memory); the memory guard throttles on system pressure.
+- Tests: `uv run pytest -q` (202 passing as of 2026-09-28).
