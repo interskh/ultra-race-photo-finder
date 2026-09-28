@@ -8,6 +8,7 @@ from pathlib import Path
 
 from photofinder import config, db, evaluate, models, search
 from photofinder.index import stages
+from photofinder.memory import FootprintExceeded
 
 log = logging.getLogger("photofinder")
 LOCK_NAME = "index.lock"
@@ -28,7 +29,10 @@ def cmd_index(args):
     with lock_index(args.collection), closing(db.connect(args.collection)) as conn:
         for stage in (stages.scan, stages.detect, stages.embed_persons, stages.embed_scenes, stages.ocr_bibs):
             t = time.monotonic()
-            counts = stage(conn, args.collection)
+            try:
+                counts = stage(conn, args.collection)
+            except FootprintExceeded as e:
+                sys.exit(f"{stage.__name__}: {e}")
             models.unload()
             log.info("%s finished in %.1fs: %s", stage.__name__, time.monotonic() - t, counts)
     log.info("index finished in %.1fs", time.monotonic() - t0)

@@ -1,5 +1,7 @@
 import logging
 
+import pytest
+
 from photofinder.memory import AdaptiveBatcher
 
 
@@ -38,7 +40,7 @@ def test_warn_resets_normal_streak():
     assert sizes[19] == 4 and sizes[20] == 2 and sizes[-1] == 2
 
 
-def test_logs_level_batch_and_rss(caplog):
+def test_logs_level_batch_footprint_and_rss(caplog):
     b, _ = batcher([1, 1, 2], log_every=2)
     with caplog.at_level(logging.INFO, logger="memory"):
         b.next_size()
@@ -46,11 +48,26 @@ def test_logs_level_batch_and_rss(caplog):
         b.next_size()
         b.next_size()
     messages = [r.getMessage() for r in caplog.records]
-    assert "level=normal batch=8 rss=" in messages[0]
-    assert "level=warn batch=4 rss=" in messages[1] and " max_rss=" in messages[1]
+    assert "level=normal batch=8 footprint=" in messages[0]
+    assert "level=warn batch=4 footprint=" in messages[1] and " rss=" in messages[1]
     assert messages[1].endswith("MB")
 
 
 def test_chunks_cover_all_items_with_adaptive_sizes():
     b, _ = batcher([1, 2, 2, 1, 1, 1], max_size=4)
     assert list(b.chunks(range(10))) == [[0, 1, 2, 3], [4, 5], [6], [7], [8], [9]]
+
+
+def test_footprint_over_cap_stops_instead_of_swapping():
+    from photofinder.memory import FootprintExceeded
+    b, _ = batcher([1, 1], footprint=iter([900, 7000]).__next__, max_footprint_mb=6144)
+    assert b.next_size() == 8
+    with pytest.raises(FootprintExceeded, match="7000 MB exceeds 6144"):
+        b.next_size()
+
+
+def test_footprint_reads_this_process():
+    from photofinder.memory import footprint_mb
+    blob = bytearray(300 * 1024 * 1024)
+    assert footprint_mb() > 250
+    del blob

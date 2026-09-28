@@ -1,5 +1,6 @@
+import ctypes
 import logging
-import resource
+import os
 import subprocess
 import time
 
@@ -7,6 +8,7 @@ import psutil
 
 NORMAL, WARN, CRITICAL = 1, 2, 4
 LEVEL_NAMES = {NORMAL: "normal", WARN: "warn", CRITICAL: "critical"}
+MAX_FOOTPRINT_MB = 6144
 
 log = logging.getLogger("memory")
 
@@ -25,13 +27,24 @@ def rss_mb() -> float:
     return psutil.Process().memory_info().rss / (1024 * 1024)
 
 
-def max_rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
+class _RUsageInfoV2(ctypes.Structure):
+    _fields_ = [("uuid", ctypes.c_uint8 * 16), ("fields", ctypes.c_uint64 * 22)]
+
+
+def footprint_mb(pid: int | None = None) -> float:
+    info = _RUsageInfoV2()
+    if ctypes.CDLL("/usr/lib/libproc.dylib").proc_pid_rusage(pid or os.getpid(), 2, ctypes.byref(info)) != 0:
+        return rss_mb()
+    return info.fields[7] / (1024 * 1024)
+
+
+class FootprintExceeded(RuntimeError):
+    pass
 
 
 class AdaptiveBatcher:
     def __init__(self, max_size: int, reader=pressure_level, sleep=time.sleep, *,
-                 poll=5.0, grow_after=20, log_every=50):
+                 poll=5.0, grow_after=20, log_every=50, footprint=footprint_mb, max_footprint_mb=MAX_FOOTPRINT_MB):
         self.max_size = max_size
         self.size = max_size
         self.reader = reader
@@ -41,12 +54,18 @@ class AdaptiveBatcher:
         self.log_every = log_every
         self.normal_streak = 0
         self.batches = 0
+        self.footprint = footprint
+        self.max_footprint_mb = max_footprint_mb
 
     def _log(self, level, msg="memory"):
-        log.info("%s: level=%s batch=%d rss=%.0fMB max_rss=%.0fMB", msg, LEVEL_NAMES.get(level, level),
-                 self.size, rss_mb(), max_rss_mb())
+        log.info("%s: level=%s batch=%d footprint=%.0fMB rss=%.0fMB", msg, LEVEL_NAMES.get(level, level),
+                 self.size, self.footprint(), rss_mb())
 
     def next_size(self) -> int:
+        used = self.footprint()
+        if used > self.max_footprint_mb:
+            raise FootprintExceeded(f"process memory footprint {used:.0f} MB exceeds {self.max_footprint_mb} MB; "
+                                    "stopping so the Mac doesn't swap (progress is saved, rerun to resume)")
         level = self.reader()
         while level >= CRITICAL:
             self._log(level, "memory critical, paused")
