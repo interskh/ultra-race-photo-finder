@@ -198,6 +198,7 @@ def cmd_serve(args):
         sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
     import uvicorn
     from photofinder.web import app as web
+    models.half_precision = True
     try:
         app = web.create_app(args.collection)
     except search.MissingEmbeddings as e:

@@ -19,4 +19,5 @@ Personal tool to find the user's own photos in race-photo galleries (faces often
 - Don't hammer yipai360: keep the downloader's pacing (6 workers, page delay, breaker). The downloader fetches only free 1920px previews; originals are fetched only for marked photos by `originals.py` (1 lookup per 6 s — the file-name search is rate-limited at ~10 per 30 s and answers HTTP 500 when exceeded; the job waits 60/120/240 s before giving up; one job per collection).
 - Never modify a collection that a running downloader/indexer is writing; experiment on `data/subsets/*`. `index` holds a per-collection lock.
 - One heavy model job at a time (16 GB unified memory); the memory guard throttles on system pressure.
-- Tests: `uv run pytest -q` (240 passing as of 2026-09-28).
+- `serve` sets `models.half_precision` (SigLIP2 `pure_fp16` on MPS; fp32 vs fp16 cosine ≥0.99997, top-50 overlap 99.6% on race925); indexing stays fp32. All server model calls run on one worker thread; `web.app.IdleUnloader` unloads every model on that thread after `IDLE_UNLOAD` (300 s) without model work. `GET /api/models` reports `loaded`/`loading` for the UI's loading indicator.
+- Tests: `uv run pytest -q` (250 passing as of 2026-09-28).

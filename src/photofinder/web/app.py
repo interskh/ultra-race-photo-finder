@@ -1,7 +1,9 @@
 import asyncio
 import io
+import logging
 import secrets
 import sqlite3
+import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +32,9 @@ CACHE = {"Cache-Control": "private, max-age=86400"}
 NAME_MAX = 40
 FIRST = "order by ph.taken_at is null, ph.taken_at, ph.id"
 Id = Annotated[int, Field(ge=0, le=2 ** 63 - 1)]
+IDLE_UNLOAD = 300.0
+
+log = logging.getLogger("web")
 
 
 class SearchQuery(BaseModel):
@@ -162,7 +167,43 @@ def hydrate(conn, picked, offset, profile_id, via=None) -> list[dict]:
             for i, ((p, s), v) in enumerate(zip(picked, via), 1)]
 
 
-def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> FastAPI:
+class IdleUnloader:
+    def __init__(self, worker, idle: float, clock=time.monotonic):
+        self.worker, self.idle, self.clock = worker, idle, clock
+        self.lock = threading.Lock()
+        self.active, self.last, self.timer = 0, clock(), None
+
+    def begin(self):
+        with self.lock:
+            self.active += 1
+
+    def end(self):
+        with self.lock:
+            self.active -= 1
+            self.last = self.clock()
+            if self.timer is None:
+                self.arm(self.idle)
+
+    def arm(self, delay):
+        self.timer = threading.Timer(delay, self.worker.submit, (self.check,))
+        self.timer.daemon = True
+        self.timer.start()
+
+    def check(self):
+        with self.lock:
+            self.timer = None
+            if self.active:
+                return
+            left = self.last + self.idle - self.clock()
+            if left > 0:
+                self.arm(left)
+                return
+        if models.loaded():
+            log.info("no model work for %.0fs; unloading %s", self.idle, ", ".join(models.loaded()))
+            models.unload()
+
+
+def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_unload: float = IDLE_UNLOAD) -> FastAPI:
     collection = collection.resolve()
     yipai = originals.is_yipai(collection)
     job = originals.Job(fetcher or originals.Fetcher())
@@ -181,8 +222,14 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> Fa
     def connect():
         return closing(db.connect(collection))
 
+    unloader = IdleUnloader(worker, idle_unload)
+
     async def on_models(fn, *args):
-        return await asyncio.get_running_loop().run_in_executor(worker, fn, *args)
+        unloader.begin()
+        try:
+            return await asyncio.get_running_loop().run_in_executor(worker, fn, *args)
+        finally:
+            unloader.end()
 
     @app.exception_handler(RequestValidationError)
     async def invalid(request, exc):
@@ -225,6 +272,10 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> Fa
         if profile_id is not None:
             out["labels"] = {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)}
         return out
+
+    @app.get("/api/models")
+    def model_status():
+        return {"loaded": models.loaded(), "loading": models.loading, "unload_after_s": idle_unload}
 
     def downloading(profile_id):
         status = job.status()

@@ -15,15 +15,26 @@ PERSON_CLASS, MIN_CONF, MIN_HEIGHT, IMGSZ = 0, 0.35, 96, 1280
 
 log = logging.getLogger("models")
 _loaded = {}
+half_precision = False
+loading = None
 
 
 def _get(name, load):
+    global loading
     if name not in _loaded:
         config.setup_model_env()
         t0 = time.monotonic()
-        _loaded[name] = load()
+        loading = name
+        try:
+            _loaded[name] = load()
+        finally:
+            loading = None
         log.info("loaded %s on %s in %.1fs", name, device(), time.monotonic() - t0)
     return _loaded[name]
+
+
+def loaded() -> list[str]:
+    return [k for k in list(_loaded) if k != "device"]
 
 
 def device() -> str:
@@ -49,7 +60,8 @@ def osnet():
 def siglip():
     def load():
         import open_clip
-        model, _, preprocess = open_clip.create_model_and_transforms(*SIGLIP, device=device())
+        precision = "pure_fp16" if half_precision and device() == "mps" else "fp32"
+        model, _, preprocess = open_clip.create_model_and_transforms(*SIGLIP, device=device(), precision=precision)
         return model.eval(), preprocess
     return _get("siglip", load)
 
@@ -111,7 +123,7 @@ def embed_images(images: list[Image.Image]) -> np.ndarray:
     import torch
     model, preprocess = siglip()
     with torch.no_grad():
-        batch = torch.stack([preprocess(img) for img in images]).to(device())
+        batch = torch.stack([preprocess(img) for img in images]).to(device(), next(model.parameters()).dtype)
         return l2norm(model.encode_image(batch).float().cpu().numpy())
 
 

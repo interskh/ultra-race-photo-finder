@@ -106,6 +106,7 @@ main { overflow-y: auto; position: relative; }
 .progress::after { content: ""; position: absolute; top: 0; left: -30%; width: 30%; height: 100%; background: var(--focus); animation: slide 1.1s ease-in-out infinite; }
 @keyframes slide { to { left: 100%; } }
 .busy-msg { display: flex; align-items: center; gap: var(--s2); color: var(--muted); font-size: 12px; }
+.model-load { color: var(--text); font-weight: 600; }
 .spin { width: 12px; height: 12px; border: 2px solid var(--line2); border-top-color: var(--focus); border-radius: 50%; animation: rot .8s linear infinite; }
 @keyframes rot { to { transform: rotate(1turn); } }
 
@@ -286,7 +287,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <main id="main">
     <div class="bar">
       <div class="summary" id="summary"><div class="title">Find your photos</div><div class="sub">Pick a start point on the left.</div></div>
-      <div class="busy-msg" id="busy" hidden><span class="spin"></span><span id="busy-text"></span></div>
+      <div class="busy-msg" id="busy" hidden><span class="spin"></span><span id="busy-text"></span><span class="model-load" id="busy-model" hidden></span></div>
       <div class="more-wrap" id="more-wrap">
         <button class="btn primary big" id="more" data-run disabled>Find more like my marked ones <span id="more-n"></span></button>
         <p class="hint" id="more-hint">Mark at least one photo as Me to enable.</p>
@@ -372,8 +373,23 @@ function setBusy(msg) {
   const on = S.busy > 0;
   if (msg) $('#busy-text').textContent = msg;
   $('#busy').hidden = $('#progress').hidden = !on;
+  if (on) watchModels();
   $('#grid').classList.toggle('dim', on && !S.appending);
   document.querySelectorAll('[data-run]').forEach(b => b.disabled = on || (b.id === 'more' && !meCount()));
+}
+
+const MODEL_LABELS = {siglip: 'appearance & text', siglip_tokenizer: 'text', osnet: 'person re-ID', yolo: 'person detector'};
+function watchModels() {
+  if (S.modelPoll) return;
+  const tick = async () => {
+    let m = null;
+    try { m = await api('/api/models'); } catch (e) { }
+    const el = $('#busy-model');
+    el.hidden = !(m && m.loading && S.busy > 0);
+    if (!el.hidden) el.textContent = `Loading the ${MODEL_LABELS[m.loading] || m.loading} model (about 15 s; unused models are unloaded after ${Math.round(m.unload_after_s / 60)} min to save memory)…`;
+    S.modelPoll = S.busy > 0 ? setTimeout(tick, 600) : null;
+  };
+  S.modelPoll = setTimeout(tick, 300);
 }
 
 const meCount = () => S.facets ? S.facets.labels.me : 0;
@@ -585,7 +601,7 @@ async function search(append) {
     : {...S.query, profile_id: S.profile, offset: 0, seen: append ? S.results.map(r => r.photo_id) : []};
   const seq = ++S.seq;
   S.appending = append;
-  setBusy(q.text || q.scene ? 'Searching… the first description or scene search loads the text model (about 15 s).' : 'Searching…');
+  setBusy('Searching…');
   try {
     const t0 = performance.now();
     const r = await post('/api/search', q);
@@ -703,7 +719,7 @@ function card(r, i, list) {
 async function upload(file) {
   const fd = new FormData();
   fd.append('file', file);
-  setBusy('Finding people in your photo… the first upload loads the models (about 20 s); later ones take 1–2 s.');
+  setBusy('Finding people in your photo…');
   try {
     const r = await api('/api/upload', {method: 'POST', body: fd});
     S.upload = r;

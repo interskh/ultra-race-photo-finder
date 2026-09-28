@@ -27,6 +27,8 @@ Stages: scan (EXIF time, photographer, album) → detect people → clothing emb
 uv run photofinder serve data/yipai/<orderId>     # http://127.0.0.1:8000/
 ```
 
+The server loads models only for uploads and description/scene searches (SigLIP2 in half precision on the GPU), and unloads them after 5 minutes without such a request, so an idle server stays around 1 GB. The next upload or description search reloads them (about 15 s); the busy bar says "Loading the … model" meanwhile.
+
 What works best (measured in the handoff log): clothing alone is weak when many runners wear the same event jacket, so iterate:
 
 1. Upload a photo of you (race day, same kit) and click your box — or start from your bib number if the index was built with `--ocr`.
