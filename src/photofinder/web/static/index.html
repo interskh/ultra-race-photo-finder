@@ -414,8 +414,7 @@ function renderProfiles() {
   sel.title = S.name;
 }
 
-async function useProfile(id, profiles) {
-  const seq = ++S.pseq;
+async function useProfile(id, profiles, seq = ++S.pseq) {
   const p = profiles.find(x => x.id === id) || profiles[0];
   const me = await api(`/api/me?profile_id=${p.id}`);
   if (seq !== S.pseq) return false;
@@ -438,9 +437,9 @@ async function switchProfile(id) {
   const seq = ++S.pseq;
   try {
     const profiles = (await api('/api/profiles')).profiles;
-    if (seq !== S.pseq || !await useProfile(id, profiles)) return;
+    if (seq !== S.pseq || !await useProfile(id, profiles, seq)) return;
   } catch (e) {
-    if (seq + 1 >= S.pseq) { banner(e.message); renderProfiles(); }
+    if (seq === S.pseq) { banner(e.message); renderProfiles(); }
     return;
   }
   ++S.seq;

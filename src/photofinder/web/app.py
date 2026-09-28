@@ -265,16 +265,19 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None) -> Fa
                 except originals.Busy:
                     raise bad("a download is in progress; rename when it finishes", 409)
                 try:
-                    if old.exists():
+                    moved = old.exists()
+                    if moved:
                         if old.name.casefold() != new.name.casefold() and new.exists():
                             raise bad(f"folder {new} already exists; move or delete it first")
                         old.rename(new)
-                        if (new / originals.CSV_NAME).is_file():
-                            try:
-                                originals.write_csv(new, marked(conn, profile_id))
-                            except Exception:
-                                new.rename(old)
-                                raise
+                    try:
+                        if moved and (new / originals.CSV_NAME).is_file():
+                            originals.write_csv(new, marked(conn, profile_id))
+                        conn.commit()
+                    except Exception:
+                        if moved:
+                            new.rename(old)
+                        raise
                 finally:
                     job.busy.release()
             return profiles_of(conn, profile_id)[0]

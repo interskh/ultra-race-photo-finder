@@ -366,6 +366,29 @@ def test_single_download_in_progress_blocks_rename_and_start(tmp_path, monkeypat
     assert api.get("/api/me", params={"profile_id": ann}).json()["photos"][0]["original"] == "downloaded"
 
 
+def test_rename_commits_new_name_before_releasing_the_download_lock(tmp_path, monkeypatch):
+    c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [("A1.JPG", None, "cam")], mark=False)
+    ann = api.post("/api/profiles", json={"name": "Ann"}).json()["id"]
+    (folder(tmp_path, "Ann") / "originals").mkdir(parents=True)
+    job, seen = api.app.state.originals, []
+
+    class Probe:
+        lock = threading.Lock()
+
+        def acquire(self, *a, **kw):
+            return self.lock.acquire(*a, **kw)
+
+        def release(self):
+            other = sqlite3.connect(c / "index.sqlite")
+            seen.append(other.execute("select name from profiles where id = ?", (ann,)).fetchone()[0])
+            other.close()
+            self.lock.release()
+    job.busy = Probe()
+    assert api.patch(f"/api/profiles/{ann}", json={"name": "Beth"}).status_code == 200
+    assert api.patch(f"/api/profiles/{ann}", json={"name": "Cy"}).status_code == 200
+    assert seen == ["Beth", "Cy"] and files(tmp_path, "Cy") == []
+
+
 def test_start_resolves_profile_folder_after_claiming(tmp_path, monkeypatch):
     c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [("A1.JPG", "2026-09-25 08:01:00", "cam")], mark=False)
     g.add(1, "A1.JPG")

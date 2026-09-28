@@ -170,3 +170,14 @@ Run-wide decision: `tests/test_web.py::test_page_is_served_and_calls_only_real_e
 - `uv run pytest -q` 239 passed; `node --check` OK; drift test (`used == routes`) green.
 - New intercepted Playwright checks (`<scratch>/pw_t3_fix.py`): 26/26 on this page, 12/26 on 6fa3747's page (every item 1–6 and 3 fails there: stale "✓ Me"/Not-me border/chip after switch and delete on My photos, Me's job shown to others and stale after rename, select not rolled back + label posted to the failed person, late detail cached under the new person, late earlier switch winning, 1100 px buttons narrower than their text). Original run: 55/55, 0 page errors.
 - Screens: `data/exports/screens/ppl-t3-fix-01-switch-cleared.png`, `-02-other-person-running.png`, `-03-my-photos-1100.png` (looked at: row wraps cleanly, no overlap).
+
+### Gate fix round 2 — server
+- `rename_profile` commits the new name (`conn.commit()`) while still holding `busy`, after the folder move and CSV rewrite; if the CSV rewrite or the commit fails, the folder is moved back and the transaction rolls back. A download claiming `busy` next therefore always reads the new name.
+- Test: `test_rename_commits_new_name_before_releasing_the_download_lock` swaps `job.busy` for a probe whose `release()` reads the profile name through a second SQLite connection; it must see the new name (fails on the old code: saw "Ann").
+- Evidence: `uv run pytest -q` 240 passed; mutant "commit removed (commit after release)" caught, restored + sha256-verified.
+
+### Gate fix round 2 — page
+
+- Decision: `switchProfile` owns one sequence number and passes it into `useProfile(id, profiles, seq)` (init lets it default to `++S.pseq`); success and failure both act only when `seq === S.pseq`, so a superseded switch's failure is ignored exactly like its success. Replaces round 1's `seq + 1 >= S.pseq`, which admitted B's failure while C's `/api/profiles` was still pending and rolled the select back to A.
+- Rejected: a per-switch AbortController (cancels fetches, but still needs the same latest-only guard for responses already in flight).
+- Evidence: new Playwright check `item7_superseded_failure` (hold B's and C's `/api/profiles`, fail B, then release C) fails on d9f3b3e's page ("select rolled back while C pending") and passes now. `pw_t3_fix.py` 29/29, original run 55/55, 0 page errors; `node --check` OK; `uv run pytest -q` 240 passed (includes the orchestrator's uncommitted server fix; not touched).
