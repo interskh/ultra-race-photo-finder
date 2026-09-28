@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,7 +15,9 @@ from test_search import A, B, C, X, Y, Z, add_scenes, filter_index, make_index
 
 
 @pytest.fixture(autouse=True)
-def no_real_models(monkeypatch):
+def no_real_models(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_ROOT", tmp_path / "data")
+
     def boom(name, load):
         raise AssertionError(f"model loader called: {name}")
     monkeypatch.setattr(models, "_get", boom)
@@ -467,6 +470,28 @@ def test_serve_binds_localhost_single_worker(tmp_path, monkeypatch, capsys):
     cli.main(["serve", str(c), "--port", "8765"])
     assert runs == [{"host": "127.0.0.1", "port": 8765, "workers": 1}]
     assert "http://127.0.0.1:8765/" in capsys.readouterr().out
+
+
+def test_only_one_server_runs_at_a_time(tmp_path, monkeypatch):
+    import uvicorn
+    runs, loads = [], []
+    monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
+    monkeypatch.setattr(search, "load_persons", lambda conn, _real=search.load_persons: loads.append(1) or _real(conn))
+    c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+
+    def second_server(app, **kw):
+        runs.append(kw["port"])
+        with pytest.raises(SystemExit) as e:
+            cli.main(["serve", str(c), "--port", "8766"])
+        msg = str(e.value.code)
+        assert "already running" in msg and f"pid {os.getpid()}" in msg and "http://127.0.0.1:8765/" in msg
+        assert "\n" not in msg
+    monkeypatch.setattr(uvicorn, "run", second_server)
+    cli.main(["serve", str(c), "--port", "8765"])
+    assert runs == [8765] and len(loads) == 1
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: runs.append(kw["port"]))
+    cli.main(["serve", str(c), "--port", "8766"])
+    assert runs == [8765, 8766]
 
 
 def test_persons_are_held_as_float16(tmp_path):

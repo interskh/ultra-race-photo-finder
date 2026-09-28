@@ -27,6 +27,8 @@ Stages: scan (EXIF time, photographer, album) → detect people → clothing emb
 uv run photofinder serve data/yipai/<orderId>     # http://127.0.0.1:8000/
 ```
 
+Only one server runs at a time: a second `serve` exits right away and names the running one (pid, URL, collection).
+
 The server runs the models (person detector, re-ID, SigLIP2 in half precision) in a separate worker process that starts on the first upload or description/scene search and exits after 5 minutes without one, so the OS reclaims all of its memory; the server itself stays at its baseline (~1.3 GB, mostly the embedding index). Starting the worker takes about 20 s (the busy bar says "Loading the … models") and peaks at ~3.5 GB while the checkpoint loads. If the worker dies (e.g. killed under memory pressure), that request fails with "try again" and the next one starts a fresh worker.
 
 What works best (measured in the handoff log): clothing alone is weak when many runners wear the same event jacket, so iterate:

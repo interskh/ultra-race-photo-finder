@@ -1,6 +1,7 @@
 import argparse
 import fcntl
 import logging
+import os
 import sys
 import time
 from contextlib import closing
@@ -12,6 +13,7 @@ from photofinder.memory import FootprintExceeded
 
 log = logging.getLogger("photofinder")
 LOCK_NAME = "index.lock"
+SERVE_LOCK_NAME = "serve.lock"
 
 
 def lock_index(collection: Path):
@@ -21,6 +23,23 @@ def lock_index(collection: Path):
     except BlockingIOError:
         f.close()
         sys.exit(f"another `photofinder index` run is active on {collection}")
+    return f
+
+
+def lock_serve(collection: Path, port: int):
+    path = config.DATA_ROOT / SERVE_LOCK_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.seek(0)
+        who = f.read().strip() or "unknown"
+        f.close()
+        sys.exit(f"a photofinder server is already running ({who}); only one runs at a time, stop it first")
+    f.truncate(0)
+    f.write(f"pid {os.getpid()}, http://127.0.0.1:{port}/, {collection}")
+    f.flush()
     return f
 
 
@@ -199,12 +218,13 @@ def cmd_serve(args):
     import uvicorn
     from photofinder.web import app as web
     models.half_precision = True
-    try:
-        app = web.create_app(args.collection)
-    except search.MissingEmbeddings as e:
-        sys.exit(str(e))
-    print(f"serving {args.collection} at http://127.0.0.1:{args.port}/", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
+    with lock_serve(args.collection.resolve(), args.port):
+        try:
+            app = web.create_app(args.collection)
+        except search.MissingEmbeddings as e:
+            sys.exit(str(e))
+        print(f"serving {args.collection} at http://127.0.0.1:{args.port}/", flush=True)
+        uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
 
 
 def main(argv=None):
