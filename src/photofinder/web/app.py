@@ -194,26 +194,36 @@ def model_pool():
 
 
 class ModelWorker:
+    NEEDS = {"encode_text": {"siglip"}, "detect_and_embed": {"yolo", "osnet", "siglip"}}
+
     def __init__(self, idle: float, factory=None, clock=time.monotonic):
         self.idle, self.factory, self.clock = idle, factory or model_pool, clock
         self.lock = threading.Lock()
         self.pool, self.ready, self.running, self.last, self.timer = None, set(), [], clock(), None
+        self.stopping = None
+
+    def needs(self, name):
+        return self.NEEDS.get(name, {name})
 
     def submit(self, fn, *args) -> Future:
+        name = fn.__name__
         with self.lock:
-            if self.pool is not None:
-                try:
-                    fut = self.pool.submit(fn, *args)
-                except BrokenProcessPool:
-                    log.error("model worker process died while idle; starting a new one")
-                    self.pool.shutdown(wait=False, cancel_futures=True)
-                    self.pool = None
             if self.pool is None:
                 self.pool, self.ready = self.factory(), set()
-                fut = self.pool.submit(fn, *args)
-            pool = self.pool
-            self.running.append(fn.__name__)
-        fut.add_done_callback(lambda f: self.finished(pool, fn.__name__, f))
+            pool, stopping = self.pool, self.stopping
+            self.running.append(name)
+        if stopping is not None:
+            stopping.wait()
+        try:
+            fut = pool.submit(fn, *args)
+        except BrokenProcessPool:
+            with self.lock:
+                self.running.remove(name)
+                if self.pool is pool:
+                    self.pool, self.ready = None, set()
+            log.error("model worker process died while idle; starting a new one")
+            return self.submit(fn, *args)
+        fut.add_done_callback(lambda f: self.finished(pool, name, f))
         return fut
 
     def finished(self, pool, name, fut):
@@ -228,7 +238,7 @@ class ModelWorker:
                 self.pool, self.ready = None, set()
                 return
             if not fut.cancelled() and fut.exception() is None:
-                self.ready.add(name)
+                self.ready |= self.needs(name)
             if self.timer is None:
                 self.arm(self.idle)
 
@@ -247,12 +257,19 @@ class ModelWorker:
                 self.arm(left)
                 return
             pool, self.pool, self.ready = self.pool, None, set()
+            stopping = self.stopping = threading.Event()
         log.info("no model work for %.0fs; stopping the model worker process", self.idle)
-        pool.shutdown(wait=True)
+        try:
+            pool.shutdown(wait=True)
+        finally:
+            with self.lock:
+                if self.stopping is stopping:
+                    self.stopping = None
+            stopping.set()
 
     def status(self) -> dict:
         with self.lock:
-            loading = [n for n in self.running if n not in self.ready]
+            loading = [n for n in self.running if self.needs(n) - self.ready]
             return {"running": self.pool is not None, "ready": sorted(self.ready),
                     "loading": loading[0] if loading else None, "unload_after_s": self.idle}
 
@@ -280,7 +297,7 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
 
     async def on_models(fn, *args):
         try:
-            return await asyncio.wrap_future(worker.submit(fn, *args))
+            return await asyncio.wrap_future(await run_in_threadpool(worker.submit, fn, *args))
         except BrokenProcessPool:
             raise bad("the model worker stopped, probably because the Mac ran low on memory; try again", 503)
 

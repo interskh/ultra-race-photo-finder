@@ -97,13 +97,92 @@ def test_status_reports_loading_only_for_the_first_call_in_a_fresh_worker():
     assert w.status()["loading"] == "encode_text"
     release.set()
     first.result()
-    assert wait_until(lambda: w.status()["ready"] == ["encode_text"])
+    assert wait_until(lambda: w.status()["ready"] == ["siglip"])
     assert w.status()["loading"] is None
     release.clear()
     again = w.submit(encode_text, "b")
     assert w.status()["loading"] is None
     release.set()
     again.result()
+
+
+def test_text_search_after_an_upload_is_not_reported_as_loading():
+    w = web.ModelWorker(60, Pools())
+
+    def detect_and_embed(_):
+        return "boxes"
+    w.submit(detect_and_embed, "img").result()
+    assert wait_until(lambda: w.status()["ready"] == ["osnet", "siglip", "yolo"])
+    release = threading.Event()
+
+    def encode_text(_):
+        release.wait(5)
+    fut = w.submit(encode_text, "red")
+    assert w.status()["loading"] is None
+    release.set()
+    fut.result()
+
+
+class LockedPool(ThreadPoolExecutor):
+    def __init__(self):
+        super().__init__(1)
+        self.shutdown_lock = threading.Lock()
+
+    def submit(self, fn, *args):
+        with self.shutdown_lock:
+            return super().submit(fn, *args)
+
+
+def test_a_dying_worker_does_not_deadlock_a_concurrent_submit():
+    pool = LockedPool()
+    w = web.ModelWorker(60, lambda: pool)
+    first = w.submit(sum, [1])
+    first.result()
+    submitted = threading.Event()
+
+    def request():
+        w.submit(sum, [2]).result()
+        submitted.set()
+    with pool.shutdown_lock:
+        t = threading.Thread(target=request, daemon=True)
+        t.start()
+        time.sleep(0.2)
+        callback = threading.Thread(target=w.finished, args=(pool, "sum", first), daemon=True)
+        w.running.append("sum")
+        callback.start()
+        callback.join(2)
+        assert not callback.is_alive(), "done-callback deadlocked against submit"
+    assert submitted.wait(5)
+
+
+class SlowStopPool(ThreadPoolExecutor):
+    def __init__(self, log, release):
+        super().__init__(1)
+        self.log, self.release = log, release
+
+    def submit(self, fn, *args):
+        self.log.append(("submit", self))
+        return super().submit(fn, *args)
+
+    def shutdown(self, wait=True, **kw):
+        self.release.wait(5)
+        self.log.append(("stopped", self))
+        super().shutdown(wait, **kw)
+
+
+def test_a_new_worker_waits_for_the_old_one_to_exit():
+    log, release = [], threading.Event()
+    w = web.ModelWorker(0.05, lambda: SlowStopPool(log, release))
+    w.submit(sum, [1]).result()
+    assert wait_until(lambda: w.status()["running"] is False)
+    new = threading.Thread(target=lambda: w.submit(sum, [2]).result(), daemon=True)
+    new.start()
+    time.sleep(0.3)
+    assert [e for e, _ in log] == ["submit"]
+    release.set()
+    new.join(5)
+    assert [e for e, _ in log][:3] == ["submit", "stopped", "submit"]
+    assert log[0][1] is log[1][1] is not log[2][1]
 
 
 def test_real_worker_runs_in_a_child_process_that_exits_when_idle():

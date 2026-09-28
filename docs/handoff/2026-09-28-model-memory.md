@@ -20,6 +20,17 @@ The `serve` process sat at 2851 MB: SigLIP2 fp32 on MPS (IOAccelerator 1465 MB, 
   - Gain is smaller than the 0.75 GB estimate: weights 1431 → 716 MB, but the MPS allocator holds 1225 MB of heap vs 1465 MB for fp32, so the process saves ~240 MB (2213 → 1977 MB). Moving parameters to MPS one by one from a CPU fp16 copy got to 1814 MB. That wasn't adopted because it bypasses open_clip's loader.
 - **Loading indicator.** `GET /api/models` returns `{running, ready, loading, unload_after_s}` from parent-side state: `loading` is the first in-flight call (by function name) that hasn't completed in the current child. The UI polls it while busy and shows "Loading the text search / person detection models (~20 s)…", with a tooltip about the 5-minute unload.
 
+## Whole-run gate (reviewer + Codex), fixed in its own commit
+
+- **Deadlock (both reviewers, confirmed in CPython 3.13 `concurrent/futures/process.py:505`):** `terminate_broken` holds the pool's `_shutdown_lock` while it fails pending futures, which runs `finished()` (needs `ModelWorker.lock`), while `submit()` held `ModelWorker.lock` and called `pool.submit()` (needs `_shutdown_lock`). Fix: never call into the pool while holding `ModelWorker.lock`. `submit` reserves a `running` slot under the lock, then submits outside it; a pool that's already broken is replaced and the call retried. `on_models` calls `submit` via `run_in_threadpool`, so the event loop never blocks on it.
+- **Overlapping children (Codex):** a request arriving while the idle child was still exiting started a new child alongside it. `check()` now publishes a `stopping` event, and a new child's first submit waits for it.
+- **Indicator after an upload (both):** readiness is tracked per model (`NEEDS`: `encode_text` → siglip; `detect_and_embed` → yolo, osnet, siglip), so a text search after an upload isn't reported as loading.
+- Not a defect: the reviewer said scene search doesn't start the worker. It does, because scene text goes through `encode_text` (the live scene search took 17.9 s to load).
+
+## Live E2E (real `photofinder serve` on the full index, port 8001, run alone)
+
+Parent at start 1328 MB (`running: false`). Text search: HTTP 200 in 19.6 s; `/api/models` reported `loading: encode_text` mid-load. Upload of a race photo: HTTP 200 in 24.8 s, 1 box (YOLO load 22 s). Worker child while loaded: 1945 MB; parent 825–1062 MB. The idle stop fired at 300 s ("stopping the model worker process") and the child was gone; parent 766 MB. On SIGTERM the server exited and the worker exited with it. On SIGKILL the child exits via `watch_parent` (test; removing the watchdog makes it fail).
+
 ## Rejected
 
 - In-process `models.unload()` on an idle timer (the first version, commits f83ad42…511db2b): works once, then ratchets as measured above.
@@ -28,6 +39,7 @@ The `serve` process sat at 2851 MB: SigLIP2 fp32 on MPS (IOAccelerator 1465 MB, 
 ## Deferred
 
 - The load peak is still ~3.5 GB (fp32 checkpoint + model on the CPU before the move to MPS). The child makes it transient; it doesn't lower it. Possible fix: build on the `meta` device and `load_state_dict(assign=True)` from a converted fp16 safetensors file.
+- A 503 "try again" after an OOM-killed child re-runs the same ~3.5 GB load peak with no backoff.
 - Pre-existing: searching before the page has loaded the profile list sends `profile_id: null` → 400 "profile_id: Input should be a valid integer".
 
 ## Tests
