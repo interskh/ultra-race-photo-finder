@@ -618,3 +618,36 @@ Slice 3 SLICE_BASE=1c9b6a8
 - `src/photofinder/web/static/index.html` (full rewrite), `tests/test_web.py` (+`import re`, +`test_page_is_served_and_calls_only_real_endpoints`: every `/api/...` in the script == the app's `/api/` routes, both directions).
 - Evidence: `uv run pytest -q` 194 passed; `node --check` on extracted script OK (node v24.14.0); mutations 3/3 caught (renamed facets path, renamed crop path, export call removed), restored + sha256-verified.
 - Real server race925:8766: `/` 200 text/html; facets, start_bib 8039 (+ photographer uid + start filter → 8), photo 1918 detail, crop/thumb/full images, `/api/me`, find-more-without-labels 400 detail, bad time 400 detail, persons offset 60 → rank 61 all match the JS reads. No labels created (facets labels 0/0).
+
+## S3-T3 — E2E fix round
+
+**Decisions**
+- Upload picker reuses the photo viewer (`openUpload`, `S.modal.upload`, box keys `u<index>`); auto-opens after an upload with ≥1 box; sidebar preview (click or "Choose person") reopens it and shows only the searched box. Per-person thumbs are client-side CSS crops (`cropThumb`: background-size/position, same 10% pad as `/api/persons/{id}/crop`) — no new endpoint.
+- `S.start` (current combinable start point) is separate from `S.base` (last query). Set by `run()` for bib/persons/upload/more; chip "Combining with: … Clear" shows it (hidden for bib). Describe and Apply filters run `S.start` (or alone), so a cleared chip is not resurrected. Human labels (`base.label`) captured at click time, e.g. `the selected runner (22:27:32, 示例映画 摄影师丁)`.
+- Non-bib start clears the bib input; `renderStart` re-renders the upload preview highlight. A new upload drops an upload start point (chip would otherwise name a box in the previous photo).
+- Cards: crop and whole-photo thumb side by side (`.cropbox` + 42% thumb); rank and Me/Not me flag moved into the meta row so nothing overlays the person; score only in the rank `title`. Grid 208 px min, shot 226 px.
+- Boxes: 1 px unlabeled outlines; tag only on hit/sel/hover (tag moved inside the box because `.frame` now clips); hit/sel 3 px `--pick` yellow; sel dims the rest of the photo via a 9999 px box-shadow (hence `overflow:hidden`). List-row hover highlights its box. Sticky list heading; `scrollIntoView({block:'center'})`.
+- Viewer already had `role=dialog aria-modal aria-label` (T2); label now set per open.
+- Banners cleared only when the view actually changes (run() calls showView on every search). Header timing = client `performance.now()` around the fetch, "took 66 ms" / "took 1.2 s".
+- Counts updated locally from the `/api/labels` response: `S.facets.labels[prev]--/[new]++`, and a photo→me-person `S.mine` map (seeded from `/api/me` at start and on My photos) for the photo count; `refreshCounts` removed (orphan).
+- My photos cards show `YYYY-MM-DD HH:MM:SS`; copy says Not me marks are not listed. From/To stacked. Inline empty favicon.
+
+**Rejected**
+- `/api/uploads/{token}/crop/{box}` endpoint: CSS crop needs no backend/test and the image is already cached by the browser.
+- Picking on the 266 px sidebar preview (the T2 design): unusable with 11 overlapping boxes.
+- Re-running `S.base` on Apply filters: would re-add a start point the user just cleared.
+- Clearing banners inside every `showView`: would wipe warnings raised by the same run.
+- Default-selecting box 0 in the picker: would dim the photo before the user chose anyone.
+
+**Assumptions**
+- Labels changed from another tab make local counts drift until reload (previous code refetched). Check: two tabs, mark in one.
+- `/api/me` photos carry `photo_id` (photo_meta keys) — used to seed `S.mine`.
+
+**Deferred**
+- Duplicate YOLO detections (one runner boxed twice, box inside box, 07b) — index-stage issue (NMS/containment), not UI.
+- Full E2E re-walk (labels, export, find-more, text search) left to the orchestrator; my headless pass (below) skipped label POSTs on purpose (race925 labels frozen).
+
+**Touches**
+- `src/photofinder/web/static/index.html` only. No backend/API change. Evidence: `uv run pytest -q` 194 passed (drift test unchanged and green); `node --check` OK (v24.14.0); mutations n/a (no backend logic).
+- Headless Chrome (playwright, channel=chrome) vs own server race925:8771 (stopped after): bib 8039 → "took 35 ms"; viewer aria-label set, 16-person photo with only the matched box labelled, sticky heading, row centred; Find people like this → title "People like the selected runner (19:46:43, 示例影像)", bib input cleared, chip shown, Clear hides it; upload 8015319.jpg → picker auto-opens (11 boxes, Prev/Next hidden), box click selects, Search as me → "People like person 4 in your uploaded photo", preview shows only box 4, reopen keeps selection, Esc closes; 0 console errors. Found+fixed: CSS crop thumbs showed neighbours (contain-fit) → thumb sized to the crop aspect.
+- Local counts with `/api/labels` intercepted by `page.route` (no DB write): 4/4/1 → Me A 5/5/1 → Me B same photo 6/5/1 → unmark A 5/5/1 → B Not me 4/4/2 → clear 4/4/1 (me persons / me photos / not_me).
