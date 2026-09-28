@@ -239,7 +239,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
       <div class="start">
         <span class="field">A photo of me</span>
         <div class="filehit"><span class="btn" style="width:100%">Upload photo…</span><input type="file" id="file" accept="image/*" data-run aria-label="Upload a photo of me"></div>
-        <p class="hint">The first upload loads the models (about 20 s); later ones take 1–2 s.</p>
+        <p class="hint">Takes 1–2 s; about 20 s more when the models have to load (at first, and after 5 idle minutes).</p>
         <div class="up" id="up" hidden>
           <button class="up-open" id="up-open" type="button" title="Open large to choose yourself"><span class="frame" id="up-frame"></span></button>
           <p class="hint" id="up-hint"></p>
@@ -261,7 +261,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
         <label class="field" for="q-scene" style="margin-top:8px">Scene</label>
         <input type="text" id="q-scene" placeholder="e.g. finish arch, 雪山" autocomplete="off">
         <div class="row2" style="margin-top:8px"><button class="btn" data-run type="submit">Search description</button></div>
-        <p class="hint">If a “Combining with” box is shown above, the description is combined with it; otherwise it runs alone. The first one loads a model (about 15 s).</p>
+        <p class="hint">If a “Combining with” box is shown above, the description is combined with it; otherwise it runs alone. Loading the text model adds about 15 s at first and after 5 idle minutes.</p>
       </form>
     </section>
     <section class="sec">
@@ -386,7 +386,10 @@ function watchModels() {
     try { m = await api('/api/models'); } catch (e) { }
     const el = $('#busy-model');
     el.hidden = !(m && m.loading && S.busy > 0);
-    if (!el.hidden) el.textContent = `Loading the ${MODEL_LABELS[m.loading] || m.loading} model (about 15 s; unused models are unloaded after ${Math.round(m.unload_after_s / 60)} min to save memory)…`;
+    if (!el.hidden) {
+      el.textContent = `Loading the ${MODEL_LABELS[m.loading] || m.loading} model (~15 s)…`;
+      el.title = `Models are unloaded after ${Math.round(m.unload_after_s / 60)} idle minutes to save memory, so the next upload or description search reloads them.`;
+    }
     S.modelPoll = S.busy > 0 ? setTimeout(tick, 600) : null;
   };
   S.modelPoll = setTimeout(tick, 300);
