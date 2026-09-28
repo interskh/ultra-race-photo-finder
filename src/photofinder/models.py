@@ -115,15 +115,23 @@ def embed_images(images: list[Image.Image]) -> np.ndarray:
         return l2norm(model.encode_image(batch).float().cpu().numpy())
 
 
+def text_request():
+    def load():
+        import Vision
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+        req.setRecognitionLanguages_(["en-US"])
+        return req
+    return _get("vision_text", load)
+
+
 def read_text(img: Image.Image) -> list[tuple[str, float]]:
     import objc
     import Vision
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     with objc.autorelease_pool():
-        req = Vision.VNRecognizeTextRequest.alloc().init()
-        req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
-        req.setRecognitionLanguages_(["en-US"])
+        req = text_request()
         handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(buf.getvalue(), None)
         ret = handler.performRequests_error_([req], None)
         ok, err = ret if isinstance(ret, tuple) else (bool(ret), None)

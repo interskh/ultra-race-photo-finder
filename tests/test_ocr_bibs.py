@@ -10,6 +10,11 @@ from photofinder.index.stages import bib_tokens, ocr_bibs, read_bibs, scan
 from photofinder.memory import AdaptiveBatcher
 
 
+@pytest.fixture(autouse=True)
+def fresh_vision_request(monkeypatch):
+    monkeypatch.setattr(models, "_loaded", {})
+
+
 @pytest.mark.parametrize("text, tokens", [
     ("0887", ["0887"]),
     ("No.1685", ["1685"]),
@@ -217,3 +222,18 @@ def test_read_text_returns_text_and_conf_on_success(monkeypatch, ret):
     monkeypatch.setitem(sys.modules, "Vision", vision)
     assert models.read_text(Image.new("RGB", (40, 30))) == [("No.1685", 0.5), ("FUGA", 1.0)]
     assert vision.req.level == 0 and vision.req.langs == ["en-US"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_repeated_reads_do_not_grow_memory():
+    from photofinder.memory import footprint_mb
+    img = Image.effect_noise((400, 800), 60).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    for n, y in ((2001, 100), (4832, 300), (1685, 500), (7390, 700)):
+        draw.text((60, y), str(n), fill="black", font=ImageFont.load_default(size=40))
+    for _ in range(30):
+        models.read_text(img)
+    before = footprint_mb()
+    for _ in range(150):
+        models.read_text(img)
+    assert footprint_mb() - before < 60
