@@ -27,7 +27,7 @@ Stages: scan (EXIF time, photographer, album) → detect people → clothing emb
 uv run photofinder serve data/yipai/<orderId>     # http://127.0.0.1:8000/
 ```
 
-The server loads models only for uploads and description/scene searches (SigLIP2 in half precision on the GPU), and unloads them after 5 minutes without such a request, so an idle server stays around 1 GB. The next upload or description search reloads them (about 15 s); the busy bar says "Loading the … model" meanwhile.
+The server loads models only for uploads and description/scene searches (SigLIP2 in half precision on the GPU), and unloads them after 5 minutes without such a request, so an idle server drops from about 2.9 GB back to about 1.5 GB (the rest is the embedding index). The next upload or description search reloads them (15–20 s); the busy bar says "Loading the … model" meanwhile. Half precision halves the weights (1.4 → 0.7 GB) but saves only about 0.25 GB of process memory, because the GPU allocator keeps extra heap.
 
 What works best (measured in the handoff log): clothing alone is weak when many runners wear the same event jacket, so iterate:
 
