@@ -1,9 +1,13 @@
 import argparse
 import fcntl
 import logging
+import multiprocessing
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing
 from pathlib import Path
 
@@ -11,7 +15,7 @@ import httpx
 
 from photofinder import config, db, evaluate, models, race_import, races, search
 from photofinder.index import stages
-from photofinder.memory import FootprintExceeded
+from photofinder.memory import MAX_FOOTPRINT_MB, watch_parent
 from photofinder.sources import pailixiang, photoplus, xxpie, yipai
 from photofinder.sources.base import AlbumDownloader
 from photofinder.sources.common import AlreadyRunning, Blocked
@@ -20,6 +24,8 @@ log = logging.getLogger("photofinder")
 ADAPTERS = {"pailixiang": pailixiang, "xxpie": xxpie, "photoplus": photoplus}
 LOCK_NAME = "index.lock"
 SERVE_LOCK_NAME = "serve.lock"
+LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+ISOLATE_STAGES = True
 COLLECTION_HELP = "race slug (registered in data/races.json) or collection directory"
 
 
@@ -50,20 +56,51 @@ def lock_serve(collection: Path | str, port: int):
     return f
 
 
+def init_stage_process(parent: int):
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    threading.Thread(target=watch_parent, args=(parent,), daemon=True).start()
+
+
+def run_stage_isolated(name: str, collection: Path, max_mb: float):
+    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"), initializer=init_stage_process,
+                             initargs=(os.getpid(),)) as pool:
+        return pool.submit(stages.run, name, collection, max_mb).result()
+
+
+def run_model_stage(name: str, collection: Path, max_mb: float) -> dict:
+    runner = run_stage_isolated if ISOLATE_STAGES else stages.run
+    last_pending = None
+    while True:
+        try:
+            counts, exceeded, progress = runner(name, collection, max_mb)
+        except BrokenProcessPool:
+            sys.exit(f"{name}: the indexing process died (probably killed under memory pressure); "
+                     "progress is saved, rerun to resume")
+        if exceeded is None:
+            return counts
+        reason = exceeded.split(";")[0]
+        if progress["batches"] <= 1:
+            sys.exit(f"{name}: {reason} after its first batch; "
+                     f"raise --max-memory (this stage needs more than {max_mb:.0f} MB)")
+        if progress["pending"] == last_pending:
+            sys.exit(f"{name}: {reason} again with the same {last_pending} items pending, so the last run "
+                     "saved nothing; stopping (rerun to retry)")
+        last_pending = progress["pending"]
+        log.info("%s: %d done, restarting in a fresh process to release memory (%s)", name, progress["items"], reason)
+
+
 def cmd_index(args):
     t0 = time.monotonic()
     with lock_index(args.collection), closing(db.connect(args.collection)) as conn:
-        pipeline = [stages.scan, stages.detect, stages.embed_persons, stages.embed_scenes]
-        if args.ocr:
-            pipeline.append(stages.ocr_bibs)
-        for stage in pipeline:
+        pipeline = ["scan", "detect", "embed_persons", "embed_scenes"] + (["ocr_bibs"] if args.ocr else [])
+        for name in pipeline:
             t = time.monotonic()
-            try:
-                counts = stage(conn, args.collection)
-            except FootprintExceeded as e:
-                sys.exit(f"{stage.__name__}: {e}")
-            models.unload()
-            log.info("%s finished in %.1fs: %s", stage.__name__, time.monotonic() - t, counts)
+            if name == "scan":
+                counts = stages.scan(conn, args.collection)
+            else:
+                counts = run_model_stage(name, args.collection, args.max_memory)
+            log.info("%s finished in %.1fs: %s", name, time.monotonic() - t, counts)
     log.info("index finished in %.1fs", time.monotonic() - t0)
 
 
@@ -371,6 +408,9 @@ def main(argv=None):
     p = sub.add_parser("index", help="scan, detect and embed a collection into <collection>/index.sqlite")
     p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--ocr", action="store_true", help="also read bib numbers with Apple Vision (slow, optional)")
+    p.add_argument("--max-memory", type=float, default=MAX_FOOTPRINT_MB, metavar="MB",
+                   help=f"memory limit per indexing process; a stage that reaches it restarts in a fresh process "
+                        f"(default {MAX_FOOTPRINT_MB})")
     p.set_defaults(func=cmd_index)
     p = sub.add_parser("search", help="rank indexed photos by a query photo, person text and/or scene text")
     p.add_argument("collection", type=Path, help=COLLECTION_HELP)
@@ -437,7 +477,7 @@ def main(argv=None):
                 args.race = str(args.collection)
             args.collection = resolve_collection(args.collection)
         config.setup_model_env()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     args.func(args)
 
 

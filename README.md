@@ -57,7 +57,7 @@ A yipai gallery not in any race still downloads the old way, `scripts/download_y
 uv run photofinder index <race>                  # or a collection directory
 ```
 
-Stages: scan (EXIF time, photographer, album, group) → detect people → clothing embeddings → scene embeddings. Add `--ocr` to also read bib numbers with Apple Vision (optional and slow: ~2–3 h for 190k people). Resumable and incremental; throttles under memory pressure and stops (resumable) if its own footprint passes 6 GB.
+Stages: scan (EXIF time, photographer, album, group) → detect people → clothing embeddings → scene embeddings. Add `--ocr` to also read bib numbers with Apple Vision (optional and slow: ~2–3 h for 190k people). Resumable and incremental; throttles under memory pressure. Each model stage runs in its own process; when that process's footprint is over 4 GB (`--max-memory MB`, checked between batches, so a batch can briefly go past it) the stage restarts in a fresh process and carries on. Measured peaks on 2560px photos: detect ~2.2 GB, clothing embeddings ~3.9 GB, scene embeddings ~2.0 GB. A cap below a stage's first batch stops with a message naming the stage.
 
 ## 3. Search in the browser
 

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from photofinder import db, models, originals, races, search
+from photofinder.memory import watch_parent
 from photofinder.sources.yipai import CATALOG_SELECT, Blocked
 from photofinder.index.stages import ALBUMS, MANIFEST_NAME, now
 
@@ -183,12 +184,6 @@ def detect_and_embed(img):
     boxes = sorted(models.detect_persons([img])[0], key=area, reverse=True)
     osnet, siglip = models.embed_crops([models.crop(img, b[:4]) for b in boxes] + [img])
     return boxes, osnet, siglip
-
-
-def watch_parent(parent: int):
-    while os.getppid() == parent:
-        time.sleep(2)
-    os._exit(0)
 
 
 def init_model_process(parent: int, half: bool):

@@ -5,13 +5,14 @@ import sqlite3
 import time
 from contextlib import closing
 from datetime import datetime
+from itertools import groupby
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-from photofinder import models, races
-from photofinder.memory import AdaptiveBatcher
+from photofinder import db as index_db, models, races
+from photofinder.memory import AdaptiveBatcher, FootprintExceeded
 from photofinder.sources import yipai
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
@@ -19,7 +20,7 @@ MANIFEST_NAME = "manifest.sqlite"
 ALBUMS = "albums"
 EXIF_IFD, DATETIME_ORIGINAL, MODEL, ORIENTATION = 0x8769, 0x9003, 0x0110, 0x0112
 COMMIT_EVERY = 200
-DETECT_BATCH, EMBED_BATCH, SCENE_BATCH, OCR_BATCH = 8, 64, 16, 64
+DETECT_BATCH, EMBED_BATCH, SCENE_BATCH, OCR_BATCH = 1, 64, 4, 64
 OCR_MIN_HEIGHT, OCR_UPSCALE_BELOW = 200, 700
 BIB_TOKEN = re.compile(r"(?<!\w)[0-9]{3,5}(?!\w)")
 
@@ -206,16 +207,17 @@ def embed_persons(db: sqlite3.Connection, collection: Path, embedder=None, batch
     embedder = embedder or models.embed_crops
     batcher = batcher or AdaptiveBatcher(EMBED_BATCH)
     for chunk in batcher.chunks(pending):
-        images, bad = {}, {}
-        for _, photo_id, relpath, *_ in chunk:
-            if photo_id not in images and photo_id not in bad:
-                try:
-                    images[photo_id] = models.load_image(collection / relpath)
-                except Exception as e:
-                    bad[photo_id] = error_text(e)
-                    log.warning("unreadable image %s: %s", relpath, bad[photo_id])
-        todo = [(pid, models.crop(images[photo_id], box)) for pid, photo_id, _, *box in chunk
-                if photo_id in images]
+        todo, bad = [], {}
+        for photo_id, rows in groupby(chunk, key=lambda r: r[1]):
+            rows = list(rows)
+            try:
+                img = models.load_image(collection / rows[0][2])
+            except Exception as e:
+                bad[photo_id] = error_text(e)
+                log.warning("unreadable image %s: %s", rows[0][2], bad[photo_id])
+                continue
+            todo += [(pid, models.crop(img, box)) for pid, _, _, *box in rows]
+            del img
         reid, clip = embedder([c for _, c in todo]) if todo else ([], [])
         stamp = now()
         with db:
@@ -290,22 +292,22 @@ def ocr_bibs(db: sqlite3.Connection, collection: Path, reader=None, batcher=None
     reader = reader or models.read_text
     batcher = batcher or AdaptiveBatcher(OCR_BATCH)
     for chunk in batcher.chunks(pending):
-        images, bad = {}, {}
-        for _, photo_id, relpath, *_ in chunk:
-            if photo_id not in images and photo_id not in bad:
+        done, bad = [], {}
+        for photo_id, rows in groupby(chunk, key=lambda r: r[1]):
+            rows = list(rows)
+            try:
+                img = models.load_image(collection / rows[0][2])
+            except Exception as e:
+                bad[photo_id] = error_text(e)
+                log.warning("unreadable image %s: %s", rows[0][2], bad[photo_id])
+                continue
+            for pid, _, relpath, *box in rows:
                 try:
-                    images[photo_id] = models.load_image(collection / relpath)
-                except Exception as e:
-                    bad[photo_id] = error_text(e)
-                    log.warning("unreadable image %s: %s", relpath, bad[photo_id])
-        done = []
-        for pid, photo_id, relpath, *box in chunk:
-            if photo_id in images:
-                try:
-                    done.append((pid, read_bibs(models.crop(images[photo_id], box), reader)))
+                    done.append((pid, read_bibs(models.crop(img, box), reader)))
                 except Exception as e:
                     counts["ocr_errors"] += 1
                     log.warning("ocr failed for person %d in %s, left pending: %s", pid, relpath, error_text(e))
+            del img
         stamp = now()
         with db:
             db.executemany("update photos set status = 'error', error = ? where id = ?",
@@ -320,3 +322,23 @@ def ocr_bibs(db: sqlite3.Connection, collection: Path, reader=None, batcher=None
     log.info("ocr_bibs: %d persons read, %d bibs, %d photo errors, %d ocr errors (left pending)",
              counts["persons"], counts["bibs"], counts["errors"], counts["ocr_errors"])
     return counts
+
+
+MODEL_STAGES = {"detect": (detect, DETECT_BATCH), "embed_persons": (embed_persons, EMBED_BATCH),
+                "embed_scenes": (embed_scenes, SCENE_BATCH), "ocr_bibs": (ocr_bibs, OCR_BATCH)}
+
+
+def run(name: str, collection: Path, max_footprint_mb: float) -> tuple[dict | None, str | None, dict]:
+    stage, size = MODEL_STAGES[name]
+    models.text_tower = False
+    batcher = AdaptiveBatcher(size, max_footprint_mb=max_footprint_mb)
+    exceeded = counts = None
+    try:
+        with closing(index_db.connect(collection)) as conn:
+            counts = stage(conn, collection, batcher=batcher)
+    except FootprintExceeded as e:
+        exceeded = str(e)
+    finally:
+        models.unload()
+        models.text_tower = True
+    return counts, exceeded, {"batches": batcher.batches, "items": batcher.items, "pending": batcher.pending}

@@ -8,7 +8,7 @@ import psutil
 
 NORMAL, WARN, CRITICAL = 1, 2, 4
 LEVEL_NAMES = {NORMAL: "normal", WARN: "warn", CRITICAL: "critical"}
-MAX_FOOTPRINT_MB = 6144
+MAX_FOOTPRINT_MB = 4096
 
 log = logging.getLogger("memory")
 
@@ -38,6 +38,12 @@ def footprint_mb(pid: int | None = None) -> float:
     return info.fields[7] / (1024 * 1024)
 
 
+def watch_parent(parent: int):
+    while os.getppid() == parent:
+        time.sleep(2)
+    os._exit(0)
+
+
 class FootprintExceeded(RuntimeError):
     pass
 
@@ -54,6 +60,8 @@ class AdaptiveBatcher:
         self.log_every = log_every
         self.normal_streak = 0
         self.batches = 0
+        self.items = 0
+        self.pending = 0
         self.footprint = footprint
         self.max_footprint_mb = max_footprint_mb
 
@@ -87,8 +95,11 @@ class AdaptiveBatcher:
 
     def chunks(self, items):
         items = list(items)
+        self.pending = len(items)
         i = 0
         while i < len(items):
             n = self.next_size()
-            yield items[i:i + n]
+            chunk = items[i:i + n]
+            self.items += len(chunk)
+            yield chunk
             i += n

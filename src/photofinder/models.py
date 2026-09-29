@@ -12,10 +12,12 @@ YOLO_WEIGHTS = "yolo26s.pt"
 OSNET_WEIGHTS = "osnet_x1_0_msmt17.pt"
 SIGLIP = ("ViT-B-16-SigLIP2", "webli")
 PERSON_CLASS, MIN_CONF, MIN_HEIGHT, IMGSZ = 0, 0.35, 96, 1280
+OSNET_BATCH = 32
 
 log = logging.getLogger("models")
 _loaded = {}
 half_precision = False
+text_tower = True
 
 
 def _get(name, load):
@@ -51,8 +53,12 @@ def siglip():
     def load():
         import open_clip
         precision = "pure_fp16" if half_precision and device() == "mps" else "fp32"
-        model, _, preprocess = open_clip.create_model_and_transforms(*SIGLIP, device=device(), precision=precision)
-        return model.eval(), preprocess
+        if text_tower:
+            model, _, preprocess = open_clip.create_model_and_transforms(*SIGLIP, device=device(), precision=precision)
+            return model.eval(), preprocess
+        model, _, preprocess = open_clip.create_model_and_transforms(*SIGLIP, device="cpu", precision=precision)
+        model.text = None
+        return model.to(device()).eval(), preprocess
     return _get("siglip", load)
 
 
@@ -104,9 +110,9 @@ def l2norm(v) -> np.ndarray:
 
 
 def embed_crops(crops: list[Image.Image]) -> tuple[np.ndarray, np.ndarray]:
-    import torch
-    reid = osnet()([np.ascontiguousarray(np.asarray(c)[:, :, ::-1]) for c in crops])
-    return l2norm(reid), embed_images(crops)
+    reid = [osnet()([np.ascontiguousarray(np.asarray(c)[:, :, ::-1]) for c in crops[i:i + OSNET_BATCH]])
+            for i in range(0, len(crops), OSNET_BATCH)]
+    return l2norm(np.concatenate(reid)), embed_images(crops)
 
 
 def embed_images(images: list[Image.Image]) -> np.ndarray:

@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+import weakref
 
 import numpy as np
 import pytest
@@ -188,6 +189,50 @@ def test_embed_unreadable_photo_marks_error_and_skips_its_persons(tmp_path):
     assert fake.calls == [[(40, 120)]]
     assert conn.execute("select status from photos where relpath = '1.jpg'").fetchone() == ("error",)
     assert embed_persons(conn, c, embedder=FakeEmbedder())["pending"] == 0
+
+
+def track_decoded_photos(monkeypatch):
+    refs, peak = [], [0]
+    load = models.load_image
+
+    def alive():
+        return sum(r() is not None for r in refs)
+
+    def tracked(path):
+        img = load(path)
+        refs.append(weakref.ref(img))
+        peak[0] = max(peak[0], alive())
+        return img
+    monkeypatch.setattr(models, "load_image", tracked)
+    return alive, peak
+
+
+def test_embed_persons_decodes_one_photo_at_a_time(tmp_path, monkeypatch):
+    c, conn = make_collection(tmp_path)
+    detect(conn, c, detector=FakeDetector(), batcher=fixed_batcher(8))
+    alive, peak = track_decoded_photos(monkeypatch)
+    fake, held = FakeEmbedder(), []
+
+    def embedder(crops):
+        held.append(alive())
+        return fake(crops)
+    assert embed_persons(conn, c, embedder=embedder, batcher=fixed_batcher(8))["persons"] == 3
+    assert fake.calls == [[(50, 120), (50, 180), (40, 120)]]
+    assert peak == [1] and held == [0]
+
+
+def test_embed_crops_runs_osnet_in_sub_batches(monkeypatch):
+    sizes = []
+
+    def reid(arrays):
+        sizes.append(len(arrays))
+        return np.array([[a.shape[1], 1.0] for a in arrays], dtype=np.float32)
+    monkeypatch.setattr(models, "osnet", lambda: reid)
+    monkeypatch.setattr(models, "embed_images", lambda crops: np.ones((len(crops), 3), dtype=np.float32))
+    crops = [Image.new("RGB", (i + 1, 5)) for i in range(70)]
+    osnet, clip = models.embed_crops(crops)
+    assert sizes == [32, 32, 6] and clip.shape == (70, 3)
+    assert np.allclose(osnet, models.l2norm([[i + 1, 1.0] for i in range(70)]))
 
 
 def test_index_rerun_with_everything_done_loads_no_model(tmp_path, monkeypatch, caplog):

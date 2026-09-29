@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -103,6 +104,24 @@ def test_ocr_bibs_stores_tokens_and_marks_every_person_done(tmp_path):
     assert ocr_bibs(conn, c, reader=idle)["pending"] == 0
     assert idle.calls == []
     assert len(bibs(conn)) == 2
+
+
+def test_ocr_bibs_decodes_one_photo_at_a_time(tmp_path, monkeypatch):
+    c, conn = make_collection(tmp_path)
+    refs, load = [], models.load_image
+
+    def tracked(path):
+        img = load(path)
+        refs.append(weakref.ref(img))
+        return img
+    monkeypatch.setattr(models, "load_image", tracked)
+    reader, held = FakeReader(TEXTS), []
+
+    def read(img):
+        held.append(sum(r() is not None for r in refs))
+        return reader(img)
+    assert ocr_bibs(conn, c, reader=read, batcher=fixed_batcher(8))["bibs"] == 2
+    assert held == [1, 1, 1]
 
 
 def test_ocr_bibs_resumes_after_crash_without_duplicates(tmp_path):

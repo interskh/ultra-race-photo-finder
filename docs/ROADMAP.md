@@ -4,7 +4,7 @@ Last updated 2026-09-29.
 
 ## Done
 - yipai360 downloader: paced, resumable, single-instance, Retry-After aware (`src/photofinder/sources/yipai.py`, `scripts/download_yipai.sh`).
-- Indexer: scan → detect (yolo26s) → embed_persons (OSNet x1_0 MSMT17 + SigLIP2 B/16) → embed_scenes (SigLIP2) → optional `--ocr` bib reading (Apple Vision); memory-pressure-adaptive batching, 6 GB process-footprint stop; per-collection lock.
+- Indexer: scan → detect (yolo26s) → embed_persons (OSNet x1_0 MSMT17 + SigLIP2 B/16) → embed_scenes (SigLIP2) → optional `--ocr` bib reading (Apple Vision); memory-pressure-adaptive batching; each model stage in a spawned process capped at 4 GB (`--max-memory`), restarted fresh when it reaches the cap (details: `docs/handoff/2026-09-29-index-memory-cap.md`); per-collection lock.
 - Search: fused clothing similarity (osnet 0.3 / siglip 0.7), person/scene text, filters (time, photographer, album, group, bib), me/not-me labels, CLI `search` and `eval`.
 - Web UI (`photofinder serve`): bib / upload / click-a-person start points, Me/Not me, Find more, full-photo viewer, My photos + export.
 - Saved people + originals (2026-09-28, `docs/superpowers/specs/2026-09-28-people-and-originals-design.md`): per-person marks ("Searching for" switcher, ✓ <name> / ✗ Not <name>), "matched via" thumbnails on Find more, My photos with per-photo original status, background originals download (progress, cancel, resume), zip, CSV, single-photo download in the viewer, M/N/←/→/Esc shortcuts. Real run: 10/10 originals downloaded from a copy of the live index.
@@ -21,7 +21,7 @@ Last updated 2026-09-29.
 - Live 贡嘎 migration done: the collection lives in `data/races/2026-gongga100/`; top-up is `scripts/download.sh 2026-gongga100`, then `photofinder index 2026-gongga100`.
 
 ## Next (ranked)
-Races and albums slices 1–7 are done on the branch (spec above). Operational: finish `photofinder index 2026-chongli168` (stopped twice by the memory guard during detect; rerun to resume) and index 2026-siguniang once its download ends.
+Races and albums slices 1–7 are done on the branch (spec above). Operational: 2026-chongli168 fully indexed 2026-09-29 (11,939 photos, 53,400 people; no `--ocr` yet); index 2026-siguniang once its download ends.
 
 1. **Cross-photographer recall** — biggest lever. Ideas: tighter crops / drop ghost & prop detections; stronger re-ID (CLIP-ReID, SOLIDER); part-based colour features (top / bottom / shoes / pack); use `eval --bib` across the 36 bibs as the benchmark.
 2. Soft score boost for the user's own bib (reasoning for deferring in handoff S3-T1).
