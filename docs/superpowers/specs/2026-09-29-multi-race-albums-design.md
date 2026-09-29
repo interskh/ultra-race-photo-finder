@@ -68,7 +68,7 @@ data/races/<slug>/index.sqlite        one index per race (index.lock beside it)
 data/races/<slug>/albums/<platform>-<site_id>/{photos/<source_id>.jpg, manifest.sqlite, download.log, .download.lock}
 data/exports/<slug>/<person>/{originals/, photos.csv}
 ```
-`index`, `search`, `eval`, `serve` accept a race slug or a directory path. A directory without `albums/` is a **single-album collection** (today's behaviour: root `manifest.sqlite` if present) — keeps `data/subsets/*` and the tests working.
+`index`, `search`, `eval`, `serve` accept a race slug or a directory path; a slug resolves to the race directory, which until the picker lands (Slice 6) is served exactly like a single collection. A directory without `albums/` is a **single-album collection** (today's behaviour: root `manifest.sqlite` if present) — keeps `data/subsets/*` and the tests working.
 
 ### 3.3 Manifest catalog (shared read contract)
 Every album's `manifest.sqlite` exposes a `catalog` table or view (§4.2). Scan reads catalogs, never platform tables. yipai keeps its tables and gains a `catalog` **view** (no data rewrite; created by the yipai downloader schema and by the migration). New platforms write a real `catalog` table plus downloader state columns.
@@ -78,20 +78,22 @@ Every album's `manifest.sqlite` exposes a `catalog` table or view (§4.2). Scan 
 - `sources/base.py`: `AlbumDownloader` — the paced loop for the new platforms, shaped like yipai's `Downloader.run`: list a page → upsert catalog → download that page's missing previews with a thread pool → on HTTP 403 re-list the page once (signed URLs) → breaker after 20 consecutive image failures → page delay with jitter → final "listed vs reported total" warning. Per-album lock file. Resumable: a photo is done when `status='done'` and its file is a valid JPEG. Defaults: 4 workers, page delay 3 s + jitter, image delay 0.2–0.6 s, 5 tries.
 - Adapters `sources/pailixiang.py`, `sources/xxpie.py`, `sources/photoplus.py` each implement: `meta() -> {title, total}`, `pages() -> Iterator[list[CatalogRow]]` (with platform auth/signing), `preview_url(row) -> str` (fresh from the current page), and `site_link(album, row)` (§3.7). yipai is **not** ported onto the base (working, tested; not worth the risk).
 - Rows are keyed by `source_id` (pailixiang `ID`, xxpie `album_ossobject_id`, photoplus `id`); new uploads that shift pages are caught by dedupe + rerun (top-up), as with yipai.
-- photoplus sub-album (`group_name`): list `/album/albums`, then page each sub-album with `/album/one` so every photo carries its sub-album name (only page 1 of `/album/one` was probed; sub-albums are not known to be disjoint or complete). Afterwards reconcile against `/pic/list`'s `pics_total`: if fewer distinct ids were seen, page `/pic/list` and add the rest with `group_name` null. The listed-vs-total warning reports any remaining gap.
+- photoplus sub-album (`group_name`): list `/album/albums`, then page each sub-album with `/album/one` so every photo carries its sub-album name (only page 1 of `/album/one` was probed; sub-albums are not known to be disjoint or complete). A photo has exactly one group: the first sub-album it was seen in. Afterwards reconcile against `/pic/list`'s `pics_total`: if fewer distinct ids were seen, page `/pic/list` and add the rest with `group_name` null. The listed-vs-total warning reports any remaining gap.
 - Listing times are normalised per adapter to camera-local `YYYY-MM-DD HH:MM:SS`: pailixiang `ShootTime` and photoplus `relate_time` as-is; xxpie `record_time` (UTC ISO) converted to Asia/Shanghai.
 - CLI: `photofinder download <race> [album-key]` runs albums sequentially in the foreground; `scripts/download.sh <race> [album-key]` runs it detached under `caffeinate`. yipai albums dispatch to the existing yipai `Downloader` with `out_dir = album_dir`. `scripts/download_yipai.sh` **refuses** once the order id is registered in a race (printing the `scripts/download.sh <race>` command), so a stale top-up can't recreate `data/yipai/<id>/` and re-download 68k photos.
 
 ### 3.5 Index
-- `db` schema: `photos` gains `album_key text`, `grp text`. `db.connect` migration (idempotent, transactional, like the profiles migration): when `grp` is missing, add both columns and `update photos set grp = album, album = null` — on every legacy index the old yipai tag becomes the Group.
+- `db` schema: `photos` gains `album_key text`, `grp text`. `db.connect` migration (idempotent, transactional, like the profiles migration): when `grp` is missing, add both columns and `update photos set grp = album, album = null` — on every legacy index the old yipai tag becomes the Group. This is exact because a legacy `album` value only ever came from a yipai manifest's tag (plain folders have none).
 - `scan`: walks the race dir; for each image the album is the `albums/<key>/` prefix of its relpath (or the single-album collection); loads that album's catalog by `stem → CatalogRow`; stores `source_photo_id`, `album_key`, `album` (album title from the registry, `null` for a single-album collection), `grp`, `photographer_uid = "<platform>:<uid>"` (so uids can't collide across platforms), `photographer`; `taken_at` = EXIF DateTimeOriginal if present, else the catalog's `taken_at`.
+- This supersedes the 2026-09-27 design's "album = gallery tag" facet: album now means the source album, and the old tag meaning moves to Group (CLI `--album <tag>` becomes `--group <tag>`; no filters are persisted anywhere, so nothing else carries the old meaning).
 - Filters: `Filters.groups` added beside `albums`; facets return `albums` and `groups`; CLI `search --group`. The photographer filter matches the name, the full `<platform>:<uid>`, or a bare uid equal to the part after the colon (so existing `--photographer <uid>` usage keeps working).
 
 ### 3.6 Server & UI
 - `create_app(registry=None, collection=None, …)`: a race-less shell holding the shared `ModelWorker` and a `current: RaceState | None` (`slug, dir, persons, scene_error, originals Job`). `serve` takes an optional slug/path: a slug/none → picker over the registry; a path → that single collection as the only race (dev/E2E on subsets).
 - Global endpoints: `GET /api/races` (name, slug, albums with titles and downloaded counts from catalogs, `indexed`, `loaded`), `POST /api/races/{slug}/load`, `GET /api/models`.
 - All existing race-scoped endpoints move under `/api/r/{slug}/…` unchanged otherwise. A dependency returns the current `RaceState` or answers **409** `{"detail": "The server switched to <name> — reload", "loaded": <slug>}`.
-- Load: under a lock; refuses (409) while the current race's originals job runs; drops the current `RaceState` (and upload cache) **before** loading the next, so peak memory is one race; runs in a thread; the UI busy bar says "Loading <race name>…". Loading an unindexed race → 400 with the `photofinder index <slug>` hint.
+- Switch boundary: a request binds to the `RaceState` current when it starts and uses only that race's index and data for its whole life, so a request that straddles a switch still reads and writes the race it named (never the newly loaded one). Unloading only drops the server's reference; in-flight requests finish on the old race.
+- Load: under a lock; refuses (409) while the current race's originals job runs; drops the current `RaceState` (and upload cache) **before** loading the next, so peak memory is one race plus whatever short in-flight requests on the old race still hold until they finish; runs in a thread; the UI busy bar says "Loading <race name>…". Loading an unindexed race → 400 with the `photofinder index <slug>` hint.
 - The browser stores the last race in localStorage (try/catch) and loads it on open; if none, it shows the picker. The top bar shows `Race: [2026 贡嘎100 ▾]` before `Searching for:`.
 - Profile ids are per index, so race B's profile 2 is a different person from race A's. The remembered active person is stored **per race slug**; on a race switch the UI uses that race's remembered profile if it still exists, else the first profile. Filters, results, the viewer and My photos are cleared on switch.
 - Exports: `profile_folder` uses the race slug (single-album collection: its dir name, as today).
@@ -105,8 +107,11 @@ Every album's `manifest.sqlite` exposes a `catalog` table or view (§4.2). Scan 
 2. Back up the index with the SQLite backup API to `data/backups/<collection>-index-<time>.sqlite`; record label/profile counts.
 3. `mkdir races/<slug>/albums`; `rename(collection → races/<slug>/albums/yipai-<id>)` (same volume, instant); create the `catalog` view in its manifest; move `index.sqlite` (after `wal_checkpoint(TRUNCATE)`) to the race dir.
 4. In one transaction: `relpath = 'albums/yipai-<id>/' || relpath`, `album_key`, `album = <title>`, `photographer_uid = 'yipai:' || photographer_uid` (the `grp` move already happened in `db.connect`).
-5. Register the race and album; move `data/exports/<id>/` → `data/exports/<slug>/`; re-point `data/subsets/fullcopy/photos` if it links to the old path.
-6. Verify label/profile counts equal step 2's, and every relpath resolves to a file; on any failure before step 4 commits, move the directory back and leave the backup.
+5. Move `data/exports/<id>/` → `data/exports/<slug>/`; re-point `data/subsets/fullcopy/photos` if it links to the old path.
+6. Verify label/profile counts equal step 2's, and every relpath resolves to a file.
+7. Register the race and album (last).
+
+Crash safety: recovery is always forward, never a rollback. Every step is idempotent and detects whether it already ran (directory already moved, index already in the race dir, paths already prefixed, exports already moved), so for any interruption point — including after the index moved but before its path rewrite committed — rerunning `race import` completes the import. A verification failure stops before registering and reports; the backup (kept regardless) is the manual restore path. The registry entry is the completion marker: a registered race is never half-migrated, and "already imported" means registered.
 
 ### Rejected alternatives
 - **One index per album + federated search**: marks and Find more couldn't span albums, and cross-album recall is the point. Rejected.
@@ -222,7 +227,7 @@ User-visible: from any result, one click to the site (xxpie: the photo itself; o
 - A1. **Search scope = race**; saved people, marks and exports are per race (people are not shared across races — kit differs per race anyway).
 - A2. **Race slugs** `2026-gongga100`, `2026-chongli168`, `2026-siguniang`; display names as the user gave them.
 - A3. **Existing `album` column becomes `grp`** in every index via `db.connect` (yipai tags are sub-albums, not source albums). A pre-change server can't read the new meaning — restart on the new code (same pattern as the profiles migration).
-- A4. **Shot time**: EXIF first, then the listing's time normalised to camera-local Beijing time (xxpie's is UTC; the others are local), matching yipai EXIF, so time filters line up across albums.
+- A4. **Shot time**: EXIF first, then the listing's time normalised to camera-local Beijing time (xxpie's is UTC; the others are local), matching yipai EXIF, so all albums share one time basis. Photographer clock skew stays uncorrected, as in the 2026-09-27 design.
 - A5. **Preview variants**: pailixiang `BigImageUrl` (1600), xxpie `url_large1920` (≈2560), photoplus `big_img` (1600). Watermark bands stay; detection copes on yipai's branded previews already.
 - A6. **Pacing for new platforms**: 4 workers, 3 s + jitter between pages, breaker at 20 consecutive failures — below yipai's 6 workers because limits are unknown.
 - A7. **Open on site** is only exact on xxpie (probe: no platform has a per-photo detail URL). On yipai the file-name search box finds the photo; on pailixiang and photoplus the user browses the album (photoplus 四姑娘山 has 93k photos with no search box, so the group + shot time + file name shown beside the link are what make it findable). Accepted for this phase; next-phase originals remove the need for most photos.
@@ -237,9 +242,12 @@ User-visible: from any result, one click to the site (xxpie: the photo itself; o
 - Cross-album duplicates (e.g. 四姑娘山 精选照 is probably a subset of the 93k album): measure overlap by (`fname`, `taken_at`, photographer) after download; if material, collapse duplicates in results. Don't build before measuring.
 - Page drift in newest-first listings during a long run (xxpie): rely on dedupe + top-up rerun; add an ascending sort only if a rerun keeps finding missed photos.
 - Token/OptTime expiry mid-run beyond one renewal.
+- Catalog metadata revisions (group, photographer name, time) after a photo was indexed are not propagated by the incremental scan; add a metadata refresh pass if top-ups show changes.
+- Photos in several photoplus sub-albums keep only their first group; support multiple memberships if overlap turns out common.
+- Race-load memory: loading transiently needs ~3× the float16 matrix (~2.7 GB for 贡嘎, more for 四姑娘山); measure while an indexer runs on another race and add a pressure check before load only if it swaps.
 - Registry edits while a server is running (the picker reads `races.json` on each `/api/races`, so new races appear; no live reload of a loaded race's albums until it's reloaded).
 - Originals for new platforms (next phase): free watermarked full-size files — per-photo lookup via pailixiang `SearchText` and xxpie file-name search; photoplus has no lookup, so re-list (by sub-album) to get fresh signed URLs.
 
 ## 8. Review status
 
-spec-review: pending
+spec-review: completed 2026-09-29
