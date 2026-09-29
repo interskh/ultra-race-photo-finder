@@ -394,3 +394,23 @@ Scratch root: `PHOTOFINDER_DATA_ROOT=/Volumes/Ext1TB/Projects/photo-finder-scrat
 4. Delete the scratch root `/Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-plx` (~0.6 GB) once satisfied.
 - CLAUDE.md test count (now 422 passed + 1 opt-in) and a `album add` line in its layout/rules: left for the user (agents don't edit CLAUDE.md).
 
+## Slice 4 · Whole-run gate fix
+
+**Decisions**
+- pailixiang: an `ID` that is None or absent is unusable (previously `str(None)` = "None" passed SAFE_ID, so two such rows would both write `photos/None.jpg`). It is skipped with a warning that names its `Name`.
+- base: `download()` calls `preview_url(row)` once, after the file check. A falsy URL returns `failed`/`base.NO_URL` ("no preview url") before any sleep or request, and does not count toward the breaker (as yipai's "no s1920 url"). The row stays in the catalog, so a later listing that has a URL retries it. Before, `client.get(None)` raised TypeError out of `pool.map` and aborted the album.
+- The URL is now taken once per download instead of once per attempt. Same result because `preview_url` must be pure (task 1 contract). A fresh URL still comes only from the 403 re-list.
+- pailixiang total = first positive TotalCount minus the distinct skipped rows. The set key is (str(ID), FileName, Name), so a re-list or rerun doesn't subtract twice, and two None-ID rows with different files count twice. An album whose only gap is skipped rows finishes without `missing`, and `download` exits 0. The warning log still names each skipped row.
+- README: xxpie/photoplus `album add` also stores no title until their adapters land (slice 5).
+- Tests (all 4 fail on 5b14ca3's pailixiang.py/base.py, checked by swapping the pre-fix files in and restoring with sha256 match): `test_missing_or_null_ids_are_skipped`, `test_skipped_rows_leave_no_missing_gap_even_after_a_relist`, `test_row_without_preview_url_fails_alone` (test_pailixiang); `test_rows_without_preview_url_fail_without_tripping_the_breaker` (test_base_downloader, 3 URL-less rows with breaker 2 → no Blocked).
+
+**Rejected**
+- Keeping URL-less rows out of the catalog in the adapter: the gap would then show as `missing` forever. A `failed` row with a reason is visible and retried.
+- Subtracting a per-page skipped count: a re-list of the same page would subtract twice.
+
+**Deferred**
+- A URL-less row still makes `download` exit 1 (non-done count), which is the intended "not every photo downloaded" signal. The row resolves only if the site later lists a URL.
+
+**Touches**
+- `src/photofinder/sources/base.py` (`NO_URL`, `download()` — shared by slice 5 adapters), `src/photofinder/sources/pailixiang.py`, `tests/test_pailixiang.py`, `tests/test_base_downloader.py`, README.md.
+

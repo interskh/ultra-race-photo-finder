@@ -192,6 +192,42 @@ def test_unsafe_ids_are_skipped():
     assert [r.source_id for r in rows] == ["6c048314839630301264053265e57922"]
 
 
+def test_missing_or_null_ids_are_skipped():
+    no_id = {k: v for k, v in LISTING["Data"][2].items() if k != "ID"}
+    site = FakePlx([dict(LISTING["Data"][0], ID=None), no_id, LISTING["Data"][1]])
+    a = adapter(site)
+    a.meta()
+    rows, _, total = a.list_page(None)
+    assert [r.source_id for r in rows] == ["6c048314839630301264053265e57922"]
+    assert total == 1
+
+
+def test_skipped_rows_leave_no_missing_gap_even_after_a_relist(tmp_path):
+    photos = [dict(LISTING["Data"][0], ID="../evil"), *LISTING["Data"][1:]]
+    site = FakePlx(photos)
+    a = adapter(site)
+    for _ in range(2):
+        d = AlbumDownloader(client_for(site), a, tmp_path, sleep=lambda s: None)
+        try:
+            assert d.run() == {"done": 2}
+        finally:
+            d.close()
+    assert a.list_page(None)[2] == 2
+
+
+def test_row_without_preview_url_fails_alone(tmp_path):
+    photos = [dict(LISTING["Data"][0], BigImageUrl=None), *LISTING["Data"][1:]]
+    site = FakePlx(photos)
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None, max_consecutive_failures=1)
+    try:
+        assert d.run() == {"done": 2, "failed": 1}
+    finally:
+        d.close()
+    m = sqlite3.connect(tmp_path / "manifest.sqlite")
+    assert m.execute("select status, error, fname from catalog where source_id = ?",
+                     (LISTING["Data"][0]["ID"],)).fetchone() == ("failed", "no preview url", "OCN04371.jpg")
+
+
 @pytest.fixture
 def data_root(tmp_path, monkeypatch):
     root = tmp_path / "data"

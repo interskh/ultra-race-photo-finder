@@ -18,7 +18,7 @@ Add an album by its gallery URL (yipai360, pailixiang, xxpie or photoplus; the p
 uv run photofinder album add <slug> <album URL> [--title "<title>"]   # e.g. album add 2026-gongga100 https://live.pailixiang.com/album/a13800138000
 ```
 
-The race, the URL and "album already in a race" are checked before anything is sent to the site. Without `--title`, the title is fetched from the site where the downloader supports it (pailixiang); yipai albums get no title and the Album filter shows the key (`yipai-<orderId>`). If the title fetch fails, rerun with `--title`. Then `scripts/download.sh <slug>` and `photofinder index <slug>`.
+The race, the URL and "album already in a race" are checked before anything is sent to the site. Without `--title`, the title is fetched from the site where the downloader supports it (pailixiang); yipai albums, and for now xxpie and photoplus albums (until their downloaders arrive), are registered with no title and the Album filter shows the key (e.g. `yipai-<orderId>`). If the title fetch fails, rerun with `--title`. Then `scripts/download.sh <slug>` and `photofinder index <slug>`.
 
 **One-time move of an old yipai collection** (`data/yipai/<orderId>/`) into a new race, without re-indexing and keeping marks and saved people:
 

@@ -103,6 +103,14 @@ def test_downloads_every_page_into_catalog_and_meta(tmp_path):
     assert dict(db.execute("select key, value from meta")) == {"title": "Glacier 100", "album_id": "13800138000"}
 
 
+def test_rows_without_preview_url_fail_without_tripping_the_breaker(tmp_path):
+    adapter, images = FakeAdapter([["a1", "a2", "a3"], ["b1"]]), Images()
+    adapter.preview_url = lambda row: None if row.source_id.startswith("a") else row.url
+    assert run(tmp_path, adapter, images, max_consecutive_failures=2) == {"failed": 3, "done": 1}
+    assert catalog(tmp_path)["a2"] == ["failed", None, "no preview url"]
+    assert list(images.hits) == ["b1"]
+
+
 def test_schema_is_the_shared_catalog_contract(tmp_path):
     make(tmp_path, FakeAdapter([[]]), Images()).close()
     db = sqlite3.connect(tmp_path / "manifest.sqlite")

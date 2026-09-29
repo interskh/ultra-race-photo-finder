@@ -23,6 +23,7 @@ create table if not exists catalog(
 create table if not exists meta(key text primary key, value text);
 """
 EXPIRED = "HTTP 403"
+NO_URL = "no preview url"
 
 log = logging.getLogger("download")
 
@@ -140,6 +141,9 @@ class AlbumDownloader:
         dest = self.photos_dir / f"{sid}.jpg"
         if jpeg_file_ok(dest):
             return sid, "done", None
+        url = self.adapter.preview_url(row)
+        if not url:
+            return sid, "failed", NO_URL
         self.sleep(random.uniform(*self.img_delay))
         error = None
         for attempt in range(self.tries):
@@ -148,7 +152,7 @@ class AlbumDownloader:
                 return sid, "pending", error
             wait = backoff_seconds(attempt)
             try:
-                r = self.client.get(self.adapter.preview_url(row))
+                r = self.client.get(url)
             except httpx.HTTPError as e:
                 error = repr(e)
             else:

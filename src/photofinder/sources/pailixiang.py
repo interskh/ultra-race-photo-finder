@@ -58,6 +58,7 @@ class Adapter:
         self.album_id = None
         self.opt_time = None
         self.total = None
+        self.skipped = set()
 
     def post(self, action: str, body: dict) -> dict:
         return fetch_json(self.client, "POST", f"{API}/WapAbm/{action}", check=ok, tries=self.tries,
@@ -82,14 +83,17 @@ class Adapter:
         data = body.get("Data") or []
         rows = []
         for p in data:
-            if SAFE_ID.fullmatch(str(p.get("ID", ""))):
+            sid = p.get("ID")
+            if sid is not None and SAFE_ID.fullmatch(str(sid)):
                 rows.append(to_row(p))
             else:
-                log.warning("skipping pailixiang photo with unusable ID %r", p.get("ID"))
+                self.skipped.add((str(sid), p.get("FileName"), p.get("Name")))
+                log.warning("skipping pailixiang photo with unusable ID %r (%s)", sid, p.get("Name"))
         count = body.get("TotalCount")
         if self.total is None and isinstance(count, int) and count > 0:
             self.total = count
-        return rows, (start + PAGE if len(data) >= PAGE else None), self.total
+        total = None if self.total is None else self.total - len(self.skipped)
+        return rows, (start + PAGE if len(data) >= PAGE else None), total
 
     def preview_url(self, row: CatalogRow) -> str:
         return row.url
