@@ -291,10 +291,13 @@ class RaceState:
     uploads: OrderedDict = field(default_factory=OrderedDict)
 
 
-def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher) -> RaceState:
+def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher, hint: str | None = None) -> RaceState:
     directory = directory.resolve()
     with closing(db.connect(directory)) as conn:
-        persons = search.load_persons(conn)
+        try:
+            persons = search.load_persons(conn)
+        except search.MissingEmbeddings as e:
+            raise search.MissingEmbeddings(str(e).replace("<collection>", hint or slug)) from None
         try:
             search.load_scenes(conn, persons)
             scene_error = None
@@ -309,6 +312,22 @@ def path_race(directory: Path) -> races.Race:
     if races.race_dir(slug).resolve() == directory and (found := races.load().race(slug)):
         return found
     return races.Race(slug, slug)
+
+
+PERSONS_READY = ("select 1 from persons p join photos ph on ph.id = p.photo_id "
+                 "join emb_person_osnet o on o.person_id = p.id join emb_person_siglip s on s.person_id = p.id "
+                 "where ph.status = 'ok' limit 1")
+
+
+def embedded(directory: Path) -> bool:
+    index = directory / db.INDEX_NAME
+    try:
+        if not index.is_file():
+            return False
+        with closing(sqlite3.connect(f"{index.resolve().as_uri()}?mode=ro", uri=True, timeout=2)) as conn:
+            return conn.execute(PERSONS_READY).fetchone() is not None
+    except (sqlite3.Error, OSError):
+        return False
 
 
 def downloaded(manifest: Path) -> int:
@@ -345,7 +364,8 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
     if collection is not None:
         collection = collection.resolve()
         only = path_race(collection)
-        set_current(open_race(only.slug, only.name, collection, fetcher))
+        registered = races.race_dir(only.slug).resolve() == collection
+        set_current(open_race(only.slug, only.name, collection, fetcher, None if registered else str(collection)))
 
     def listing() -> list[tuple[races.Race, Path]]:
         if only is not None:
@@ -400,7 +420,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
     @app.get("/api/races")
     def list_races():
         st = app.state.current
-        return [{"slug": race.slug, "name": race.name, "indexed": (d / db.INDEX_NAME).is_file(),
+        return [{"slug": race.slug, "name": race.name, "indexed": embedded(d),
                  "loaded": st is not None and st.slug == race.slug,
                  "albums": [{"key": a.key, "platform": a.platform, "title": a.title, "url": a.url,
                              "downloaded": downloaded(d / ALBUMS / a.key / MANIFEST_NAME)} for a in race.albums]}
@@ -417,8 +437,9 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             old = app.state.current
             if old is not None and old.slug == slug:
                 return facets_of(old)
-            if not (d / db.INDEX_NAME).is_file():
-                raise bad(f"{race.name} is not indexed yet; run `photofinder index {slug}` first")
+            if not embedded(d):
+                raise bad(f"{race.name} is not indexed yet (no person embeddings); "
+                          f"run `photofinder index {slug}` first")
             if old is not None:
                 if not old.job.busy.acquire(blocking=False):
                     if old.job.status()["state"] == "running":

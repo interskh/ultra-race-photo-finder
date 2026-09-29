@@ -3,6 +3,7 @@ import sqlite3
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import httpx
 import pytest
@@ -103,7 +104,7 @@ def test_races_lists_registry_with_indexed_loaded_and_downloaded_counts(world):
     assert list(got) == [RA, RB, RC, RD]
     assert {s: (r["name"], r["indexed"], r["loaded"]) for s, r in got.items()} == {
         RA: ("Race A", True, False), RB: ("Race B", True, False), RC: ("Race C", False, False),
-        RD: ("Race D", True, False)}
+        RD: ("Race D", False, False)}
     assert got[RA]["albums"] == [
         {"key": "yipai-1001", "platform": "yipai", "title": "Yipai One",
          "url": "https://www.yipai360.com/photolivepc/?orderId=1001", "downloaded": 2},
@@ -129,9 +130,20 @@ def test_load_returns_facets_and_race_routes_answer_only_for_the_loaded_race(wor
     assert api.get("/api/facets").status_code == 404
 
 
+def snapshot(*dirs):
+    out = []
+    for d in dirs:
+        with closing(sqlite3.connect(d / db.INDEX_NAME)) as conn:
+            out.append(list(conn.iterdump()))
+    exports = config.DATA_ROOT / "exports"
+    out.append(sorted((str(p), p.stat().st_size) for p in exports.rglob("*")) if exports.exists() else None)
+    return out
+
+
 def test_stale_slug_is_refused_before_any_write(world):
     api = api_of()
     load(api, RA)
+    before = snapshot(world["a"], world["b"])
     pid = world["ids_b"][1][0]
     for method, path, body in [("post", "labels", {"profile_id": ME, "person_id": pid, "label": "me"}),
                                ("post", "profiles", {"name": "Zed"}),
@@ -141,6 +153,7 @@ def test_stale_slug_is_refused_before_any_write(world):
                                ("post", "originals", {"profile_id": ME})]:
         res = api.request(method.upper(), f"/api/r/{RB}/{path}", json=body)
         assert res.status_code == 409 and res.json()["loaded"] == RA, (path, res.text)
+    assert snapshot(world["a"], world["b"]) == before
     assert labels_in(world["b"]) == []
     with sqlite3.connect(world["b"] / db.INDEX_NAME) as conn:
         assert conn.execute("select name from profiles").fetchall() == [("Me",)]
@@ -183,11 +196,40 @@ def test_unknown_and_unindexed_races_are_refused_and_keep_the_loaded_race(world)
     assert api.get(f"/api/r/{RA}/facets").status_code == 200
 
 
-def test_race_without_embeddings_is_400_and_any_indexed_race_loads_afterwards(world):
+def test_race_without_embeddings_is_refused_before_the_loaded_race_is_dropped(world, monkeypatch):
     api = api_of()
     load(api, RA)
+    state = api.app.state.current
+    calls = []
+    monkeypatch.setattr(search, "load_persons", lambda conn, _real=search.load_persons: calls.append(1) or _real(conn))
     res = load(api, RD)
-    assert res.status_code == 400 and "embed_persons" in res.json()["detail"]
+    assert res.status_code == 400 and "run `photofinder index 2026-d` first" in res.json()["detail"]
+    assert calls == [] and api.app.state.current is state
+    assert [s for s, r in by_slug(api).items() if r["loaded"]] == [RA]
+    assert api.get(f"/api/r/{RA}/facets").status_code == 200
+
+
+def test_embedded_check_tolerates_missing_and_broken_indexes(world, tmp_path):
+    assert web.embedded(world["a"]) and not web.embedded(races.race_dir(RD))
+    assert not web.embedded(races.race_dir(RC)) and not web.embedded(tmp_path / "nowhere")
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / db.INDEX_NAME).write_bytes(b"not a database at all" * 100)
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    with closing(sqlite3.connect(legacy / db.INDEX_NAME)) as conn:
+        conn.execute("create table photos(id integer primary key)")
+    assert not web.embedded(broken) and not web.embedded(legacy)
+
+
+def test_embeddings_missing_after_the_drop_names_the_slug_and_any_indexed_race_loads_afterwards(world, monkeypatch):
+    api = api_of()
+    load(api, RA)
+    monkeypatch.setattr(web, "embedded", lambda d: True)
+    res = load(api, RD)
+    detail = res.json()["detail"]
+    assert res.status_code == 400 and "embed_persons" in detail
+    assert "photofinder index 2026-d" in detail and "<collection>" not in detail
     assert not any(r["loaded"] for r in api.get("/api/races").json())
     assert api.get(f"/api/r/{RA}/facets").json() == {"detail": "No race is loaded on the server — reload",
                                                      "loaded": None}
@@ -344,6 +386,14 @@ def test_path_mode_serves_the_one_directory_as_the_only_race(tmp_path, monkeypat
     assert calls == [1]
 
 
+def test_path_mode_without_embeddings_names_the_directory(tmp_path):
+    c, conn, _ = make_index(tmp_path, [(1, (0, 0, 50, 100), A, X)], photos=1, embed=False)
+    conn.close()
+    with pytest.raises(search.MissingEmbeddings) as e:
+        web.create_app(c)
+    assert f"photofinder index {c.resolve()}`" in str(e.value)
+
+
 def serve_runs(monkeypatch):
     import uvicorn
     runs = []
@@ -385,8 +435,7 @@ def test_serve_with_an_unready_slug_exits_one_line_before_serving(world, monkeyp
         with pytest.raises(SystemExit) as e:
             cli.main(["serve", slug])
         assert text in str(e.value.code) and "\n" not in str(e.value.code)
-        if slug == RC:
-            assert f"run `photofinder index {RC}` first" in e.value.code
+        assert f"run `photofinder index {slug}`" in e.value.code
     assert runs == []
 
 

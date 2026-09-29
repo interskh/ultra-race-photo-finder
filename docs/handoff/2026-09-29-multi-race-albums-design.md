@@ -603,3 +603,35 @@ implement-loop: slice 5 shipped 82add46; remaining: [6, 7]
 - `src/photofinder/web/static/index.html` (header race select, `#stale` container, `S.races/loading/stale`, `api()` error fields, race lifecycle functions, `profileKey`).
 - `src/photofinder/cli.py` (cmd_serve hint), `tests/test_races_web.py` (unready-slug test asserts the slug hint).
 - `README.md` (§3 serve forms and picker behaviour), `docs/ROADMAP.md` (one Done line).
+
+
+## Slice 6 · Whole-run gate fix
+
+**Decisions**
+- A: `indexed` now means "has person embeddings". `web.embedded(dir)` runs load_persons' join with `limit 1` on a `mode=ro` connection (2 s timeout), and any sqlite/OS error returns False. Both `/api/races` and `load_race` use it, and load checks it before anything is dropped. The 400 names `photofinder index <slug>` and the current race stays loaded.
+- A fallback: `open_race(..., hint)` rewrites the `<collection>` placeholder in MissingEmbeddings to the slug, or to the directory path in path mode for unregistered dirs. So the post-drop 400 and the `serve <slug>` exit both name something runnable. `search.py` messages are unchanged.
+- B: `snapshot()` = `iterdump` of A's and B's index plus the file list and sizes under `exports/`. It is taken before and after the stale writes.
+- C: `S.gen` is bumped in `clearRace` (every race entry). Every former `S.race` guard is now a gen guard: setLabel, upload, loadMe, originals poll/start/cancel, downloadOriginal, new/rename/delete profile, photo detail, enterRace. Search and profile switches keep their existing `S.seq`/`S.pseq` guards, which `clearRace` also bumps, so they are equivalent.
+- D: `api()` captures gen at request start. An error arriving after the gen changed is marked `err.dropped`. It neither triggers `stale()` nor shows a banner: call sites use `fail(e)` instead of `banner(e.message)`. The raw `/original` fetch gates `stale()` and its banners the same way.
+- E: "entered" = facets **and** a profile. `syncControls`, `switchRace`'s same-race no-op, and `reconcile` all use `entered()`. An entry failure (`entryFailed`) marks `S.failed`, shows the error, and keeps profile and search controls disabled. It shows a Retry panel (`#race-retry`) and puts the select back on the placeholder, so re-selecting the race also retries.
+- F (supersedes Task 2's "stored race wins"): if the server has a race loaded, the page adopts it and sends no load POST. The stored race is loaded only when nothing is loaded. README updated.
+
+**Rejected**
+- A never-resolving promise for stale-session responses: `finally { setBusy(null) }` would never run and the busy counter would stick.
+- Checking `indexed` with `select count(*)` from the embedding tables: this is a full scan on 贡嘎 (190k persons) on every `/api/races`. `limit 1` on the join stops at the first ready person.
+- Auto-retrying a failed entry: this repeats a failing /me silently. Instead there is one explicit Retry, plus one implicit retry when reconcile finds the same race loaded but not entered.
+
+**Assumptions**
+- `mode=ro` on a WAL index that is being written by a running indexer reads fine. Check: `/api/races` while indexing Chongli.
+- The `limit 1` join is fast on a half-indexed race (empty `emb_person_osnet`), because sqlite drives from the empty table. Not measured on the live data.
+- README's "loading a large race takes up to a minute": check this against the orchestrator's measured 贡嘎 load time and correct the wording.
+
+**Deferred**
+- Mutant "embedded() opens read-write" survives; it is equivalent for these tests, since the select doesn't write and `is_file()` guards creation. `mode=ro` is kept as defence in depth.
+- CLAUDE.md: same Deferred items as Task 2. The suite count is now 523 passed + 1 skipped.
+
+**Touches**
+- `src/photofinder/web/app.py` (`PERSONS_READY`, `embedded()`, `open_race(hint=)`, `/api/races` `indexed`, `load_race` check).
+- `src/photofinder/web/static/index.html` (`S.gen/failed`, `api()`/`failure()`/`fail()`, `entered()`, `entryFailed`/`retryPanel`, init precedence).
+- `tests/test_races_web.py` (listing D → not indexed; refused before drop; embedded tolerance; post-drop slug hint; path-mode dir hint; stale-write snapshot; unready-slug hint for both C and D).
+- `README.md` (open precedence sentence).
