@@ -779,3 +779,7 @@ implement-loop: slice 6 shipped 3d71e0f; remaining: [7]
 **Gate**: full suite 533 + 1 skipped (6b8a61f), 535 + 1 (2633a49), 536 + 1 (this fix). Whole-run reviewer: APPROVE with 2 MINOR (CSV status keying; card-level file name → recorded decision); blocker-only recheck APPROVE. Codex: 1 MAJOR (cached original before the platform gate) + 1 MINOR (CSV keying), fixed in 2633a49; recheck RESOLVED / partially → fixed here.
 
 **Docs**: CLAUDE.md (sources list, `album add`, 贡嘎 location, `serve` forms and serve.lock text, test count 536 + 1 opt-in); ROADMAP (slice 7 done line, migration done, operational Chongli/四姑娘山 indexing).
+
+Gate fix 2 recheck: whole-run reviewer APPROVE (RESOLVED, no new defect).
+
+implement-loop: slice 7 shipped d6fd718; remaining: []
