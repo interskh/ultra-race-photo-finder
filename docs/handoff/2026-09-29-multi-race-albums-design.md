@@ -200,3 +200,35 @@ implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
 - Race `index.lock` is now taken before any move: after the collection/serve locks, `run` creates `races/<slug>/` (if absent) and locks its `index.lock`, then backs up and renames. Before, an indexer starting in the mkdir→rename window could create `races/<slug>/index.sqlite` and wedge every rerun as "ambiguous". Test `test_indexer_cannot_start_on_the_race_during_the_move` fails on the old ordering (checked by mutant).
 - `plan()` refuses when the collection dir or the resume album dir is a symlink (scan skips symlinked album dirs; a renamed link would register an unscannable album). Test `test_refuses_a_symlinked_collection`.
 - Deferred (parked by the orchestrator): `serve.lock` follows `PHOTOFINDER_DATA_ROOT`, so a tmp-root rehearsal does not see the live server's lock (Task 3 documents it); raw OperationalError/EXDEV tracebacks instead of friendly messages; one new backup per retry (disk use on repeated reruns). Caveat: do not run the import while an indexer runs on a `data/subsets/*` collection — its links are re-pointed underneath it and no subset lock is taken.
+
+## Slice 3 · Task 2 — download CLI and scripts
+
+**Decisions**
+- `photofinder download <race> [album_key]`: `cli.select_albums` validates slug and key before any filesystem write (unknown slug lists races, unknown key lists the race's keys, a race with no albums exits). Same function is the pre-flight check in `download.sh`.
+- Failure policy: `Blocked` (exit 2, logged "rerun later to resume") and `AlreadyRunning` (exit 1 with the lock message) stop the whole run: every yipai album is the same host, so continuing after a breaker trip or beside a live download would be the hammering the project rule forbids. An album that ends with non-`done` counts (failed/pending/expired/missing) lets the loop continue; the run exits 1 at the end naming those albums.
+- Non-yipai albums print the skip line and do NOT count toward the nonzero exit (Slice 4 makes them real; today no CLI can register one).
+- Seams `cli.yipai_client()` / `cli.yipai_downloader()` hold the production settings (`httpx.Client(timeout=60, follow_redirects=True)`, `concurrency=6, page_delay=3.0`); tests patch them. A test pins those kwargs.
+- Per-album `FileHandler(<album_dir>/download.log)` on the root logger, removed and closed in `finally` (also on the sys.exit paths). httpx logger set to WARNING as yipai.main does.
+- Added `Downloader.close()` (db + lock file) so sequential albums don't leak an open sqlite/lock per album; called in `finally`.
+- `download.sh` validates the race (and key) with `uv run --frozen python -c … cli.select_albums` BEFORE `mkdir -p data/races/<race>`, so a typo'd slug leaves no dir. Console log: `<root>/races/<race>/download-console.log`.
+- `yipai.refusal(order_id)` (registry owner of `yipai-<id>`) is shared by `download_yipai.sh` (python -c before `mkdir`) and `yipai.main` (before `out_dir.mkdir`, only when `--data-root` resolves to `config.DATA_ROOT`).
+- `yipai.main --data-root` now defaults to `config.DATA_ROOT` (honours `PHOTOFINDER_DATA_ROOT`); the duplicate `yipai.DEFAULT_DATA_ROOT` is gone. Both scripts use `${PHOTOFINDER_DATA_ROOT:-data}` and `download_yipai.sh` passes `--data-root "$root"` so console.log, photos and registry share one root.
+- Shell tests put a fake `caffeinate` first on PATH, so even a broken validation (or a mutant) never starts a real background download. `import photofinder.cli` (the pre-flight) imports no torch/open_clip/ultralytics (checked with `-X importtime`).
+
+**Rejected**
+- Continuing to the next album after `Blocked`/`AlreadyRunning`: doubles load on a site that is refusing us or already being downloaded.
+- Letting the CLI create the race dir and have the script redirect elsewhere: the `>>` redirect needs the dir before `nohup`, so the shell must validate first.
+- Monkeypatching `time.sleep` in tests: `Downloader`'s `sleep=time.sleep` default is bound at class definition.
+- Refusing in `yipai.main` for any `--data-root`: a custom root is an explicit experiment location, not the registry's collection.
+
+**Assumptions**
+- Run from the main checkout, repo-relative `data` == `DEFAULT_DATA_ROOT`. From a worktree without `PHOTOFINDER_DATA_ROOT`, the scripts' `data/` is the worktree's while python reads the live registry (pre-existing mismatch; set the env var in worktrees).
+- Anyone who had `PHOTOFINDER_DATA_ROOT` set now gets yipai downloads under it (previously always the live root).
+- The two subprocess script tests need `/Volumes/Ext1TB` to exist (the scripts' mount check runs first); true on this Mac only.
+
+**Deferred**
+- No race-level lock: two `download` runs of the same race serialize per album via `.download.lock` (the second exits on the first busy album).
+- README/ROADMAP/CLAUDE.md mention of `download`/`download.sh`: Slice 3 task 3 owns docs.
+
+**Touches**
+- `src/photofinder/cli.py` (`download` subcommand, `select_albums`, `yipai_client`, `yipai_downloader`, `download_yipai`, `cmd_download`; imports httpx + sources.yipai), `src/photofinder/sources/yipai.py` (`refusal`, `Downloader.close`, `--data-root` default, imports config/races), `scripts/download.sh` (new), `scripts/download_yipai.sh`, `tests/test_download.py` (new).

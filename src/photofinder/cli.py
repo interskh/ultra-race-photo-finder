@@ -7,9 +7,12 @@ import time
 from contextlib import closing
 from pathlib import Path
 
+import httpx
+
 from photofinder import config, db, evaluate, models, race_import, races, search
 from photofinder.index import stages
 from photofinder.memory import FootprintExceeded
+from photofinder.sources import yipai
 
 log = logging.getLogger("photofinder")
 LOCK_NAME = "index.lock"
@@ -244,6 +247,68 @@ def cmd_race_import(args):
         sys.exit(str(e))
 
 
+def select_albums(slug: str, key: str | None = None) -> list[races.Album]:
+    reg = races.load()
+    race = reg.race(slug)
+    if race is None:
+        known = ", ".join(r.slug for r in reg.races) or "none registered"
+        sys.exit(f"{slug} is not a registered race (races: {known})")
+    if key is None:
+        if not race.albums:
+            sys.exit(f"race {slug} has no albums yet")
+        return race.albums
+    albums = [a for a in race.albums if a.key == key]
+    if not albums:
+        keys = ", ".join(a.key for a in race.albums) or "none"
+        sys.exit(f"race {slug} has no album {key} (albums: {keys})")
+    return albums
+
+
+def yipai_client():
+    return httpx.Client(timeout=60, follow_redirects=True)
+
+
+def yipai_downloader(client, order_id: str, out_dir: Path):
+    return yipai.Downloader(client, order_id, out_dir, concurrency=6, page_delay=3.0)
+
+
+def download_yipai(album: races.Album, out_dir: Path) -> dict[str, int]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(out_dir / "download.log")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    try:
+        with yipai_client() as client:
+            dl = yipai_downloader(client, album.site_id, out_dir)
+            try:
+                counts = dl.run()
+            except yipai.AlreadyRunning as e:
+                sys.exit(str(e))
+            except yipai.Blocked as e:
+                log.error("%s stopped: %s (rerun later to resume)", album.key, e)
+                sys.exit(2)
+            finally:
+                dl.close()
+        log.info("%s finished: %s", album.key, counts)
+        return counts
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+
+
+def cmd_download(args):
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    unfinished = []
+    for album in select_albums(args.race, args.album_key):
+        if album.platform != "yipai":
+            print(f"skipping {album.key}: {album.platform} downloads are not supported yet", flush=True)
+            continue
+        if set(download_yipai(album, races.album_dir(args.race, album.key))) - {"done"}:
+            unfinished.append(album.key)
+    if unfinished:
+        sys.exit(f"not every photo downloaded in {', '.join(unfinished)}; rerun later to resume")
+
+
 def resolve_collection(arg: Path) -> Path:
     if arg.is_dir():
         return arg
@@ -293,6 +358,10 @@ def main(argv=None):
     p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--port", type=int, default=8000, help="port on 127.0.0.1 (default 8000)")
     p.set_defaults(func=cmd_serve)
+    p = sub.add_parser("download", help="download a race's albums into data/races/<race>/albums/ (resumable)")
+    p.add_argument("race", help="registered race slug")
+    p.add_argument("album_key", nargs="?", help="only this album, e.g. yipai-<orderId> (default: every album)")
+    p.set_defaults(func=cmd_download)
     p = sub.add_parser("race", help="manage the race registry (data/races.json)")
     rsub = p.add_subparsers(dest="race_command", required=True)
     p = rsub.add_parser("add", help="register a race")

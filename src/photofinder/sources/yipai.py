@@ -12,6 +12,8 @@ from pathlib import Path
 
 import httpx
 
+from photofinder import config, races
+
 SITE = "https://www.yipai360.com"
 HEADERS = {
     "appaccess": "yipai",
@@ -21,7 +23,6 @@ HEADERS = {
 }
 RETRYABLE = {429, 500, 502, 503, 504}
 SIZE_KEY = "s1920"
-DEFAULT_DATA_ROOT = Path("/Volumes/Ext1TB/Projects/photo-finder/data")
 
 CATALOG_SELECT = """select cast(p.photo_id as text) as source_id, p.file, p.fname, p.uid as photographer_uid,
   g.nickname as photographer, t.name as group_name, null as taken_at, p.width, p.height, p.status, p.error
@@ -133,6 +134,12 @@ class Downloader:
             f.close()
             raise AlreadyRunning(f"another download is already running for {self.out_dir}")
         self._lockfile = f
+
+    def close(self):
+        self.db.close()
+        if self._lockfile is not None:
+            self._lockfile.close()
+            self._lockfile = None
 
     def _request_json(self, method: str, url: str, **kw) -> dict:
         return request_json(self.client, method, url, tries=self.tries, sleep=self.sleep, **kw)
@@ -277,16 +284,25 @@ class Downloader:
         return counts
 
 
+def refusal(order_id: str) -> str | None:
+    if owner := races.load().owner(f"yipai-{order_id}"):
+        return (f"yipai order {order_id} belongs to race {owner.slug}; "
+                f"download it with: scripts/download.sh {owner.slug}")
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Download all watermarked 1920px previews of a yipai360 gallery")
     ap.add_argument("order_id")
-    ap.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    ap.add_argument("--data-root", type=Path, default=config.DATA_ROOT)
     ap.add_argument("--concurrency", type=int, default=6)
     ap.add_argument("--page-delay", type=float, default=3.0)
     args = ap.parse_args(argv)
 
     if not args.data_root.parent.is_dir():
         sys.exit(f"{args.data_root.parent} does not exist; is the external disk mounted?")
+    if args.data_root.resolve() == config.DATA_ROOT.resolve() and (msg := refusal(args.order_id)):
+        sys.exit(msg)
     out_dir = args.data_root / "yipai" / args.order_id
     out_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
