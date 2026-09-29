@@ -414,3 +414,7 @@ Scratch root: `PHOTOFINDER_DATA_ROOT=/Volumes/Ext1TB/Projects/photo-finder-scrat
 **Touches**
 - `src/photofinder/sources/base.py` (`NO_URL`, `download()` — shared by slice 5 adapters), `src/photofinder/sources/pailixiang.py`, `tests/test_pailixiang.py`, `tests/test_base_downloader.py`, README.md.
 
+**Gate result (orchestrator)**: whole-run reviewer APPROVE after one fix cycle (2f43047); Codex 1 MAJOR (None ID) fixed, 1 MINOR (DDL before lock) already deferred. Full suite 426 passed, 1 skipped. Residual, deferred as low-likelihood: two ID-less rows with identical FileName/Name collapse to one skipped entry (rerun reports missing 1); a no-preview-URL row keeps `download` exiting 1 until the site lists a URL. Operational: the live `album add 2026-gongga100 …` + download + index runs after the Slice 3 live import (steps in the Real proof entry).
+
+implement-loop: slice 4 shipped 2f43047; remaining: [5, 6, 7]
+
