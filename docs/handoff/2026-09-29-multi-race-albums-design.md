@@ -377,3 +377,20 @@ implement-loop: slice 3 shipped 7f97594; remaining: [4, 5, 6, 7]
 - base.py is unchanged. The quirk is pailixiang's. A generic "ignore 0" rule in base would hide a real empty album on another platform. Slice 5 adapters should each check how their totals behave on later pages.
 - Tests: `test_first_positive_total_count_is_kept` (0, then 200, then 0 → None, 200, 200) and `test_later_zero_total_count_still_reports_missing` (AlbumDownloader over 170 listed photos, 200 on page 1 and 0 afterwards → `{"done": 170, "missing": 30}`). Both fail on f6ad978's adapter (checked by swapping the file in from `git show`, then restoring and checking sha256).
 - Touches: `src/photofinder/sources/pailixiang.py`, `tests/test_pailixiang.py` (FakePlx `total_for` hook).
+
+## Slice 4 · Real proof — live pailixiang album on a scratch root (orchestrator)
+
+Scratch root: `PHOTOFINDER_DATA_ROOT=/Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-plx/data` (real CLI `uv run --frozen photofinder …` from the worktree; the live `data/` — races.json, yipai/, exports/ — untouched). Logs: `…/2026-09-29-plx/download-run{1,2}.log`.
+- `race add 2026-plx-scratch "PLX scratch"`; `album add 2026-plx-scratch https://live.pailixiang.com/album/a13800138000` → 1 AlbumGetView request, registered `pailixiang-a13800138000` titled `2026FUGA贡嘎100冰川极境赛`.
+- Run 1 (f6ad978 code, A6 pacing): 9 pages, 715/715 done, exit 0, 757 s (~1 photo/s), no warnings/retries/403s; 715 files, 1600px previews. It exposed `TotalCount 0` on pages ≥2 (`done 160/0`) → fixed in bfc41a1 (above).
+- Run 2 (bfc41a1): every page `fetched 0, done 715/715`, finished `{'done': 715}`, exit 0, 52 s (listing + page delays only).
+- Scan only (no model stages; `stages.scan` via Python on `races/2026-plx-scratch`): 715 new, 0 errors, 0 skipped; 715 with `taken_at`/`taken_ts`, and all 715 equal the catalog's `taken_at` (sample preview has no EXIF DateTimeOriginal); range 2026-09-24 19:26:30 → 2026-09-27 06:01:10; `album` = `2026FUGA贡嘎100冰川极境赛` / `album_key` = `pailixiang-a13800138000` on all rows; `grp` null; all 715 uids `pailixiang:`-prefixed (top photographers 摄影师甲 176, 摄影师乙 137, 摄影师丙 119); index `source_photo_id` set == catalog `source_id` set; catalog 715 done; meta `title`, `album_id=26456848041475797975`.
+- Not shown here: "Album filter shows both albums" and the time filter over both — the scratch race has one album; that is the live step below.
+
+**Deferred — HUMAN-ACTION STEP (after the Slice 3 live import)**, from the main checkout after merging:
+1. `uv run photofinder album add 2026-gongga100 https://live.pailixiang.com/album/a13800138000`
+2. `scripts/download.sh 2026-gongga100` (yipai top-up first, then the 715 pailixiang photos, ~13 min for pailixiang).
+3. `uv run photofinder index 2026-gongga100` (one heavy job; the 715 new photos go through detect/embed) → Album filter lists `FUGA 贡嘎100` and `2026FUGA贡嘎100冰川极境赛`.
+4. Delete the scratch root `/Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-plx` (~0.6 GB) once satisfied.
+- CLAUDE.md test count (now 422 passed + 1 opt-in) and a `album add` line in its layout/rules: left for the user (agents don't edit CLAUDE.md).
+
