@@ -46,10 +46,22 @@ class FakeModels:
 
 
 ME = 1
+GLOBAL = ("/api/models", "/api/races", "/api/r/")
+
+
+class RaceClient(TestClient):
+    def __init__(self, app, **kw):
+        super().__init__(app, **kw)
+        self.slug = app.state.current.slug
+
+    def request(self, method, url, *args, **kw):
+        if isinstance(url, str) and url.startswith("/api/") and not url.startswith(GLOBAL):
+            url = f"/api/r/{self.slug}/{url[len('/api/'):]}"
+        return super().request(method, url, *args, **kw)
 
 
 def client(c):
-    return TestClient(web.create_app(c))
+    return RaceClient(web.create_app(c))
 
 
 def photo_ids(conn):

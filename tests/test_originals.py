@@ -8,13 +8,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from photofinder import config, originals
 from photofinder.sources import yipai
 from photofinder.web import app as web
 from test_search import A, X, make_index
-from test_web import ME, label, no_real_models  # noqa: F401
+from test_web import RaceClient, ME, label, no_real_models  # noqa: F401
 from test_yipai import FakeTime
 
 ORDER = "ORD"
@@ -79,7 +78,7 @@ def setup(tmp_path, monkeypatch, photos, mark=True, **kw):
     t = FakeTime()
     g = Gallery(t)
     fetcher = originals.Fetcher(httpx.Client(transport=httpx.MockTransport(g)), sleep=t.sleep, clock=t.clock, **kw)
-    api = TestClient(web.create_app(c, fetcher=fetcher))
+    api = RaceClient(web.create_app(c, fetcher=fetcher))
     if mark:
         for pids in ids.values():
             label(api, pids[0], "me")
@@ -165,7 +164,7 @@ def test_403_non_jpeg_and_missing_are_buy_on_site_and_job_continues(tmp_path, mo
     assert rows[4][7] == str(folder(tmp_path) / "originals" / "20260925-080400_cam_4.jpg") and rows[1][7] == ""
     assert rows[4][6] == str(c.resolve() / "4.jpg") and rows[4][2:6] == ["cam", "2026-09-25 08:04:00", "", "9.25 赛事"]
 
-    restarted = TestClient(web.create_app(c))
+    restarted = RaceClient(web.create_app(c))
     mine = restarted.get("/api/me", params={"profile_id": ME}).json()["photos"]
     assert [p["original"] for p in mine] == [r[8] for r in rows[1:]]
     (folder(tmp_path) / "originals" / "undated_cam_6.jpg").unlink()
@@ -214,7 +213,7 @@ def test_cancel_interrupts_pacing_wait_and_blocks_other_downloads(tmp_path, monk
     looked = threading.Event()
     g.api = lambda req: looked.set()
     fetcher = originals.Fetcher(httpx.Client(transport=httpx.MockTransport(g)), img_delay=(60, 60))
-    api = TestClient(web.create_app(c, fetcher=fetcher))
+    api = RaceClient(web.create_app(c, fetcher=fetcher))
     for pids in ids.values():
         label(api, pids[0], "me")
     ann = api.post("/api/profiles", json={"name": "Ann"}).json()["id"]
@@ -521,7 +520,7 @@ def test_folder_collisions_rejected_and_rename_moves_folder(tmp_path, monkeypatc
 def test_non_yipai_collection_has_no_originals(tmp_path, monkeypatch):
     c, conn, ids = make_index(tmp_path, [(1, (0, 0, 50, 100), A, X)], photos=1)
     monkeypatch.setattr(config, "DATA_ROOT", tmp_path / "data")
-    api = TestClient(web.create_app(c))
+    api = RaceClient(web.create_app(c))
     label(api, ids[1][0], "me")
     assert api.get("/api/facets").json()["originals"] is False
     photo = conn.execute("select id from photos").fetchone()[0]
@@ -534,7 +533,7 @@ def test_non_yipai_collection_has_no_originals(tmp_path, monkeypatch):
     assert rows[1] == ["1", "", "", "", "", "", str(c.resolve() / "1.jpg"), "", ""]
     (tmp_path / "y").mkdir()
     c2, _, _ = yipai_index(tmp_path / "y", monkeypatch, [("A1.JPG", None, None)])
-    assert TestClient(web.create_app(c2)).get("/api/facets").json()["originals"] is True
+    assert RaceClient(web.create_app(c2)).get("/api/facets").json()["originals"] is True
 
 
 @pytest.mark.parametrize("name,safe", [("Ann B", "Ann_B"), ("../../etc", "etc"), ("阿光", "阿光"), ("", "profile"),

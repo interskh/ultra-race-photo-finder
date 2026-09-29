@@ -11,20 +11,21 @@ from collections import OrderedDict
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from photofinder import db, models, originals, search
-from photofinder.sources.yipai import Blocked
-from photofinder.index.stages import now
+from photofinder import db, models, originals, races, search
+from photofinder.sources.yipai import CATALOG_SELECT, Blocked
+from photofinder.index.stages import ALBUMS, MANIFEST_NAME, now
 
 STATIC = Path(__file__).parent / "static"
 UPLOADS = 8
@@ -36,6 +37,7 @@ NAME_MAX = 40
 FIRST = "order by ph.taken_at is null, ph.taken_at, ph.id"
 Id = Annotated[int, Field(ge=0, le=2 ** 63 - 1)]
 IDLE_UNLOAD = 300.0
+RACE = "/api/r/{slug}"
 STOP_WAIT = 30.0
 
 log = logging.getLogger("web")
@@ -277,26 +279,93 @@ class ModelWorker:
                     "loading": loading[0] if loading else None, "unload_after_s": self.idle}
 
 
-def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_unload: float = IDLE_UNLOAD,
-               worker_factory=None) -> FastAPI:
-    collection = collection.resolve()
-    yipai = originals.is_yipai(collection)
-    job = originals.Job(fetcher or originals.Fetcher())
-    with closing(db.connect(collection)) as conn:
+@dataclass(eq=False)
+class RaceState:
+    slug: str
+    name: str
+    dir: Path
+    persons: search.Persons
+    scene_error: str | None
+    is_yipai: bool
+    job: originals.Job
+    uploads: OrderedDict = field(default_factory=OrderedDict)
+
+
+def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher) -> RaceState:
+    directory = directory.resolve()
+    with closing(db.connect(directory)) as conn:
         persons = search.load_persons(conn)
         try:
             search.load_scenes(conn, persons)
             scene_error = None
         except search.MissingEmbeddings as e:
             scene_error = str(e)
-    worker = ModelWorker(idle_unload, worker_factory)
-    uploads = OrderedDict()
-    app = FastAPI(title="photofinder")
-    app.state.originals = job
-    app.state.models = worker
+    return RaceState(slug, name, directory, persons, scene_error, originals.is_yipai(directory),
+                     originals.Job(fetcher))
 
-    def connect():
-        return closing(db.connect(collection))
+
+def path_race(directory: Path) -> races.Race:
+    slug = directory.name
+    if races.race_dir(slug).resolve() == directory and (found := races.load().race(slug)):
+        return found
+    return races.Race(slug, slug)
+
+
+def downloaded(manifest: Path) -> int:
+    try:
+        if not manifest.is_file():
+            return 0
+        with closing(sqlite3.connect(f"{manifest.resolve().as_uri()}?mode=ro", uri=True, timeout=2)) as conn:
+            view = conn.execute("select 1 from sqlite_master where name = 'catalog'").fetchone()
+            return conn.execute("select count(*) from " + ("catalog" if view else f"({CATALOG_SELECT})")
+                                + " where status = 'done'").fetchone()[0]
+    except (sqlite3.Error, OSError):
+        return 0
+
+
+class Stale(Exception):
+    def __init__(self, loaded: RaceState | None):
+        self.loaded = loaded
+
+
+def create_app(collection: Path | None = None, *, registry: Callable[[], races.Registry] | None = None,
+               fetcher: originals.Fetcher | None = None, idle_unload: float = IDLE_UNLOAD,
+               worker_factory=None, load: str | None = None) -> FastAPI:
+    fetcher = fetcher or originals.Fetcher()
+    worker = ModelWorker(idle_unload, worker_factory)
+    load_lock = threading.Lock()
+    app = FastAPI(title="photofinder")
+    app.state.models = worker
+    app.state.current = app.state.originals = None
+    only = None
+
+    def set_current(st: RaceState | None):
+        app.state.current, app.state.originals = st, st and st.job
+
+    if collection is not None:
+        collection = collection.resolve()
+        only = path_race(collection)
+        set_current(open_race(only.slug, only.name, collection, fetcher))
+
+    def listing() -> list[tuple[races.Race, Path]]:
+        if only is not None:
+            return [(only, collection)]
+        return [(r, races.race_dir(r.slug)) for r in (registry or races.load)().races]
+
+    if load is not None:
+        race, d = next((race, d) for race, d in listing() if race.slug == load)
+        set_current(open_race(load, race.name, d, fetcher))
+
+    async def bound(slug: str) -> RaceState:
+        st = app.state.current
+        if st is None or st.slug != slug:
+            raise Stale(st)
+        return st
+
+    Race = Annotated[RaceState, Depends(bound)]
+
+    def connect(st: RaceState):
+        return closing(db.connect(st.dir))
 
     async def on_models(fn, *args):
         try:
@@ -314,13 +383,58 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
     async def missing(request, exc):
         return JSONResponse({"detail": str(exc)}, 400)
 
+    @app.exception_handler(Stale)
+    async def stale(request, exc):
+        st = exc.loaded
+        detail = f"The server switched to {st.name} — reload" if st else "No race is loaded on the server — reload"
+        return JSONResponse({"detail": detail, "loaded": st and st.slug}, 409)
+
     @app.get("/")
     def index():
         return FileResponse(STATIC / "index.html")
 
-    @app.get("/api/facets")
-    def facets(profile_id: Id | None = None):
-        with connect() as conn:
+    @app.get("/api/models")
+    def model_status():
+        return worker.status()
+
+    @app.get("/api/races")
+    def list_races():
+        st = app.state.current
+        return [{"slug": race.slug, "name": race.name, "indexed": (d / db.INDEX_NAME).is_file(),
+                 "loaded": st is not None and st.slug == race.slug,
+                 "albums": [{"key": a.key, "platform": a.platform, "title": a.title, "url": a.url,
+                             "downloaded": downloaded(d / ALBUMS / a.key / MANIFEST_NAME)} for a in race.albums]}
+                for race, d in listing()]
+
+    @app.post("/api/races/{slug}/load")
+    def load_race(slug: str):
+        if not load_lock.acquire(blocking=False):
+            raise bad("another race is loading; try again when it finishes", 409)
+        try:
+            race, d = next(((race, d) for race, d in listing() if race.slug == slug), (None, None))
+            if race is None:
+                raise bad(f"no race {slug!r}", 404)
+            old = app.state.current
+            if old is not None and old.slug == slug:
+                return facets_of(old)
+            if not (d / db.INDEX_NAME).is_file():
+                raise bad(f"{race.name} is not indexed yet; run `photofinder index {slug}` first")
+            if old is not None:
+                if not old.job.busy.acquire(blocking=False):
+                    if old.job.status()["state"] == "running":
+                        raise bad(f"an originals download is running for {old.name}; "
+                                  "cancel it or wait until it finishes before switching races", 409)
+                    raise bad("a download is in progress; try again in a moment", 409)
+                set_current(None)
+                del old
+            st = open_race(slug, race.name, d, fetcher)
+            set_current(st)
+            return facets_of(st)
+        finally:
+            load_lock.release()
+
+    def facets_of(st: RaceState, profile_id=None):
+        with connect(st) as conn:
             if profile_id is not None:
                 profile_name(conn, profile_id)
             count, first, last = conn.execute("select count(*), min(taken_at), max(taken_at) from photos "
@@ -337,37 +451,37 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
                 "group by grp order by count(*) desc, grp")]
             labels = dict(conn.execute("select label, count(*) from labels where profile_id = ? group by label",
                                        (profile_id,)))
-            warnings = [scene_error or search.check_scenes(conn)]
+            warnings = [st.scene_error or search.check_scenes(conn)]
             try:
                 warnings.append(search.check_filters(conn, search.Filters(bib="facets")))
             except search.MissingEmbeddings as e:
                 warnings.append(str(e))
-        out = {"collection": collection.name, "photos": count, "persons": len(persons.ids),
-               "taken_at": {"min": first, "max": last}, "photographers": photographers, "albums": albums,
-               "groups": groups,
-               "scenes": scene_error is None, "originals": yipai, "warnings": [w for w in warnings if w]}
+        out = {"race": {"slug": st.slug, "name": st.name}, "collection": st.dir.name, "photos": count,
+               "persons": len(st.persons.ids), "taken_at": {"min": first, "max": last}, "photographers": photographers,
+               "albums": albums, "groups": groups,
+               "scenes": st.scene_error is None, "originals": st.is_yipai, "warnings": [w for w in warnings if w]}
         if profile_id is not None:
             out["labels"] = {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)}
         return out
 
-    @app.get("/api/models")
-    def model_status():
-        return worker.status()
+    @app.get(RACE + "/facets")
+    def facets(st: Race, profile_id: Id | None = None):
+        return facets_of(st, profile_id)
 
-    def downloading(profile_id):
-        status = job.status()
+    def downloading(st: RaceState, profile_id):
+        status = st.job.status()
         if status["state"] == "running" and status["profile_id"] == profile_id:
             raise bad("an originals download is running for this profile; cancel it or wait until it finishes", 409)
 
-    @app.get("/api/profiles")
-    def list_profiles():
-        with connect() as conn:
+    @app.get(RACE + "/profiles")
+    def list_profiles(st: Race):
+        with connect(st) as conn:
             return {"profiles": profiles_of(conn)}
 
-    @app.post("/api/profiles")
-    def create_profile(body: ProfileBody):
+    @app.post(RACE + "/profiles")
+    def create_profile(st: Race, body: ProfileBody):
         name = clean_name(body.name)
-        with connect() as conn, conn:
+        with connect(st) as conn, conn:
             try:
                 pid = conn.execute("insert into profiles(name, created_at) values (?, ?)", (name, now())).lastrowid
             except sqlite3.IntegrityError:
@@ -375,21 +489,21 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
             check_folder(conn, name, pid)
             return profiles_of(conn, pid)[0]
 
-    @app.patch("/api/profiles/{profile_id}")
-    def rename_profile(profile_id: Id, body: ProfileBody):
+    @app.patch(RACE + "/profiles/{profile_id}")
+    def rename_profile(st: Race, profile_id: Id, body: ProfileBody):
         name = clean_name(body.name)
-        with connect() as conn, conn:
-            old = originals.profile_folder(collection, profile_name(conn, profile_id))
-            downloading(profile_id)
+        with connect(st) as conn, conn:
+            old = originals.profile_folder(st.dir, profile_name(conn, profile_id))
+            downloading(st, profile_id)
             try:
                 conn.execute("update profiles set name = ? where id = ?", (name, profile_id))
             except sqlite3.IntegrityError:
                 raise bad(f"a profile named {name!r} already exists")
             check_folder(conn, name, profile_id)
-            new = originals.profile_folder(collection, name)
+            new = originals.profile_folder(st.dir, name)
             if old != new:
                 try:
-                    job.claim()
+                    st.job.claim()
                 except originals.Busy:
                     raise bad("a download is in progress; rename when it finishes", 409)
                 try:
@@ -400,30 +514,30 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
                         old.rename(new)
                     try:
                         if moved and (new / originals.CSV_NAME).is_file():
-                            originals.write_csv(new, marked(conn, profile_id))
+                            originals.write_csv(new, marked(st, conn, profile_id))
                         conn.commit()
                     except Exception:
                         if moved:
                             new.rename(old)
                         raise
                 finally:
-                    job.busy.release()
+                    st.job.busy.release()
             return profiles_of(conn, profile_id)[0]
 
-    @app.delete("/api/profiles/{profile_id}")
-    def delete_profile(profile_id: Id):
-        with connect() as conn, conn:
+    @app.delete(RACE + "/profiles/{profile_id}")
+    def delete_profile(st: Race, profile_id: Id):
+        with connect(st) as conn, conn:
             conn.execute("begin immediate")
             profile_name(conn, profile_id)
-            downloading(profile_id)
+            downloading(st, profile_id)
             if conn.execute("select count(*) from profiles").fetchone()[0] == 1:
                 raise bad("cannot delete the last profile; create another one first")
             n = conn.execute("delete from labels where profile_id = ?", (profile_id,)).rowcount
             conn.execute("delete from profiles where id = ?", (profile_id,))
         return {"id": profile_id, "labels_removed": n}
 
-    @app.post("/api/upload")
-    async def upload(file: UploadFile = File(...)):
+    @app.post(RACE + "/upload")
+    async def upload(st: Race, file: UploadFile = File(...)):
         data = await file.read()
         try:
             img = await run_in_threadpool(models.load_image, io.BytesIO(data))
@@ -431,25 +545,26 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
             raise bad("not an image; upload a JPEG or PNG photo")
         boxes, osnet, siglip = await on_models(detect_and_embed, img)
         token = secrets.token_urlsafe(9)
-        uploads[token] = {"jpeg": await run_in_threadpool(jpeg, img, 90), "size": img.size, "boxes": boxes,
-                          "osnet": osnet, "siglip": siglip}
-        while len(uploads) > UPLOADS:
-            uploads.popitem(last=False)
+        st.uploads[token] = {"jpeg": await run_in_threadpool(jpeg, img, 90), "size": img.size, "boxes": boxes,
+                             "osnet": osnet, "siglip": siglip}
+        while len(st.uploads) > UPLOADS:
+            st.uploads.popitem(last=False)
         return {"token": token, "width": img.width, "height": img.height,
                 "boxes": [{"index": i, "box": list(b[:4]), "conf": b[4]} for i, b in enumerate(boxes)]}
 
-    def get_upload(token):
-        up = uploads.get(token)
+    def get_upload(st: RaceState, token):
+        up = st.uploads.get(token)
         if up is None:
             raise bad("upload expired or unknown; upload the photo again", 404)
         return up
 
-    @app.get("/api/uploads/{token}/image")
-    def upload_image(token: str):
-        return Response(get_upload(token)["jpeg"], media_type="image/jpeg", headers=CACHE)
+    @app.get(RACE + "/uploads/{token}/image")
+    def upload_image(st: Race, token: str):
+        return Response(get_upload(st, token)["jpeg"], media_type="image/jpeg", headers=CACHE)
 
-    def prepare(q: SearchQuery):
-        with connect() as conn:
+    def prepare(st: RaceState, q: SearchQuery):
+        persons = st.persons
+        with connect(st) as conn:
             profile_name(conn, q.profile_id)
             labels = conn.execute("select l.person_id, l.label, p.photo_id from labels l "
                                   "join persons p on p.id = l.person_id where l.profile_id = ?",
@@ -473,7 +588,7 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
         refs = search.person_refs(persons, ids) if ids else {}
         ref_ids = persons.ids[np.isin(persons.ids, ids)] if ids else []
         if q.upload:
-            up = get_upload(q.upload)
+            up = get_upload(st, q.upload)
             row = len(up["boxes"]) if q.box == "whole" else q.box
             if q.box != "whole" and not 0 <= row < len(up["boxes"]):
                 raise bad(f"box {q.box} out of range; valid boxes are 0..{len(up['boxes']) - 1} or whole"
@@ -486,8 +601,9 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
         drop = not_me if q.mode == "more" else []
         return refs, ref_ids, negatives, exclude | set(q.seen), drop, note
 
-    def ranked(q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note):
-        with connect() as conn:
+    def ranked(st: RaceState, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note):
+        persons = st.persons
+        with connect(st) as conn:
             warnings = [note, search.check_filters(conn, filters)]
             if "scene" in refs:
                 warnings.append(search.check_scenes(conn))
@@ -506,13 +622,13 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
                               offset + len(set(q.seen)), q.profile_id, via)
         return {"results": results, "warnings": [w for w in warnings if w], "timing": round(timing, 4)}
 
-    def bib_start(q, filters, top, offset):
+    def bib_start(st: RaceState, q, filters, top, offset):
         bib = q.start_bib.strip()
         if not bib:
             raise bad("start_bib needs a bib number, e.g. 8038")
         if q.persons or q.upload or (q.text or "").strip() or (q.scene or "").strip() or q.mode == "more":
             raise bad("start_bib cannot be combined with persons, upload, text, scene or find-more")
-        with connect() as conn:
+        with connect(st) as conn:
             profile_name(conn, q.profile_id)
             warnings = [search.check_filters(conn, search.Filters(bib=bib))]
             where, args = search.filter_where(filters)
@@ -530,26 +646,27 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
         return {"results": results, "total": len(picked), "warnings": [w for w in warnings if w],
                 "timing": round(timing, 4)}
 
-    @app.post("/api/search")
-    async def search_photos(q: SearchQuery):
+    @app.post(RACE + "/search")
+    async def search_photos(st: Race, q: SearchQuery):
         filters = filters_of(q)
         top, offset = min(max(q.top, 1), MAX_TOP), max(q.offset, 0)
         if q.start_bib is not None:
-            return await run_in_threadpool(bib_start, q, filters, top, offset)
+            return await run_in_threadpool(bib_start, st, q, filters, top, offset)
         texts = {k: v.strip() for k, v in (("text", q.text), ("scene", q.scene)) if v and v.strip()}
-        if "scene" in texts and scene_error:
-            raise bad(scene_error)
-        refs, ref_ids, negatives, exclude, drop, note = await run_in_threadpool(prepare, q)
+        if "scene" in texts and st.scene_error:
+            raise bad(st.scene_error)
+        refs, ref_ids, negatives, exclude, drop, note = await run_in_threadpool(prepare, st, q)
         if not refs and not texts:
             raise bad("give a person, an uploaded box, text, scene or start_bib to search")
         if texts:
             vecs = await on_models(models.encode_text, list(texts.values()))
             refs.update({k: v[None] for k, v in zip(texts, vecs)})
-        return await run_in_threadpool(ranked, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note)
+        return await run_in_threadpool(ranked, st, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop,
+                                       note)
 
-    @app.post("/api/labels")
-    def set_label(body: LabelBody):
-        with connect() as conn, conn:
+    @app.post(RACE + "/labels")
+    def set_label(st: Race, body: LabelBody):
+        with connect(st) as conn, conn:
             conn.execute("begin immediate")
             profile_name(conn, body.profile_id)
             if not conn.execute("select 1 from persons where id = ?", (body.person_id,)).fetchone():
@@ -566,9 +683,9 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
         return {"profile_id": body.profile_id, "person_id": body.person_id, "label": body.label,
                 "previous": previous and previous[0]}
 
-    @app.get("/api/photos/{photo_id}")
-    def photo(photo_id: Id, profile_id: Id):
-        with connect() as conn:
+    @app.get(RACE + "/photos/{photo_id}")
+    def photo(st: Race, photo_id: Id, profile_id: Id):
+        with connect(st) as conn:
             profile_name(conn, profile_id)
             meta = photo_meta(conn, [photo_id]).get(photo_id)
             if meta is None:
@@ -580,12 +697,12 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
         return {**meta, "persons": [{"person_id": r[0], "box": list(r[1:]), "bibs": bibs.get(r[0], []),
                                      "label": labels.get(r[0])} for r in rows]}
 
-    def photo_path(photo_id) -> Path:
-        with connect() as conn:
+    def photo_path(st: RaceState, photo_id) -> Path:
+        with connect(st) as conn:
             row = conn.execute("select relpath from photos where id = ?", (photo_id,)).fetchone()
         if row is None:
             raise bad(f"photo {photo_id} not found", 404)
-        return collection / row[0]
+        return st.dir / row[0]
 
     def open_photo(photo_id, path):
         try:
@@ -593,9 +710,9 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
         except Exception:
             raise bad(f"photo {photo_id} file is missing or unreadable", 404)
 
-    @app.get("/api/photos/{photo_id}/image")
-    def photo_image(photo_id: Id, size: int | None = Query(None, alias="max", ge=16, le=8192)):
-        path = photo_path(photo_id)
+    @app.get(RACE + "/photos/{photo_id}/image")
+    def photo_image(st: Race, photo_id: Id, size: int | None = Query(None, alias="max", ge=16, le=8192)):
+        path = photo_path(st, photo_id)
         if size is None:
             try:
                 with open(path, "rb"):
@@ -607,15 +724,15 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
         img.thumbnail((size, size))
         return Response(jpeg(img), media_type="image/jpeg", headers=CACHE)
 
-    @app.get("/api/persons/{person_id}/crop")
-    def person_crop(person_id: Id):
-        with connect() as conn:
+    @app.get(RACE + "/persons/{person_id}/crop")
+    def person_crop(st: Race, person_id: Id):
+        with connect(st) as conn:
             row = conn.execute("select ph.id, ph.relpath, p.x1, p.y1, p.x2, p.y2 from persons p "
                                "join photos ph on ph.id = p.photo_id where p.id = ?", (person_id,)).fetchone()
         if row is None:
             raise bad(f"person {person_id} not found", 404)
         photo_id, relpath, x1, y1, x2, y2 = row
-        img = open_photo(photo_id, collection / relpath)
+        img = open_photo(photo_id, st.dir / relpath)
         pw, ph = (x2 - x1) * CROP_PAD, (y2 - y1) * CROP_PAD
         img = models.crop(img, (x1 - pw, y1 - ph, x2 + pw, y2 + ph))
         if img.height > CROP_HEIGHT:
@@ -627,99 +744,99 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
                             "join persons p on p.id = l.person_id join photos ph on ph.id = p.photo_id "
                             f"where l.profile_id = ? and l.label = 'me' {FIRST}, p.id", (profile_id,)).fetchall()
 
-    def marked(conn, profile_id):
+    def marked(st: RaceState, conn, profile_id):
         ids = list(dict.fromkeys(r[0] for r in me_rows(conn, profile_id)))
         meta = photo_meta(conn, ids)
-        return originals.rows_of(collection, [meta[i] for i in ids])
+        return originals.rows_of(st.dir, [meta[i] for i in ids])
 
-    @app.get("/api/me")
-    def my_photos(profile_id: Id):
-        with connect() as conn:
+    @app.get(RACE + "/me")
+    def my_photos(st: Race, profile_id: Id):
+        with connect(st) as conn:
             name = profile_name(conn, profile_id)
             rows = me_rows(conn, profile_id)
             meta = photo_meta(conn, {r[0] for r in rows})
             bibs = bibs_of(conn, [r[1] for r in rows])
-        status = originals.statuses(originals.profile_folder(collection, name),
-                                    originals.rows_of(collection, list(meta.values())))
+        status = originals.statuses(originals.profile_folder(st.dir, name),
+                                    originals.rows_of(st.dir, list(meta.values())))
         photos = {}
         for photo_id, pid, *box in rows:
             photos.setdefault(photo_id, {**meta[photo_id], "original": status[photo_id], "persons": []})["persons"].append(
                 {"person_id": pid, "box": box, "bibs": bibs.get(pid, []), "label": "me"})
         return {"photos": list(photos.values()), "count": len(photos)}
 
-    @app.post("/api/export")
-    def export(body: ExportBody):
-        with connect() as conn:
+    @app.post(RACE + "/export")
+    def export(st: Race, body: ExportBody):
+        with connect(st) as conn:
             name = profile_name(conn, body.profile_id)
-            rows = marked(conn, body.profile_id)
+            rows = marked(st, conn, body.profile_id)
         if not rows:
             raise bad("no photos marked as me yet; nothing to export")
-        return {"path": str(originals.write_csv(originals.profile_folder(collection, name), rows)), "count": len(rows)}
+        return {"path": str(originals.write_csv(originals.profile_folder(st.dir, name), rows)), "count": len(rows)}
 
-    def busy():
-        if job.status()["state"] == "running":
+    def busy(st: RaceState):
+        if st.job.status()["state"] == "running":
             return bad("an originals download is already running", 409)
         return bad("a download is in progress; try again in a moment", 409)
 
-    def need_yipai():
-        if not yipai:
+    def need_yipai(st: RaceState):
+        if not st.is_yipai:
             raise bad("originals are only available for yipai360 collections (no manifest.sqlite)")
 
-    @app.post("/api/originals")
-    def start_originals(body: ExportBody):
-        need_yipai()
+    @app.post(RACE + "/originals")
+    def start_originals(st: Race, body: ExportBody):
+        need_yipai(st)
         try:
-            job.claim()
+            st.job.claim()
         except originals.Busy:
-            raise busy()
+            raise busy(st)
         try:
-            with connect() as conn:
+            with connect(st) as conn:
                 name = profile_name(conn, body.profile_id)
-                rows = marked(conn, body.profile_id)
+                rows = marked(st, conn, body.profile_id)
             if not rows:
                 raise bad("no photos marked as me yet; nothing to download")
-            job.start(body.profile_id, name, originals.profile_folder(collection, name), rows)
+            st.job.start(body.profile_id, name, originals.profile_folder(st.dir, name), rows)
         except BaseException:
-            job.busy.release()
+            st.job.busy.release()
             raise
-        return job.status()
+        return st.job.status()
 
-    @app.get("/api/originals")
-    def originals_status():
-        return job.status()
+    @app.get(RACE + "/originals")
+    def originals_status(st: Race):
+        return st.job.status()
 
-    @app.post("/api/originals/cancel")
-    def cancel_originals():
-        job.cancel()
-        return job.status()
+    @app.post(RACE + "/originals/cancel")
+    def cancel_originals(st: Race):
+        st.job.cancel()
+        return st.job.status()
 
-    @app.get("/api/originals/zip")
-    def originals_zip(profile_id: Id):
-        need_yipai()
-        with connect() as conn:
+    @app.get(RACE + "/originals/zip")
+    def originals_zip(st: Race, profile_id: Id):
+        need_yipai(st)
+        with connect(st) as conn:
             name = profile_name(conn, profile_id)
-        folder = originals.profile_folder(collection, name)
+        folder = originals.profile_folder(st.dir, name)
         path = originals.zip_folder(folder)
         if path is None:
             raise bad(f"no originals downloaded yet for {name}", 404)
-        return FileResponse(path, media_type="application/zip", filename=f"{collection.name}-{folder.name}-originals.zip",
+        return FileResponse(path, media_type="application/zip", filename=f"{st.dir.name}-{folder.name}-originals.zip",
                             background=BackgroundTask(path.unlink, missing_ok=True))
 
-    @app.post("/api/photos/{photo_id}/original")
-    def photo_original(photo_id: Id, body: ExportBody):
-        need_yipai()
+    @app.post(RACE + "/photos/{photo_id}/original")
+    def photo_original(st: Race, photo_id: Id, body: ExportBody):
+        need_yipai(st)
         try:
-            with job.claimed():
-                with connect() as conn:
+            with st.job.claimed():
+                with connect(st) as conn:
                     name = profile_name(conn, body.profile_id)
                     meta = photo_meta(conn, [photo_id]).get(photo_id)
                     if meta is None:
                         raise bad(f"photo {photo_id} not found", 404)
-                    rows = marked(conn, body.profile_id)
-                row = originals.rows_of(collection, [meta])[0]
-                result, dest = job.single(row, originals.profile_folder(collection, name), rows)
+                    rows = marked(st, conn, body.profile_id)
+                row = originals.rows_of(st.dir, [meta])[0]
+                result, dest = st.job.single(row, originals.profile_folder(st.dir, name), rows)
         except originals.Busy:
-            raise busy()
+            raise busy(st)
         except originals.Cancelled:
             raise bad("download was cancelled; try again", 409)
         except Blocked as e:

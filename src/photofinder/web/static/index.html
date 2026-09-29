@@ -336,7 +336,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
-  profiles: [], name: 'Me', job: null, pollT: null, highlight: null, pseq: 0};
+  profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0};
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -437,7 +437,7 @@ function renderProfiles() {
 
 async function useProfile(id, profiles, seq = ++S.pseq) {
   const p = profiles.find(x => x.id === id) || profiles[0];
-  const me = await api(`/api/me?profile_id=${p.id}`);
+  const me = await api(`/api/r/${S.race}/me?profile_id=${p.id}`);
   if (seq !== S.pseq) return false;
   S.profiles = profiles;
   S.profile = p.id;
@@ -450,14 +450,14 @@ async function useProfile(id, profiles, seq = ++S.pseq) {
   renderProfiles();
   renderCounts();
   renderJob();
-  $('#zip').href = `/api/originals/zip?profile_id=${S.profile}`;
+  $('#zip').href = `/api/r/${S.race}/originals/zip?profile_id=${S.profile}`;
   return true;
 }
 
 async function switchProfile(id) {
   const seq = ++S.pseq;
   try {
-    const profiles = (await api('/api/profiles')).profiles;
+    const profiles = (await api(`/api/r/${S.race}/profiles`)).profiles;
     if (seq !== S.pseq || !await useProfile(id, profiles, seq)) return;
   } catch (e) {
     if (seq === S.pseq) { banner(e.message); renderProfiles(); }
@@ -481,7 +481,7 @@ async function newProfile() {
   const name = prompt('Name of the person to search for (e.g. a friend):');
   if (name == null || !name.trim()) return;
   try {
-    const p = await post('/api/profiles', {name});
+    const p = await post(`/api/r/${S.race}/profiles`, {name});
     await switchProfile(p.id);
   } catch (e) { banner(e.message); }
 }
@@ -490,7 +490,7 @@ async function renameProfile() {
   const name = prompt(`Rename “${S.name}” to:`, S.name);
   if (name == null || !name.trim() || name.trim() === S.name) return;
   try {
-    await api(`/api/profiles/${S.profile}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
+    await api(`/api/r/${S.race}/profiles/${S.profile}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
     await switchProfile(S.profile);
   } catch (e) { banner(e.message); }
 }
@@ -501,7 +501,7 @@ async function deleteProfile() {
   if (!confirm(`Delete “${p.name}”?\n\nOnly this person’s marks are removed (${n.me} marked as ${p.name}, ${n.not_me} marked Not ${p.name}). ` +
     'Photos, other people and any downloaded originals stay.')) return;
   try {
-    await api(`/api/profiles/${S.profile}`, {method: 'DELETE'});
+    await api(`/api/r/${S.race}/profiles/${S.profile}`, {method: 'DELETE'});
     await switchProfile(null);
   } catch (e) { banner(e.message); }
 }
@@ -610,7 +610,7 @@ async function search(append) {
   setBusy('Searching…');
   try {
     const t0 = performance.now();
-    const r = await post('/api/search', q);
+    const r = await post(`/api/r/${S.race}/search`, q);
     if (seq !== S.seq) return;
     const ms = performance.now() - t0;
     for (const w of r.warnings || []) banner(w, 'warn');
@@ -677,7 +677,7 @@ async function setLabel(pid, want, photoId) {
   const prev = S.labels[pid] ?? null;
   const profile = S.profile;
   try {
-    const r = await post('/api/labels', {profile_id: profile, person_id: pid, label: prev === want ? null : want});
+    const r = await post(`/api/r/${S.race}/labels`, {profile_id: profile, person_id: pid, label: prev === want ? null : want});
     if (S.profile !== profile) return;
     S.labels[pid] = r.label;
     paint(pid);
@@ -707,11 +707,11 @@ function card(r, i, list) {
   const el = h('article', {class: 'card', tabindex: 0, 'data-pid': pid, 'aria-label': `Photo ${r.source_photo_id || r.photo_id}, ${t}`,
       onclick: open, onkeydown: e => { if (e.key === 'Enter' && e.target === el) open(); }},
     h('div', {class: 'shot'},
-      h('div', {class: 'cropbox'}, h('img', {class: 'crop', src: `/api/persons/${pid}/crop`, alt: '', loading: 'lazy', onerror: broken})),
-      h('img', {class: 'thumb', src: `/api/photos/${r.photo_id}/image?max=320`, alt: 'Whole photo', loading: 'lazy', onerror: e => e.target.remove()}),
+      h('div', {class: 'cropbox'}, h('img', {class: 'crop', src: `/api/r/${S.race}/persons/${pid}/crop`, alt: '', loading: 'lazy', onerror: broken})),
+      h('img', {class: 'thumb', src: `/api/r/${S.race}/photos/${r.photo_id}/image?max=320`, alt: 'Whole photo', loading: 'lazy', onerror: e => e.target.remove()}),
       r.matched_via != null ? h('button', {class: 'via', type: 'button', title: `Matched via this photo you marked ${S.name}; click to show it in My photos`,
         onclick: e => { e.stopPropagation(); showMatched(r.matched_via); }},
-        h('img', {src: `/api/persons/${r.matched_via}/crop`, alt: '', loading: 'lazy', onerror: e => e.target.remove()}), 'matched via') : null),
+        h('img', {src: `/api/r/${S.race}/persons/${r.matched_via}/crop`, alt: '', loading: 'lazy', onerror: e => e.target.remove()}), 'matched via') : null),
     h('div', {class: 'meta'},
       h('div', {class: 'l1'}, r.rank ? h('span', {class: 'rank', title: tip}, `#${r.rank}`) : null, h('span', {class: 't'}, t),
         h('span', {class: 'flag', hidden: true})),
@@ -727,7 +727,7 @@ async function upload(file) {
   fd.append('file', file);
   setBusy('Finding people in your photo…');
   try {
-    const r = await api('/api/upload', {method: 'POST', body: fd});
+    const r = await api(`/api/r/${S.race}/upload`, {method: 'POST', body: fd});
     S.upload = r;
     if (S.start && S.start.upload) { S.start = null; renderStart(); }
     renderUpload();
@@ -735,7 +735,7 @@ async function upload(file) {
   } catch (e) { banner(e.message); } finally { setBusy(null); $('#file').value = ''; }
 }
 
-const upSrc = u => `/api/uploads/${u.token}/image`;
+const upSrc = u => `/api/r/${S.race}/uploads/${u.token}/image`;
 const upBox = () => S.start && S.upload && S.start.upload === S.upload.token ? S.start.box : null;
 
 function renderUpload() {
@@ -812,7 +812,7 @@ async function loadMe() {
   $('#summary').append(h('div', {class: 'title'}, 'My photos'), h('div', {class: 'sub'}, 'Loading…'));
   const profile = S.profile;
   try {
-    const r = await api(`/api/me?profile_id=${profile}`);
+    const r = await api(`/api/r/${S.race}/me?profile_id=${profile}`);
     if (S.view !== 'me' || S.profile !== profile) return;
     setMine(r.photos);
     renderCounts();
@@ -858,7 +858,7 @@ function origTag(s) {
 
 async function exportList() {
   try {
-    const r = await post('/api/export', {profile_id: S.profile});
+    const r = await post(`/api/r/${S.race}/export`, {profile_id: S.profile});
     banner(`Exported ${fmt(r.count)} photos to ${r.path} — one row per photo with its source photo id, original file name (searchable on the site), photographer, time and download status. Opens in Excel.`, 'info');
   } catch (e) { banner(e.message); }
 }
@@ -894,7 +894,7 @@ function renderJob() {
 async function pollOriginals() {
   clearTimeout(S.pollT);
   const was = S.job && S.job.state === 'running';
-  try { S.job = await api('/api/originals'); } catch (e) {
+  try { S.job = await api(`/api/r/${S.race}/originals`); } catch (e) {
     banner(e.message);
     if (was) S.pollT = setTimeout(pollOriginals, 3000);
     return;
@@ -906,7 +906,7 @@ async function pollOriginals() {
 
 async function startOriginals() {
   try {
-    S.job = await post('/api/originals', {profile_id: S.profile});
+    S.job = await post(`/api/r/${S.race}/originals`, {profile_id: S.profile});
     renderJob();
     S.pollT = setTimeout(pollOriginals, 1000);
   } catch (e) { banner(e.message); }
@@ -914,7 +914,7 @@ async function startOriginals() {
 
 async function cancelOriginals() {
   try {
-    S.job = await post('/api/originals/cancel', {});
+    S.job = await post(`/api/r/${S.race}/originals/cancel`, {});
     renderJob();
   } catch (e) { banner(e.message); }
 }
@@ -929,7 +929,7 @@ async function downloadOriginal() {
   try {
     let res;
     try {
-      res = await fetch(`/api/photos/${r.photo_id}/original`, {method: 'POST', headers: {'Content-Type': 'application/json'},
+      res = await fetch(`/api/r/${S.race}/photos/${r.photo_id}/original`, {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({profile_id: S.profile})});
     } catch (e) { say(''); banner(`Cannot reach the photofinder server (${e.message}). Is it still running?`); return; }
     if (!res.ok) {
@@ -970,7 +970,7 @@ async function openModal(list, i) {
   $('#m-orig-msg').textContent = 'Full-size file from the site, as its own download button gives it.';
   $('#m-orig').disabled = false;
   $('#m-frame').innerHTML = '';
-  $('#m-frame').append(h('img', {src: `/api/photos/${r.photo_id}/image`, alt: `Photo ${r.source_photo_id || r.photo_id}`, onerror: broken}));
+  $('#m-frame').append(h('img', {src: `/api/r/${S.race}/photos/${r.photo_id}/image`, alt: `Photo ${r.source_photo_id || r.photo_id}`, onerror: broken}));
   $('#m-meta').innerHTML = '';
   $('#m-list').innerHTML = '';
   $('#m-list').append(h('p', {class: 'hint'}, 'Loading people…'));
@@ -978,7 +978,7 @@ async function openModal(list, i) {
   const profile = S.profile, cache = S.details;
   let d = cache.get(r.photo_id);
   try {
-    if (!d) { d = await api(`/api/photos/${r.photo_id}?profile_id=${profile}`); cache.set(r.photo_id, d); }
+    if (!d) { d = await api(`/api/r/${S.race}/photos/${r.photo_id}?profile_id=${profile}`); cache.set(r.photo_id, d); }
   } catch (e) { banner(e.message); return; }
   if (S.profile !== profile || !S.modal || S.modal.list !== list || S.modal.i !== i) return;
   for (const p of d.persons) if (!(p.person_id in S.labels)) S.labels[p.person_id] = p.label;
@@ -1012,7 +1012,7 @@ function renderModal() {
     frame.append(boxEl(p.box, d.width, d.height, {pid, label: `${n + 1}${bib ? ' · ' + bib : ''}`, hit: pid === m.hit, sel: pid === m.sel,
       title: `Person ${n + 1}`, onclick: () => selectPerson(pid)}));
     list.append(ppRow(pid, pid === m.sel,
-      h('img', {src: `/api/persons/${pid}/crop`, alt: '', loading: 'lazy', onclick: () => selectPerson(pid), onerror: broken}),
+      h('img', {src: `/api/r/${S.race}/persons/${pid}/crop`, alt: '', loading: 'lazy', onclick: () => selectPerson(pid), onerror: broken}),
       h('div', {},
         h('div', {class: 'nm-line'}, `Person ${n + 1}`, pid === m.hit ? h('span', {class: 'hit-tag'}, 'matched') : null, h('span', {class: 'sel-tag'}, 'selected')),
         h('div', {class: 'bibs'}, p.bibs.length ? 'Bib ' + p.bibs.map(b => `${b.text} (${Math.round(b.conf * 100)}%)`).join(', ') : 'No bib read'),
@@ -1180,8 +1180,16 @@ async function init() {
   wire();
   welcome();
   try {
+    const races = await api('/api/races');
+    let race = races.find(r => r.loaded);
+    if (!race) {
+      race = races.find(r => r.indexed);
+      if (!race) throw new Error('No indexed race yet; run `photofinder index <race>` first');
+      await post(`/api/races/${race.slug}/load`, {});
+    }
+    S.race = race.slug;
     let p;
-    [p, S.facets] = await Promise.all([api('/api/profiles'), api('/api/facets')]);
+    [p, S.facets] = await Promise.all([api(`/api/r/${S.race}/profiles`), api(`/api/r/${S.race}/facets`)]);
     let saved = null;
     try { saved = Number(localStorage.getItem(profileKey())); } catch (e) { }
     await useProfile(saved, p.profiles);

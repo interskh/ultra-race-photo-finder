@@ -33,7 +33,7 @@ def lock_index(collection: Path):
     return f
 
 
-def lock_serve(collection: Path, port: int):
+def lock_serve(collection: Path | str, port: int):
     path = config.DATA_ROOT / SERVE_LOCK_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     f = open(path, "a+")
@@ -220,17 +220,19 @@ def cmd_eval(args):
 
 
 def cmd_serve(args):
-    if not (args.collection / db.INDEX_NAME).is_file():
+    if args.collection is not None and not (args.collection / db.INDEX_NAME).is_file():
         sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
     import uvicorn
     from photofinder.web import app as web
     models.half_precision = True
-    with lock_serve(args.collection.resolve(), args.port):
+    picker = args.collection is None or args.race is not None
+    where = f"race picker ({args.race})" if args.race else "race picker" if picker else args.collection.resolve()
+    with lock_serve(where, args.port):
         try:
-            app = web.create_app(args.collection)
+            app = web.create_app(None, load=args.race) if picker else web.create_app(args.collection)
         except search.MissingEmbeddings as e:
             sys.exit(str(e))
-        print(f"serving {args.collection} at http://127.0.0.1:{args.port}/", flush=True)
+        print(f"serving {'the ' + where if picker else args.collection} at http://127.0.0.1:{args.port}/", flush=True)
         uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
 
 
@@ -394,8 +396,11 @@ def main(argv=None):
     p.add_argument("--refs", type=int, default=20, help="max reference persons per bib (default 20)")
     p.add_argument("--out-dir", type=Path, help="contact sheet directory (default data/exports)")
     p.set_defaults(func=cmd_eval)
-    p = sub.add_parser("serve", help="local web page for searching and labelling a collection")
-    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
+    p = sub.add_parser("serve", help="local web page for searching and labelling photos; without an argument it "
+                                     "serves every registered race behind a race picker")
+    p.add_argument("collection", type=Path, nargs="?",
+                   help=COLLECTION_HELP + "; a slug opens the race picker with that race loaded, a directory is "
+                                          "served alone (default: race picker over data/races.json)")
     p.add_argument("--port", type=int, default=8000, help="port on 127.0.0.1 (default 8000)")
     p.set_defaults(func=cmd_serve)
     p = sub.add_parser("download", help="download a race's albums into data/races/<race>/albums/ (resumable)")
@@ -426,7 +431,11 @@ def main(argv=None):
 
     config.require_mounted()
     if hasattr(args, "collection"):
-        args.collection = resolve_collection(args.collection)
+        args.race = None
+        if args.collection is not None:
+            if not args.collection.is_dir():
+                args.race = str(args.collection)
+            args.collection = resolve_collection(args.collection)
         config.setup_model_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args.func(args)

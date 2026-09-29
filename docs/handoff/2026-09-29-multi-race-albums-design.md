@@ -534,3 +534,37 @@ Live root `/Volumes/Ext1TB/Projects/photo-finder/data` (user-authorized), real C
 - CLAUDE.md test count: 502 passed + 1 opt-in.
 
 implement-loop: slice 5 shipped 82add46; remaining: [6, 7]
+
+## Slice 6 · Task 1 — server: race-less shell, race routing, `/api/r/{slug}` prefix
+
+**Decisions**
+- `RaceState` (slug, name, dir, persons, scene_error, is_yipai, job, uploads) is built by `open_race`. Handlers take it through the `Race` dependency and pass it explicitly to every helper (`connect`, `prepare`, `ranked`, `bib_start`, `marked`, `photo_path`, `busy`, `need_yipai`, `downloading`, `get_upload`). Nothing reads `app.state.current` after the dependency.
+- The upload cache lives on the `RaceState`. A switch builds a new state with an empty cache, so "cleared on switch" holds, and a straddling request only ever sees its own race's uploads. A→B→A drops A's tokens (404 "upload expired").
+- Load guard: `old.job.busy.acquire(blocking=False)` under `load_lock`, not a `status()=="running"` check. The busy lock is also held between `claim()` and `start()`, and by `photo_original` (state stays "idle"). The old job's busy lock is never released. Once a race is unloaded, a straggler bound to it gets 409 on originals/rename-with-move, and no dead job can share the fetcher with the new race's job.
+- Concurrent load → 409 "another race is loading". Waiting would block a threadpool thread and then discard the first load's result; the UI can retry.
+- Cheap failures (unknown slug 404, no `index.sqlite` 400 with `photofinder index <slug>`, same slug no-op) are checked before dropping anything, so the old race stays loaded. MissingEmbeddings happens after the drop, so it leaves nothing loaded (409 `loaded: null` on race routes); any indexed race loads next. Re-loading the old race would double the time and the peak memory.
+- `Stale` exception + handler → 409 `{"detail", "loaded"}`. The dependency runs before the body, so no write happens.
+- Routes are registered as `app.get(RACE + "/…")`. Not APIRouter: this FastAPI version exposes `_IncludedRouter` entries without `.path` in `app.routes`, which broke the page-vs-route-table test.
+- Path mode (`create_app(c)`/`serve <slug|path>`): slug = dir name. Name and albums come from the registry when the dir is `race_dir(<dir name>)`. The race is loaded eagerly, so the one-line MissingEmbeddings exit is unchanged. `app.state.originals` tracks the current job (None when unloaded).
+- facets add `race: {slug, name}` (spec §4.5); `collection` kept.
+- Existing tests: a `RaceClient(TestClient)` in test_web.py rewrites `/api/x` → `/api/r/<slug>/x`. It uses the slug loaded when the client was built, so a later switch doesn't change where it sends requests. New tests use raw prefixed URLs.
+
+**Rejected**
+- `gc.collect()` after the drop: without it, the dropped state is already freed by refcount (weakref test passes with it removed). No measurable help, so it's out.
+- Keeping one upload cache and clearing it in load: a request bound to A that started before the switch could insert into the shared cache after it.
+- Releasing the old job's busy lock after the swap (lets an unloaded race start a job no UI can see or cancel).
+
+**Assumptions**
+- The `downloaded` count uses a `mode=ro` connection with a 2 s timeout. Any sqlite/OS error returns 0. A rollback-journal manifest mid-write could briefly report 0. Live manifests are WAL, so this is unlikely. Check: `/api/races` during a download.
+- The UI stand-in in `init()` loads the first indexed race when none is loaded. Task 2 replaces this.
+
+**Deferred**
+- Picker, localStorage race, per-race active person, 409 banner, loading text, README/ROADMAP: all task 2.
+- URL-encoding the slug in the UI (`${S.race}` is inserted raw; registry slugs are `[a-z0-9-]`, and path-mode dir names are the dev's own).
+
+**Touches**
+- `src/photofinder/web/app.py` (public API: `create_app(collection=None, *, registry, fetcher, idle_unload, worker_factory)`, every race route now under `/api/r/{slug}/`, new `/api/races`, `/api/races/{slug}/load`).
+- `src/photofinder/cli.py` (`serve` collection `nargs="?"`, lock text "race picker").
+- `src/photofinder/web/static/index.html` (URL prefix, `S.race`, init race bootstrap).
+- tests: `test_web.py` (RaceClient), `test_originals.py`, `test_model_memory.py`, `test_race_scan.py` (client swap), new `tests/test_races_web.py` (16 tests).
+- (Correction, orchestrator) `serve <slug>` follows spec §3.6. An existing directory still wins and is path mode. Otherwise a registered slug starts registry mode with that race loaded eagerly (`create_app(None, load=slug)`), so an unindexed race or one with missing embeddings still exits with one line before uvicorn. The serve.lock text is `race picker (<slug>)`, `race picker`, or the directory path. `main()` sets `args.race` only when the argument was not a directory.

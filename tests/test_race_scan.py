@@ -2,7 +2,6 @@ import logging
 import sqlite3
 from datetime import datetime
 
-from fastapi.testclient import TestClient
 
 from photofinder import db, originals, races, search
 from photofinder.index.stages import scan, to_blob
@@ -10,7 +9,7 @@ from photofinder.sources import yipai
 from photofinder.web import app as web
 from test_scan import camera_exif, jpeg, rows
 from test_search import A, X
-from test_web import ME, no_real_models  # noqa: F401
+from test_web import RaceClient, ME, no_real_models  # noqa: F401
 
 CATALOG = """create table catalog(source_id text primary key, file text, fname text, photographer_uid text,
   photographer text, group_name text, taken_at text, width integer, height integer,
@@ -130,7 +129,7 @@ def test_race_facets_list_albums_and_album_filter_restricts(tmp_path):
     scan(conn, r)
     embed_all(conn)
     first = conn.execute("select min(id) from persons").fetchone()[0]
-    api = TestClient(web.create_app(r))
+    api = RaceClient(web.create_app(r))
     facets = api.get("/api/facets").json()
     assert {a["name"]: a["photos"] for a in facets["albums"]} == {"Yipai One": 2, "Yipai Two": 1, "xxpie-abc": 3}
     assert {g["name"] for g in facets["groups"]} == {"终点", "起点", "山顶", "A组"}
