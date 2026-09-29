@@ -104,7 +104,7 @@ def cmd_search(args):
         sys.exit("--bib needs a number, e.g. --bib 8038")
     filters = search.Filters(parse_time("--from", args.start), parse_time("--to", args.end, minute_end=True),
                              tuple(args.photographer or ()), tuple(args.album or ()),
-                             args.bib.strip() if args.bib else None)
+                             args.bib.strip() if args.bib else None, groups=tuple(args.group or ()))
     if not (args.collection / db.INDEX_NAME).is_file():
         sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
     if args.photo and not args.photo.is_file():
@@ -146,7 +146,7 @@ def cmd_search(args):
         return
     for r in results:
         print(f"{r.rank:>3} {r.score:.4f} {r.relpath} box={fmt_box(r.box)} {r.taken_at or '-'} "
-              f"{r.photographer or '-'} {r.album or '-'}")
+              f"{r.photographer or '-'} {r.album or '-'} {r.grp or '-'}")
     tiles = [(query, "query")] if query is not None else []
     for r in results:
         img = models.load_image(args.collection / r.relpath)
@@ -246,7 +246,8 @@ def main(argv=None):
     p.add_argument("--from", dest="start", help="earliest camera-local time, 'YYYY-MM-DD HH:MM[:SS]'")
     p.add_argument("--to", dest="end", help="latest camera-local time, 'YYYY-MM-DD HH:MM[:SS]'")
     p.add_argument("--photographer", action="append", help="photographer nickname or uid (repeatable)")
-    p.add_argument("--album", action="append", help="album name (repeatable)")
+    p.add_argument("--album", action="append", help="source album name (repeatable)")
+    p.add_argument("--group", action="append", help="group within an album, e.g. a yipai tag (repeatable)")
     p.add_argument("--bib", help="only persons whose OCR'd bib contains this text")
     p.add_argument("--top", type=int, default=24, help="number of photos to return (default 24)")
     p.add_argument("--out", type=Path, help="contact sheet JPEG (default data/exports/<collection>-search-<time>.jpg)")

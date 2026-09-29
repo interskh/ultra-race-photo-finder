@@ -73,7 +73,7 @@ def test_scan_indexes_images_with_exif_manifest_and_errors(tmp_path):
     assert (exif["width"], exif["height"], exif["camera"]) == (40, 30, "TestCam")
     assert exif["taken_at"] == "2026-09-26 07:15:00"
     assert exif["taken_ts"] == datetime(2026, 9, 26, 7, 15).timestamp()
-    assert (exif["photographer_uid"], exif["photographer"], exif["album"]) == ("u1", "cam-a", "finish line")
+    assert (exif["photographer_uid"], exif["photographer"], exif["grp"], exif["album"]) == ("u1", "cam-a", "finish line", None)
     assert exif["source_photo_id"] == "101" and exif["status"] == "ok"
 
     plain = got["photos/102.jpg"]
@@ -84,10 +84,10 @@ def test_scan_indexes_images_with_exif_manifest_and_errors(tmp_path):
     assert bad["status"] == "error" and bad["error"] and bad["width"] is None
 
     link = got["photos/105.jpg"]
-    assert (link["width"], link["height"], link["album"], link["photographer"]) == (64, 48, "mountain", "cam-b")
+    assert (link["width"], link["height"], link["grp"], link["photographer"]) == (64, 48, "mountain", "cam-b")
 
     png = got["sub/shot.PNG"]
-    assert (png["width"], png["height"], png["source_photo_id"], png["album"]) == (20, 10, "shot", None)
+    assert (png["width"], png["height"], png["source_photo_id"], png["grp"]) == (20, 10, "shot", None)
 
 
 def test_rerun_adds_nothing_and_leaves_rows_untouched(tmp_path):
@@ -111,7 +111,7 @@ def test_scan_without_manifest_leaves_join_null(tmp_path):
     conn = db.connect(c)
     assert scan(conn, c)["new"] == 1
     r = rows(conn)["101.jpg"]
-    assert r["photographer_uid"] is None and r["album"] is None
+    assert r["photographer_uid"] is None and r["grp"] is None
 
 
 def test_index_files_are_not_scanned(tmp_path):
@@ -169,8 +169,8 @@ def test_manifest_rows_added_during_walk_are_joined(tmp_path, monkeypatch):
     conn = db.connect(c)
     scan(conn, c)
     got = rows(conn)
-    assert (got["photos/201.jpg"]["photographer"], got["photos/201.jpg"]["album"]) == ("cam-a", "mountain")
-    assert got["photos/101.jpg"]["album"] == "finish line"
+    assert (got["photos/201.jpg"]["photographer"], got["photos/201.jpg"]["grp"]) == ("cam-a", "mountain")
+    assert got["photos/101.jpg"]["grp"] == "finish line"
 
 
 def test_exif_rotated_photo_stores_upright_size(tmp_path):

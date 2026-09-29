@@ -27,7 +27,7 @@ NAME_PART_MAX = 40
 CSV_NAME = "photos.csv"
 ORIGINALS = "originals"
 DOWNLOADED = "downloaded"
-COLUMNS = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "preview_path",
+COLUMNS = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "group", "preview_path",
            "original_path", "status"]
 COUNTS = ("downloaded", "skipped", "buy_on_site", "failed")
 CSV_LOCK = threading.Lock()
@@ -123,7 +123,7 @@ def write_csv(folder: Path, rows: list[dict], updates: dict | None = None) -> Pa
         for r in rows:
             original = folder / ORIGINALS / r["file"]
             w.writerow([r["source_photo_id"] or "", r["fname"], r["photographer"] or "", r["taken_at"] or "",
-                        r["album"] or "", r["preview"], original if original.is_file() else "",
+                        r["album"] or "", r.get("grp") or "", r["preview"], original if original.is_file() else "",
                         status[r["photo_id"]] or ""])
         folder.mkdir(parents=True, exist_ok=True)
         yipai.write_atomic(folder / CSV_NAME, buf.getvalue().encode("utf-8-sig"))

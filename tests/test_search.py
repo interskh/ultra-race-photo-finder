@@ -470,12 +470,12 @@ def filter_index(tmp_path):
         (3, (0, 0, 50, 100), [0.7, 0.3, 0, 0], X),
         (4, (0, 0, 50, 100), [0.6, 0.4, 0, 0], X),
     ], photos=4)
-    conn.executemany("update photos set taken_at = ?, photographer_uid = ?, photographer = ?, album = ? "
+    conn.executemany("update photos set taken_at = ?, photographer_uid = ?, photographer = ?, album = ?, grp = ? "
                      "where relpath = ?", [
-                         ("2026-09-25 08:00:00", "u1", "阿光", "9.25 赛事", "1.jpg"),
-                         ("2026-09-25 09:30:00", "u2", "Lens", "9.25 赛事", "2.jpg"),
-                         ("2026-09-25 10:00:00", "u3", None, "定妆照", "3.jpg"),
-                         (None, "u1", "阿光", "9.25 赛事", "4.jpg")])
+                         ("2026-09-25 08:00:00", "u1", "阿光", "9.25 赛事", "终点", "1.jpg"),
+                         ("2026-09-25 09:30:00", "u2", "Lens", "9.25 赛事", "起点", "2.jpg"),
+                         ("2026-09-25 10:00:00", "u3", None, "定妆照", "终点", "3.jpg"),
+                         (None, "u1", "阿光", "9.25 赛事", None, "4.jpg")])
     conn.executemany("insert into bibs(person_id, text, conf) values (?,?,?)",
                      [(ids[1][1], "2001", 1.0), (ids[2][0], "12001", 0.5), (ids[3][0], "2100", 1.0)])
     conn.execute("update persons set ocr_at = '2026-09-28 00:00:00'")
@@ -515,6 +515,15 @@ def test_album_is_exact_and_repeatable(tmp_path):
     assert ranked(conn, albums=("9.25",)) == []
 
 
+def test_group_is_exact_repeatable_and_active_alone(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    assert search.Filters(groups=("终点",))
+    assert ranked(conn, groups=("终点",)) == ["1.jpg", "3.jpg"]
+    assert ranked(conn, groups=("终点", "起点")) == ["1.jpg", "2.jpg", "3.jpg"]
+    assert ranked(conn, groups=("终",)) == []
+    assert ranked(conn, groups=("终点",), albums=("9.25 赛事",)) == ["1.jpg"]
+
+
 def test_bib_substring_keeps_only_matching_persons(tmp_path):
     _, conn, ids = filter_index(tmp_path)
     [r] = search.search(conn, {"osnet": np.array([A])}, filters=search.Filters(bib="2001"))[:1]
@@ -551,6 +560,8 @@ def cli_ranked(capsys, c, tmp_path, *flags):
     (("--to", "2026-09-25 09:00"), ["1.jpg"]),
     (("--photographer", "Lens", "--photographer", "u3"), ["2.jpg", "3.jpg"]),
     (("--album", "定妆照"), ["3.jpg"]),
+    (("--group", "终点"), ["1.jpg", "3.jpg"]),
+    (("--group", "终点", "--group", "起点", "--album", "9.25 赛事"), ["1.jpg", "2.jpg"]),
     (("--bib", "21"), ["3.jpg"]),
     (("--photographer", "u1", "--album", "9.25 赛事", "--from", "2026-09-25 07:00", "--to", "2026-09-25 09:00",
       "--bib", "001"), ["1.jpg"]),

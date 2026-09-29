@@ -52,6 +52,7 @@ class SearchQuery(BaseModel):
     end: str | None = None
     photographers: list[str] = []
     albums: list[str] = []
+    groups: list[str] = []
     bib: str | None = None
     start_bib: str | None = None
     mode: Literal["similar", "more"] = "similar"
@@ -101,15 +102,16 @@ def when(field: str, value: str | None, minute_end=False) -> str | None:
 
 def filters_of(q: SearchQuery) -> search.Filters:
     return search.Filters(when("start", q.start), when("end", q.end, minute_end=True),
-                          tuple(q.photographers), tuple(q.albums), (q.bib or "").strip() or None)
+                          tuple(q.photographers), tuple(q.albums), (q.bib or "").strip() or None,
+                          groups=tuple(q.groups))
 
 
 def photo_meta(conn, photo_ids) -> dict:
     photo_ids = list(photo_ids)
-    rows = conn.execute("select id, source_photo_id, taken_at, photographer, photographer_uid, album, width, height, "
-                        f"relpath from photos where id in ({marks(photo_ids)})", photo_ids)
-    keys = ("photo_id", "source_photo_id", "taken_at", "photographer", "photographer_uid", "album", "width", "height",
-            "relpath")
+    rows = conn.execute("select id, source_photo_id, taken_at, photographer, photographer_uid, album, grp, width, "
+                        f"height, relpath from photos where id in ({marks(photo_ids)})", photo_ids)
+    keys = ("photo_id", "source_photo_id", "taken_at", "photographer", "photographer_uid", "album", "grp", "width",
+            "height", "relpath")
     return {r[0]: dict(zip(keys, r)) for r in rows}
 
 
@@ -330,6 +332,9 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
             albums = [{"name": a, "photos": c} for a, c in conn.execute(
                 "select album, count(*) from photos where status = 'ok' and album is not null "
                 "group by album order by count(*) desc, album")]
+            groups = [{"name": g, "photos": c} for g, c in conn.execute(
+                "select grp, count(*) from photos where status = 'ok' and grp is not null "
+                "group by grp order by count(*) desc, grp")]
             labels = dict(conn.execute("select label, count(*) from labels where profile_id = ? group by label",
                                        (profile_id,)))
             warnings = [scene_error or search.check_scenes(conn)]
@@ -339,6 +344,7 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
                 warnings.append(str(e))
         out = {"collection": collection.name, "photos": count, "persons": len(persons.ids),
                "taken_at": {"min": first, "max": last}, "photographers": photographers, "albums": albums,
+               "groups": groups,
                "scenes": scene_error is None, "originals": yipai, "warnings": [w for w in warnings if w]}
         if profile_id is not None:
             out["labels"] = {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)}

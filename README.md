@@ -19,7 +19,7 @@ Runs detached under `caffeinate`, paced, resumable. Rerun the same command a day
 uv run photofinder index data/yipai/<orderId>
 ```
 
-Stages: scan (EXIF time, photographer, album) → detect people → clothing embeddings → scene embeddings. Add `--ocr` to also read bib numbers with Apple Vision (optional and slow: ~2–3 h for 190k people). Resumable and incremental; throttles under memory pressure and stops (resumable) if its own footprint passes 6 GB. Any folder of JPEGs works as a collection.
+Stages: scan (EXIF time, photographer, group) → detect people → clothing embeddings → scene embeddings. Add `--ocr` to also read bib numbers with Apple Vision (optional and slow: ~2–3 h for 190k people). Resumable and incremental; throttles under memory pressure and stops (resumable) if its own footprint passes 6 GB. Any folder of JPEGs works as a collection.
 
 ## 3. Search in the browser
 
@@ -40,7 +40,7 @@ What works best (measured in the handoff log): clothing alone is weak when many 
 5. **My photos** lists the marked photos with each one's original status (✓ original / `buy on site: <reason>` / `failed: …`):
    - **Download originals** (yipai360 galleries only) fetches the full-size originals into `data/exports/<collection>/<person>/originals/<YYYYMMDD-HHMMSS>_<photographer>_<source photo id>.jpg` — one lookup per second, skips files already there, shows `n / N`, the current file and errors, and can be cancelled; rerun to resume. Photos the site refuses are listed as `buy on site: <reason>`.
    - **Download as zip** streams that person's originals folder plus `photos.csv` to the browser (e.g. to move them to a phone).
-   - **Export CSV** writes `data/exports/<collection>/<person>/photos.csv` (UTF-8 with BOM, opens in Excel): source photo id, original file name (searchable on the site), photographer, time, album, preview/original paths and download status.
+   - **Export CSV** writes `data/exports/<collection>/<person>/photos.csv` (UTF-8 with BOM, opens in Excel): source photo id, original file name (searchable on the site), photographer, time, album, group, preview/original paths and download status.
    - In the photo viewer, **Download original** fetches one photo, saves it into the same folder and hands it to the browser.
 
    Originals are exactly what the site's own 下载 button gives: full resolution with EXIF, but for FUGA galleries with the organizer's branding band along the bottom (the signed URL applies it). An unbranded source was not probed.

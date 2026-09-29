@@ -47,7 +47,7 @@ def load_manifest(collection: Path) -> dict[int, tuple]:
         rows = db.execute("""select p.photo_id, p.uid, g.nickname, t.name from photos p
                              left join photographers g on g.uid = p.uid
                              left join tags t on t.tag_id = p.tag_id""").fetchall()
-    return {pid: (uid, nick, album) for pid, uid, nick, album in rows}
+    return {pid: (uid, nick, grp) for pid, uid, nick, grp in rows}
 
 
 def read_exif(img: Image.Image) -> tuple:
@@ -75,9 +75,9 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
             continue
         stem = Path(relpath).stem
         try:
-            uid, photographer, album = manifest.get(int(stem), (None, None, None))
+            uid, photographer, grp = manifest.get(int(stem), (None, None, None))
         except ValueError:
-            uid = photographer = album = None
+            uid = photographer = grp = None
         width = height = taken_at = taken_ts = camera = error = None
         status = "ok"
         try:
@@ -91,9 +91,9 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
             counts["errors"] += 1
             log.warning("unreadable image %s: %s", relpath, error)
         db.execute("""insert into photos(relpath, source_photo_id, width, height, taken_at, taken_ts, camera,
-                      photographer_uid, photographer, album, scanned_at, status, error)
+                      photographer_uid, photographer, grp, scanned_at, status, error)
                       values (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                   (relpath, stem, width, height, taken_at, taken_ts, camera, uid, photographer, album,
+                   (relpath, stem, width, height, taken_at, taken_ts, camera, uid, photographer, grp,
                     now(), status, error))
         counts["new"] += 1
         if counts["new"] % COMMIT_EVERY == 0:

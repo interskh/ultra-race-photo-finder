@@ -285,6 +285,8 @@ def test_not_me_negative_demotes_its_near_duplicate(tmp_path):
     ({"end": "2026-09-25 09:29"}, ["1.jpg"]),
     ({"photographers": ["Lens", "u3"]}, ["2.jpg", "3.jpg"]),
     ({"albums": ["定妆照"]}, ["3.jpg"]),
+    ({"groups": ["终点"]}, ["1.jpg", "3.jpg"]),
+    ({"groups": ["终点", "起点"], "albums": ["9.25 赛事"]}, ["1.jpg", "2.jpg"]),
     ({"bib": "200"}, ["1.jpg", "2.jpg"]),
     ({"bib": "  "}, ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]),
 ])
@@ -348,8 +350,8 @@ def test_photo_detail_lists_all_persons_with_bibs_labels_and_size(tmp_path):
     label(api, ids[1][1], "me")
     pid = photo_ids(conn)["1.jpg"]
     d = api.get(f"/api/photos/{pid}", params={"profile_id": ME}).json()
-    assert (d["photo_id"], d["width"], d["height"], d["taken_at"], d["photographer"], d["album"]) == \
-        (pid, 200, 300, "2026-09-25 08:00:00", "阿光", "9.25 赛事")
+    assert (d["photo_id"], d["width"], d["height"], d["taken_at"], d["photographer"], d["album"], d["grp"]) == \
+        (pid, 200, 300, "2026-09-25 08:00:00", "阿光", "9.25 赛事", "终点")
     assert d["source_photo_id"] == "1"
     assert d["persons"] == [
         {"person_id": ids[1][0], "box": [0, 0, 50, 100], "bibs": [], "label": None},
@@ -416,10 +418,10 @@ def test_my_photos_and_export(tmp_path, monkeypatch):
     raw = out.read_bytes()
     assert raw.startswith("﻿".encode())
     assert list(csv.reader(io.StringIO(raw.decode("utf-8-sig")))) == [
-        ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "preview_path",
-         "original_path", "status"],
-        ["1", "", "阿光", "2026-09-25 08:00:00", "9.25 赛事", str(c.resolve() / "1.jpg"), "", ""],
-        ["", "", "阿光", "", "9.25 赛事", str(c.resolve() / "4.jpg"), "", ""],
+        ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "group",
+         "preview_path", "original_path", "status"],
+        ["1", "", "阿光", "2026-09-25 08:00:00", "9.25 赛事", "终点", str(c.resolve() / "1.jpg"), "", ""],
+        ["", "", "阿光", "", "9.25 赛事", "", str(c.resolve() / "4.jpg"), "", ""],
     ]
 
 
@@ -434,6 +436,7 @@ def test_facets(tmp_path):
     assert f["photographers"] == [{"name": "阿光", "uid": "u1", "photos": 2}, {"name": "Lens", "uid": "u2", "photos": 1},
                                   {"name": None, "uid": "u3", "photos": 1}]
     assert f["albums"] == [{"name": "9.25 赛事", "photos": 3}, {"name": "定妆照", "photos": 1}]
+    assert f["groups"] == [{"name": "终点", "photos": 2}, {"name": "起点", "photos": 1}]
     assert f["labels"] == {"me": 1, "not_me": 1}
     assert f["scenes"] is False
     assert any("embed_scenes" in w for w in f["warnings"])
@@ -595,7 +598,7 @@ def test_export_quotes_fields_with_tabs_or_newlines(tmp_path, monkeypatch):
     conn.execute("update photos set relpath = 'x\ny.jpg' where relpath = '2.jpg'")
     conn.commit()
     text = open(api.post("/api/export", json={"profile_id": ME}).json()["path"], newline="", encoding="utf-8-sig").read()
-    assert [(r[0], r[5]) for r in csv.reader(io.StringIO(text))][1:] == [
+    assert [(r[0], r[6]) for r in csv.reader(io.StringIO(text))][1:] == [
         ("a\tb", str(c.resolve() / "1.jpg")),
         ("2", str(c.resolve() / "x\ny.jpg")),
     ]
