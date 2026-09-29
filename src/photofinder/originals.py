@@ -134,6 +134,10 @@ def rows_of(collection: Path, metas: list[dict]) -> list[dict]:
             for meta, site in zip(metas, sites_of(collection, metas))]
 
 
+def downloadable(row: dict) -> bool:
+    return row["platform"] in (None, "yipai")
+
+
 def valid(path: Path) -> bool:
     return path.is_file() and yipai.looks_like_jpeg(path.read_bytes())
 
@@ -141,7 +145,7 @@ def valid(path: Path) -> bool:
 def read_csv(folder: Path) -> dict:
     try:
         with open(folder / CSV_NAME, newline="", encoding="utf-8-sig") as f:
-            return {r["source_photo_id"]: r["status"] for r in csv.DictReader(f)}
+            return {(r["source_photo_id"], r["original_file_name"] or ""): r["status"] for r in csv.DictReader(f)}
     except (OSError, KeyError, csv.Error, UnicodeDecodeError):
         return {}
 
@@ -150,12 +154,12 @@ def statuses(folder: Path, rows: list[dict]) -> dict:
     old = read_csv(folder)
     out = {}
     for r in rows:
-        if r["platform"] not in (None, "yipai"):
+        if not downloadable(r):
             out[r["photo_id"]] = OPEN_ON_SITE
         elif (folder / ORIGINALS / r["file"]).is_file():
             out[r["photo_id"]] = DOWNLOADED
         else:
-            s = old.get(r["source_photo_id"] or "")
+            s = old.get((r["source_photo_id"] or "", r["fname"] or ""))
             out[r["photo_id"]] = s if s and s != DOWNLOADED else None
     return out
 
@@ -168,8 +172,9 @@ def write_csv(folder: Path, rows: list[dict], updates: dict | None = None) -> Pa
         w.writerow(COLUMNS)
         for r in rows:
             original = folder / ORIGINALS / r["file"]
+            original = original if downloadable(r) and original.is_file() else ""
             w.writerow([r["source_photo_id"] or "", r["fname"] or "", r["photographer"] or "", r["taken_at"] or "",
-                        r["album"] or "", r["group"] or "", r["preview"], original if original.is_file() else "",
+                        r["album"] or "", r["group"] or "", r["preview"], original,
                         status[r["photo_id"]] or "", r["site"]["url"] if r["site"] else ""])
         folder.mkdir(parents=True, exist_ok=True)
         yipai.write_atomic(folder / CSV_NAME, buf.getvalue().encode("utf-8-sig"))
@@ -267,7 +272,7 @@ class Fetcher:
         raise Failed(error)
 
     def original(self, row: dict, dest: Path) -> str:
-        if row["platform"] not in (None, "yipai"):
+        if not downloadable(row):
             return OPEN_ON_SITE
         dest.unlink(missing_ok=True)
         if row["platform"] is None or not row["fname"]:
@@ -334,7 +339,7 @@ class Job:
                 self.fetcher.pause(0)
                 self.update(current=row["fname"] or row["relpath"])
                 dest = folder / ORIGINALS / row["file"]
-                if valid(dest):
+                if downloadable(row) and valid(dest):
                     key, result = "skipped", DOWNLOADED
                 else:
                     result = self.fetcher.original(row, dest)
@@ -365,7 +370,7 @@ class Job:
 
     def single(self, row: dict, folder: Path, rows: list[dict]) -> tuple[str, Path]:
         dest = folder / ORIGINALS / row["file"]
-        result = DOWNLOADED if valid(dest) else self.fetcher.original(row, dest)
+        result = DOWNLOADED if downloadable(row) and valid(dest) else self.fetcher.original(row, dest)
         if any(r["photo_id"] == row["photo_id"] for r in rows):
             write_csv(folder, rows, {row["photo_id"]: result})
         return result, dest

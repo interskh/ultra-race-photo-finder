@@ -115,6 +115,44 @@ def test_mixed_race_originals_download_yipai_and_mark_others_open_on_site(tmp_pa
     assert len(g.lookups) == 1 and len(g.fetched) == 1
 
 
+def test_non_yipai_photo_never_takes_a_colliding_yipai_original(tmp_path):
+    r, conn, p = indexed_race()
+    t = FakeTime()
+    g = Gallery(t, order="1001")
+    fetcher = originals.Fetcher(httpx.Client(transport=httpx.MockTransport(g)), sleep=t.sleep, clock=t.clock)
+    api = RaceClient(web.create_app(r, fetcher=fetcher))
+    xx = p["albums/xxpie-abc/photos/late.jpg"]
+    label(api, dict(conn.execute("select photo_id, id from persons"))[xx], "me")
+    row = originals.rows_of(r, list(web.photo_meta(conn, [xx]).values()))[0]
+    folder = originals.profile_folder(r, "Me")
+    (folder / "originals").mkdir(parents=True)
+    cached = folder / "originals" / row["file"]
+    cached.write_bytes(jpeg(101))
+    res = api.post(f"/api/photos/{xx}/original", json={"profile_id": ME})
+    assert res.status_code == 409 and res.json()["detail"].startswith("open on site")
+    assert api.post("/api/originals", json={"profile_id": ME}).status_code == 200
+    api.app.state.originals.thread.join(10)
+    status = api.get("/api/originals").json()
+    assert status["counts"] == {"downloaded": 0, "skipped": 0, "buy_on_site": 0, "failed": 0, "open_on_site": 1}
+    with open(folder / "photos.csv", encoding="utf-8-sig") as f:
+        assert [(x["status"], x["original_path"]) for x in csv.DictReader(f)] == [("open on site", "")]
+    assert cached.read_bytes() == jpeg(101) and (g.lookups, g.fetched) == ([], [])
+
+
+def test_old_status_belongs_to_the_row_with_the_same_id_and_file_name(tmp_path):
+    base = {"photographer": None, "taken_at": None, "album": None, "group": None, "preview": "p", "file": "f.jpg"}
+    rows = [{**base, "photo_id": 1, "source_photo_id": "101", "fname": "IMG_101.JPG", "platform": "yipai",
+             "site": None},
+            {**base, "photo_id": 2, "source_photo_id": "101", "fname": "P1.JPG", "platform": "photoplus",
+             "site": None},
+            {**base, "photo_id": 3, "source_photo_id": "102", "fname": None, "platform": "yipai", "site": None}]
+    folder = tmp_path / "out"
+    originals.write_csv(folder, rows, {1: "failed: HTTP 503", 3: "failed: not in the gallery manifest"})
+    assert originals.statuses(folder, rows) == {1: "failed: HTTP 503", 2: "open on site",
+                                                3: "failed: not in the gallery manifest"}
+    assert originals.statuses(folder, [rows[0] | {"fname": "IMG_1.JPG"}]) == {1: None}
+
+
 def test_open_on_site_status_ignores_stale_csv_and_files(tmp_path):
     r, conn, p = indexed_race()
     rows = originals.rows_of(r, list(web.photo_meta(conn, [p["albums/xxpie-abc/photos/late.jpg"]]).values()))

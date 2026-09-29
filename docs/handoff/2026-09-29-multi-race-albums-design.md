@@ -729,3 +729,30 @@ implement-loop: slice 6 shipped 3d71e0f; remaining: [7]
 - `src/photofinder/web/static/index.html` (CSS `.orig.info`, `.site`, `.copy`; `card`, `origTag`, `renderJob`, `openModal`, `renderModal`, new `copyText`).
 - `src/photofinder/sources/{yipai,pailixiang,photoplus}.py` (`site_link` hint strings, part of the public photo API `site.hint`), `tests/test_site_links.py`.
 - `README.md` (§5 viewer/My photos bullets).
+
+## Slice 7 · Whole-run gate fix
+
+**Decisions**
+- One predicate `originals.downloadable(row)` (platform None or yipai) now gates `Job.run`'s and `Job.single`'s cache check, `Fetcher.original`, `statuses` and the CSV `original_path`. A non-yipai photo whose `file_name()` (`<stamp>_<photographer>_<source id>.jpg`) collides with a downloaded yipai original gets `open on site` (job count, 409 per photo, empty CSV `original_path`), with no request and no unlink; the yipai file stays.
+- Old CSV statuses are keyed by (`source_photo_id`, `original_file_name`) and looked up with (`source_photo_id`, `fname or ""`). A yipai row inherits only its own status, not that of a pailixiang/photoplus row that shares a numeric id.
+- Empty fname: pre-Slice-7 `rows_of` gave `""` for a yipai id missing from the manifest and wrote it as is. Today `fname` is None, and `or ""` turns it into `""`, so those rows still match (`failed: not in the gallery manifest` is kept). A row that had an empty fname then and has a manifest fname now loses that old status and shows none, which is correct because the reason no longer holds. Old 8/9-column CSVs all have `original_file_name`, so `test_csv_without_group_column_keeps_its_statuses` passes unchanged.
+- Replaces Task 1's Deferred safety argument ("yipai ids are site-global"). That argument was wrong: the CSV dict was flat across platforms, and non-yipai numeric ids aren't in yipai's id space. The safety now comes from the composite key plus the platform gate.
+- My photos cards carry only the Open on site link (file name in its tooltip). The file name with Copy, the hint, shot time, photographer and group are in the viewer, which a card click opens from My photos. This is a deliberate reading of spec §3.7 "the viewer and My photos": it keeps the card narrow, and the full block is one click away.
+- Spec §3.7 names `sources.site_link(album, photo)`. It is implemented as `site_link(platform, site_id, fname)`: the same information, with no album/photo objects needed.
+
+**Rejected**
+- Keying the CSV status on (`album`, `source_photo_id`): the album column is a title, which can repeat across albums and change on re-registration. fname is already in every CSV format.
+- Changing `file_name()` to include the platform or album: that renames every existing originals file, and the old skip/CSV paths would break.
+- `.get("original_file_name")` for CSVs without that column: no written format lacks it. A CSV without that column gives `KeyError` → `{}` (statuses reset, same as a corrupt CSV). The two-column CSV in `test_open_on_site_status_ignores_stale_csv_and_files` hits this, and it still passes because xxpie is gated first.
+- The collision test places a yipai-looking JPEG under the xxpie row's own `file` name, not through a yipai row with a matching stamp, photographer and id. That is equivalent, because the cache check keys on `file` alone.
+
+**Assumptions**
+- CSV `original_file_name` is always the row's `fname` exactly as written by `write_csv` (UTF-8 round-trip, no normalization). Check: `test_old_status_belongs_to_the_row_with_the_same_id_and_file_name`.
+
+**Deferred**
+- Residual: two platforms with the same numeric id and the same camera file name still share an old status. This needs identical ids and file names, and a non-yipai row always reads `open on site` before any CSV lookup, so only the yipai row could be affected. Accepted.
+- Pre-existing, not introduced here: a yipai manifest row with empty/null `order_id` gives `site: null`, and the originals lookup would request `/order/None/…`. An xxpie row with an empty fname gives `exact: false` and "File name: unknown".
+
+**Touches**
+- `src/photofinder/originals.py` (`downloadable`, `read_csv` key shape, `statuses`, `write_csv` `original_path`, `Fetcher.original`, `Job.run`, `Job.single`).
+- `tests/test_site_links.py` (2 new tests).
