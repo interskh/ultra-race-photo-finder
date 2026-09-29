@@ -294,3 +294,5 @@ implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
 
 **Touches**
 - `src/photofinder/sources/yipai.py` (`refusal`), `src/photofinder/race_import.py` (`default_only`, `verify`, `checkpoint`), `tests/test_download.py`, `tests/test_race_import.py`, README.md, docs/ROADMAP.md.
+
+implement-loop: slice 3 shipped 7f97594; remaining: [4, 5, 6, 7]
