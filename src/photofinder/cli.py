@@ -7,13 +7,20 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from photofinder import config, db, evaluate, models, search
+import httpx
+
+from photofinder import config, db, evaluate, models, race_import, races, search
 from photofinder.index import stages
 from photofinder.memory import FootprintExceeded
+from photofinder.sources import pailixiang, photoplus, xxpie, yipai
+from photofinder.sources.base import AlbumDownloader
+from photofinder.sources.common import AlreadyRunning, Blocked
 
 log = logging.getLogger("photofinder")
+ADAPTERS = {"pailixiang": pailixiang, "xxpie": xxpie, "photoplus": photoplus}
 LOCK_NAME = "index.lock"
 SERVE_LOCK_NAME = "serve.lock"
+COLLECTION_HELP = "race slug (registered in data/races.json) or collection directory"
 
 
 def lock_index(collection: Path):
@@ -26,7 +33,7 @@ def lock_index(collection: Path):
     return f
 
 
-def lock_serve(collection: Path, port: int):
+def lock_serve(collection: Path | str, port: int):
     path = config.DATA_ROOT / SERVE_LOCK_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     f = open(path, "a+")
@@ -104,7 +111,7 @@ def cmd_search(args):
         sys.exit("--bib needs a number, e.g. --bib 8038")
     filters = search.Filters(parse_time("--from", args.start), parse_time("--to", args.end, minute_end=True),
                              tuple(args.photographer or ()), tuple(args.album or ()),
-                             args.bib.strip() if args.bib else None)
+                             args.bib.strip() if args.bib else None, groups=tuple(args.group or ()))
     if not (args.collection / db.INDEX_NAME).is_file():
         sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
     if args.photo and not args.photo.is_file():
@@ -146,7 +153,7 @@ def cmd_search(args):
         return
     for r in results:
         print(f"{r.rank:>3} {r.score:.4f} {r.relpath} box={fmt_box(r.box)} {r.taken_at or '-'} "
-              f"{r.photographer or '-'} {r.album or '-'}")
+              f"{r.photographer or '-'} {r.album or '-'} {r.grp or '-'}")
     tiles = [(query, "query")] if query is not None else []
     for r in results:
         img = models.load_image(args.collection / r.relpath)
@@ -213,29 +220,160 @@ def cmd_eval(args):
 
 
 def cmd_serve(args):
-    if not (args.collection / db.INDEX_NAME).is_file():
-        sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
+    if args.collection is not None and not (args.collection / db.INDEX_NAME).is_file():
+        sys.exit(f"no index in {args.collection}; run `photofinder index {args.race or args.collection}` first")
     import uvicorn
     from photofinder.web import app as web
     models.half_precision = True
-    with lock_serve(args.collection.resolve(), args.port):
+    picker = args.collection is None or args.race is not None
+    where = f"race picker ({args.race})" if args.race else "race picker" if picker else args.collection.resolve()
+    with lock_serve(where, args.port):
         try:
-            app = web.create_app(args.collection)
+            app = web.create_app(None, load=args.race) if picker else web.create_app(args.collection)
         except search.MissingEmbeddings as e:
             sys.exit(str(e))
-        print(f"serving {args.collection} at http://127.0.0.1:{args.port}/", flush=True)
+        print(f"serving {'the ' + where if picker else args.collection} at http://127.0.0.1:{args.port}/", flush=True)
         uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
+
+
+def cmd_race_add(args):
+    try:
+        race = races.add_race(args.slug, args.name)
+    except races.RaceError as e:
+        sys.exit(str(e))
+    print(f"registered race {race.slug} ({race.name}) in {races.registry_path()}")
+
+
+def cmd_race_import(args):
+    try:
+        race_import.run(args.slug, args.name, args.source_dir, args.url, args.title,
+                        say=lambda s: print(s, flush=True))
+    except race_import.ImportRefused as e:
+        sys.exit(str(e))
+
+
+def cmd_album_add(args):
+    try:
+        album = races.check_album(races.load(), args.race, args.url, args.title)
+    except races.RaceError as e:
+        sys.exit(str(e))
+    title = args.title
+    if title is None and album.platform in ADAPTERS:
+        try:
+            with album_client(album.platform) as client:
+                title = album_adapter(album.platform, client, album.site_id).meta()["title"]
+        except (Blocked, KeyError, TypeError) as e:
+            sys.exit(f"could not fetch the album title from {album.platform} ({e}); "
+                     f"rerun with --title \"<title>\"")
+    try:
+        album = races.add_album(args.race, args.url, title)
+    except races.RaceError as e:
+        sys.exit(str(e))
+    print(f"registered {album.key} ({album.title or 'no title; the Album filter shows the key'}) "
+          f"in race {args.race}")
+    print(f"next: scripts/download.sh {args.race}, then uv run photofinder index {args.race}")
+
+
+def select_albums(slug: str, key: str | None = None) -> list[races.Album]:
+    reg = races.load()
+    race = reg.race(slug)
+    if race is None:
+        known = ", ".join(r.slug for r in reg.races) or "none registered"
+        sys.exit(f"{slug} is not a registered race (races: {known})")
+    if key is None:
+        if not race.albums:
+            sys.exit(f"race {slug} has no albums yet")
+        return race.albums
+    albums = [a for a in race.albums if a.key == key]
+    if not albums:
+        keys = ", ".join(a.key for a in race.albums) or "none"
+        sys.exit(f"race {slug} has no album {key} (albums: {keys})")
+    return albums
+
+
+def yipai_client():
+    return httpx.Client(timeout=60, follow_redirects=True)
+
+
+def yipai_downloader(client, order_id: str, out_dir: Path):
+    return yipai.Downloader(client, order_id, out_dir, concurrency=6, page_delay=3.0)
+
+
+def album_client(platform: str):
+    return httpx.Client(headers=ADAPTERS[platform].HEADERS, timeout=60, follow_redirects=True)
+
+
+def album_adapter(platform: str, client, site_id: str):
+    return ADAPTERS[platform].Adapter(client, site_id)
+
+
+def album_downloader(client, adapter, out_dir: Path):
+    return AlbumDownloader(client, adapter, out_dir, concurrency=4, page_delay=3.0, img_delay=(0.2, 0.6), tries=5,
+                           max_consecutive_failures=20)
+
+
+def download_album(album: races.Album, out_dir: Path) -> dict[str, int]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(out_dir / "download.log")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    try:
+        yip = album.platform == "yipai"
+        with yipai_client() if yip else album_client(album.platform) as client:
+            dl = (yipai_downloader(client, album.site_id, out_dir) if yip else
+                  album_downloader(client, album_adapter(album.platform, client, album.site_id), out_dir))
+            try:
+                counts = dl.run()
+            except AlreadyRunning as e:
+                sys.exit(str(e))
+            except Blocked as e:
+                log.error("%s stopped: %s (rerun later to resume)", album.key, e)
+                sys.exit(2)
+            finally:
+                dl.close()
+        log.info("%s finished: %s", album.key, counts)
+        return counts
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+
+
+def cmd_download(args):
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    unfinished = []
+    for album in select_albums(args.race, args.album_key):
+        if album.platform != "yipai" and album.platform not in ADAPTERS:
+            print(f"skipping {album.key}: {album.platform} downloads are not supported yet", flush=True)
+            continue
+        if set(download_album(album, races.album_dir(args.race, album.key))) - {"done"}:
+            unfinished.append(album.key)
+    if unfinished:
+        sys.exit(f"not every photo downloaded in {', '.join(unfinished)}; rerun later to resume")
+
+
+def resolve_collection(arg: Path) -> Path:
+    if arg.is_dir():
+        return arg
+    slug = str(arg)
+    reg = races.load()
+    if races.SLUG.fullmatch(slug) and reg.race(slug):
+        d = races.race_dir(slug)
+        if not d.is_dir():
+            sys.exit(f"race {slug} has no directory {d} yet; add and download its albums first")
+        return d
+    known = ", ".join(r.slug for r in reg.races) or "none registered"
+    sys.exit(f"{arg} is neither a directory nor a registered race (races: {known})")
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="photofinder", description="Find your own photos in a race photo collection")
     sub = ap.add_subparsers(dest="command", required=True)
     p = sub.add_parser("index", help="scan, detect and embed a collection into <collection>/index.sqlite")
-    p.add_argument("collection", type=Path)
+    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--ocr", action="store_true", help="also read bib numbers with Apple Vision (slow, optional)")
     p.set_defaults(func=cmd_index)
     p = sub.add_parser("search", help="rank indexed photos by a query photo, person text and/or scene text")
-    p.add_argument("collection", type=Path)
+    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--photo", type=Path, help="query photo")
     p.add_argument("--text", help='person description, e.g. "orange vest black shorts"')
     p.add_argument("--scene", help='scene description, e.g. "mountain" or "雪山"')
@@ -246,27 +384,59 @@ def main(argv=None):
     p.add_argument("--from", dest="start", help="earliest camera-local time, 'YYYY-MM-DD HH:MM[:SS]'")
     p.add_argument("--to", dest="end", help="latest camera-local time, 'YYYY-MM-DD HH:MM[:SS]'")
     p.add_argument("--photographer", action="append", help="photographer nickname or uid (repeatable)")
-    p.add_argument("--album", action="append", help="album name (repeatable)")
+    p.add_argument("--album", action="append", help="source album name (repeatable)")
+    p.add_argument("--group", action="append", help="group within an album, e.g. a yipai tag (repeatable)")
     p.add_argument("--bib", help="only persons whose OCR'd bib contains this text")
     p.add_argument("--top", type=int, default=24, help="number of photos to return (default 24)")
     p.add_argument("--out", type=Path, help="contact sheet JPEG (default data/exports/<collection>-search-<time>.jpg)")
     p.set_defaults(func=cmd_search)
     p = sub.add_parser("eval", help="recall of photo search for OCR'd bibs, using stored embeddings only")
-    p.add_argument("collection", type=Path)
+    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--bib", action="append", help="bib number used as ground truth (repeatable)")
     p.add_argument("--refs", type=int, default=20, help="max reference persons per bib (default 20)")
     p.add_argument("--out-dir", type=Path, help="contact sheet directory (default data/exports)")
     p.set_defaults(func=cmd_eval)
-    p = sub.add_parser("serve", help="local web page for searching and labelling a collection")
-    p.add_argument("collection", type=Path)
+    p = sub.add_parser("serve", help="local web page for searching and labelling photos; without an argument it "
+                                     "serves every registered race behind a race picker")
+    p.add_argument("collection", type=Path, nargs="?",
+                   help=COLLECTION_HELP + "; a slug opens the race picker with that race loaded, a directory is "
+                                          "served alone (default: race picker over data/races.json)")
     p.add_argument("--port", type=int, default=8000, help="port on 127.0.0.1 (default 8000)")
     p.set_defaults(func=cmd_serve)
+    p = sub.add_parser("download", help="download a race's albums into data/races/<race>/albums/ (resumable)")
+    p.add_argument("race", help="registered race slug")
+    p.add_argument("album_key", nargs="?", help="only this album, e.g. yipai-<orderId> (default: every album)")
+    p.set_defaults(func=cmd_download)
+    p = sub.add_parser("race", help="manage the race registry (data/races.json)")
+    rsub = p.add_subparsers(dest="race_command", required=True)
+    p = rsub.add_parser("add", help="register a race")
+    p.add_argument("slug", help="lowercase id used on the command line, e.g. 2026-gongga100")
+    p.add_argument("name", help='display name, e.g. "2026 贡嘎100"')
+    p.set_defaults(func=cmd_race_add)
+    p = rsub.add_parser("import", help="move a legacy yipai collection (data/yipai/<orderId>) into a new race")
+    p.add_argument("slug", help="new race slug, e.g. 2026-gongga100")
+    p.add_argument("name", help='display name, e.g. "2026 贡嘎100"')
+    p.add_argument("source_dir", type=Path, help="the collection directory, e.g. data/yipai/<orderId>")
+    p.add_argument("--url", required=True, help="the yipai gallery URL (its orderId must match the directory)")
+    p.add_argument("--title", help="album title shown in the Album filter (default: the race name)")
+    p.set_defaults(func=cmd_race_import)
+    p = sub.add_parser("album", help="manage a race's albums (data/races.json)")
+    asub = p.add_subparsers(dest="album_command", required=True)
+    p = asub.add_parser("add", help="add a gallery album to a race (yipai360, pailixiang, xxpie, photoplus URL)")
+    p.add_argument("race", help="registered race slug")
+    p.add_argument("url", help="album URL, e.g. https://live.pailixiang.com/album/a13800138000")
+    p.add_argument("--title", help="album title shown in the Album filter (default: fetched from the site)")
+    p.set_defaults(func=cmd_album_add)
     args = ap.parse_args(argv)
 
-    if not args.collection.is_dir():
-        sys.exit(f"collection {args.collection} is not a directory")
     config.require_mounted()
-    config.setup_model_env()
+    if hasattr(args, "collection"):
+        args.race = None
+        if args.collection is not None:
+            if not args.collection.is_dir():
+                args.race = str(args.collection)
+            args.collection = resolve_collection(args.collection)
+        config.setup_model_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args.func(args)
 

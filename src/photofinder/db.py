@@ -5,7 +5,7 @@ SCHEMA = """
 create table if not exists photos(
   id integer primary key, relpath text not null unique, source_photo_id text,
   width integer, height integer, taken_at text, taken_ts real, camera text,
-  photographer_uid text, photographer text, album text,
+  photographer_uid text, photographer text, album text, album_key text, grp text,
   scanned_at text, detected_at text, scene_done_at text,
   status text not null default 'ok', error text);
 create table if not exists persons(
@@ -35,6 +35,11 @@ MIGRATE = [
     "drop table labels",
     "alter table labels_new rename to labels",
 ]
+MIGRATE_PHOTOS = [
+    "alter table photos add column album_key text",
+    "alter table photos add column grp text",
+    "update photos set grp = album, album = null",
+]
 
 INDEX_NAME = "index.sqlite"
 
@@ -44,18 +49,28 @@ def old_labels(db) -> bool:
     return bool(cols) and "profile_id" not in cols
 
 
-def migrate(db):
-    if not old_labels(db):
+def old_photos(db) -> bool:
+    cols = [r[1] for r in db.execute("pragma table_info(photos)")]
+    return bool(cols) and "grp" not in cols
+
+
+def once(db, needed, sqls):
+    if not needed(db):
         return
     db.execute("begin immediate")
     try:
-        if old_labels(db):
-            for sql in MIGRATE:
+        if needed(db):
+            for sql in sqls:
                 db.execute(sql)
         db.commit()
     except BaseException:
         db.rollback()
         raise
+
+
+def migrate(db):
+    once(db, old_labels, MIGRATE)
+    once(db, old_photos, MIGRATE_PHOTOS)
 
 
 def connect(collection: Path) -> sqlite3.Connection:

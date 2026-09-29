@@ -9,13 +9,12 @@ from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 
 from photofinder import config, models
 from photofinder.web import app as web
 from test_search import X
-from test_web import ME, FakeModels, no_real_models, upload_index  # noqa: F401
+from test_web import RaceClient, ME, FakeModels, no_real_models, upload_index  # noqa: F401
 
 REAL_POOL = web.model_pool
 
@@ -247,7 +246,7 @@ def test_request_on_a_dying_worker_is_503(tmp_path, monkeypatch):
     def broken(texts):
         raise BrokenProcessPool("child died")
     monkeypatch.setattr(models, "encode_text", broken)
-    res = TestClient(web.create_app(c)).post("/api/search", json={"profile_id": ME, "text": "red"})
+    res = RaceClient(web.create_app(c)).post("/api/search", json={"profile_id": ME, "text": "red"})
     assert res.status_code == 503
     assert "model worker stopped" in res.json()["detail"]
 
@@ -256,7 +255,7 @@ def test_server_stops_the_model_worker_after_idle_and_restarts_it(tmp_path, monk
     c, _, _ = upload_index(tmp_path)
     fake = FakeModels(monkeypatch, texts={"red": X})
     pools = Pools()
-    api = TestClient(web.create_app(c, idle_unload=0.2, worker_factory=pools))
+    api = RaceClient(web.create_app(c, idle_unload=0.2, worker_factory=pools))
     for i in range(2):
         assert api.post("/api/search", json={"profile_id": ME, "text": "red"}).status_code == 200
         status = api.get("/api/models").json()

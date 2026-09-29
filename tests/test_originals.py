@@ -8,13 +8,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from photofinder import config, originals
 from photofinder.sources import yipai
 from photofinder.web import app as web
 from test_search import A, X, make_index
-from test_web import ME, label, no_real_models  # noqa: F401
+from test_web import RaceClient, ME, label, no_real_models  # noqa: F401
 from test_yipai import FakeTime
 
 ORDER = "ORD"
@@ -25,20 +24,20 @@ def jpeg(pid):
 
 
 class Gallery:
-    def __init__(self, t, page_size=2):
-        self.t, self.page_size = t, page_size
+    def __init__(self, t, page_size=2, order=ORDER):
+        self.t, self.page_size, self.order = t, page_size, order
         self.photos, self.images = [], {}
         self.lookups, self.fetched = [], []
         self.api = lambda req: None
         self.on_image = lambda pid: None
 
     def add(self, pid, fname):
-        self.photos.append({"photoId": pid, "orderId": ORDER, "fname": fname, "img": {
+        self.photos.append({"photoId": pid, "orderId": self.order, "fname": fname, "img": {
             "primary": "https://o-a.test", "failover": "https://o-b.test", "path": f"/o/{pid}", "sign": "?Expires=1"}})
 
     def __call__(self, req):
         if req.url.path.endswith("/audience/photos"):
-            assert req.url.path == f"/api/v1/yipai/order/{ORDER}/audience/photos"
+            assert req.url.path == f"/api/v1/yipai/order/{self.order}/audience/photos"
             self.lookups.append((self.t.now, req.url.params["fileName"], int(req.url.params["page"])))
             forced = self.api(req)
             if forced is not None:
@@ -62,7 +61,7 @@ def yipai_index(tmp_path, monkeypatch, photos):
     monkeypatch.setattr(config, "DATA_ROOT", tmp_path / "data")
     n = len(photos)
     c, conn, ids = make_index(tmp_path, [(i, (0, 0, 50, 100), A, X) for i in range(1, n + 1)], photos=n)
-    conn.executemany("update photos set taken_at = ?, photographer = ?, album = ? where relpath = ?",
+    conn.executemany("update photos set taken_at = ?, photographer = ?, grp = ? where relpath = ?",
                      [(t, ph, "9.25 赛事", f"{i}.jpg") for i, (_, t, ph) in enumerate(photos, 1)])
     conn.commit()
     m = sqlite3.connect(c / "manifest.sqlite")
@@ -79,7 +78,7 @@ def setup(tmp_path, monkeypatch, photos, mark=True, **kw):
     t = FakeTime()
     g = Gallery(t)
     fetcher = originals.Fetcher(httpx.Client(transport=httpx.MockTransport(g)), sleep=t.sleep, clock=t.clock, **kw)
-    api = TestClient(web.create_app(c, fetcher=fetcher))
+    api = RaceClient(web.create_app(c, fetcher=fetcher))
     if mark:
         for pids in ids.values():
             label(api, pids[0], "me")
@@ -120,7 +119,7 @@ def test_duplicate_names_resolved_by_photo_id_across_pages_with_paced_lookups(tm
         g.add(pid, fname)
     status = run(api)
     assert status["state"] == "done" and (status["done"], status["total"]) == (2, 2)
-    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 0, "failed": 0}
+    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 0, "failed": 0, "open_on_site": 0}
     assert status["folder"] == str(folder(tmp_path)) and status["profile"] == "Me"
     assert [(f, p) for _, f, p in g.lookups] == [("未标题-1", 1), ("IMG_1", 1), ("IMG_1", 2)]
     times = [when for when, _, _ in g.lookups]
@@ -148,7 +147,7 @@ def test_403_non_jpeg_and_missing_are_buy_on_site_and_job_continues(tmp_path, mo
                 5: [httpx.Response(200, content=jpeg(5)[:-2])] * 2}
     status = run(api)
     assert status["state"] == "done" and status["done"] == 6
-    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 3, "failed": 1}
+    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 3, "failed": 1, "open_on_site": 0}
     assert [e.split(": ", 1)[1] for e in status["errors"]] == [
         "buy on site: HTTP 403", "buy on site: not a JPEG", "buy on site: not found in the gallery",
         "failed: truncated JPEG"]
@@ -158,16 +157,16 @@ def test_403_non_jpeg_and_missing_are_buy_on_site_and_job_continues(tmp_path, mo
     assert files(tmp_path) == ["20260925-080400_cam_4.jpg", "undated_cam_6.jpg"]
     rows = read_csv(tmp_path)
     assert rows[0] == originals.COLUMNS
-    assert [(r[0], r[1], r[7]) for r in rows[1:]] == [
+    assert [(r[0], r[1], r[8]) for r in rows[1:]] == [
         ("1", "A1.JPG", "buy on site: HTTP 403"), ("2", "A2.JPG", "buy on site: not a JPEG"),
         ("3", "A3.JPG", "buy on site: not found in the gallery"), ("4", "A4.JPG", "downloaded"),
         ("5", "A5.JPG", "failed: truncated JPEG"), ("6", "A6.JPG", "downloaded")]
-    assert rows[4][6] == str(folder(tmp_path) / "originals" / "20260925-080400_cam_4.jpg") and rows[1][6] == ""
-    assert rows[4][5] == str(c.resolve() / "4.jpg") and rows[4][2:5] == ["cam", "2026-09-25 08:04:00", "9.25 赛事"]
+    assert rows[4][7] == str(folder(tmp_path) / "originals" / "20260925-080400_cam_4.jpg") and rows[1][7] == ""
+    assert rows[4][6] == str(c.resolve() / "4.jpg") and rows[4][2:6] == ["cam", "2026-09-25 08:04:00", "", "9.25 赛事"]
 
-    restarted = TestClient(web.create_app(c))
+    restarted = RaceClient(web.create_app(c))
     mine = restarted.get("/api/me", params={"profile_id": ME}).json()["photos"]
-    assert [p["original"] for p in mine] == [r[7] for r in rows[1:]]
+    assert [p["original"] for p in mine] == [r[8] for r in rows[1:]]
     (folder(tmp_path) / "originals" / "undated_cam_6.jpg").unlink()
     mine = restarted.get("/api/me", params={"profile_id": ME}).json()["photos"]
     assert mine[5]["original"] is None
@@ -182,7 +181,7 @@ def test_rerun_skips_existing_without_requests_and_refetches_stale_part(tmp_path
     g.lookups.clear(), g.fetched.clear()
     status = run(api)
     assert (g.lookups, g.fetched) == ([], [])
-    assert status["counts"] == {"downloaded": 0, "skipped": 2, "buy_on_site": 0, "failed": 0}
+    assert status["counts"] == {"downloaded": 0, "skipped": 2, "buy_on_site": 0, "failed": 0, "open_on_site": 0}
     d = folder(tmp_path) / "originals"
     (d / "20260925-080200_cam_2.jpg").rename(d / "20260925-080200_cam_2.jpg.part")
     (d / "20260925-080100_cam_1.jpg").write_bytes(jpeg(1)[:-2])
@@ -203,7 +202,7 @@ def test_cancel_mid_run_leaves_remaining_photos_untouched(tmp_path, monkeypatch)
     assert status["state"] == "cancelled" and status["done"] == 1 and status["current"] is None
     assert g.fetched_ids() == [1] and [f for _, f, _ in g.lookups] == ["A1"]
     assert files(tmp_path) == ["20260925-080100_cam_1.jpg"]
-    assert [r[7] for r in read_csv(tmp_path)[1:]] == ["downloaded", "", ""]
+    assert [r[8] for r in read_csv(tmp_path)[1:]] == ["downloaded", "", ""]
 
 
 def test_cancel_interrupts_pacing_wait_and_blocks_other_downloads(tmp_path, monkeypatch):
@@ -214,7 +213,7 @@ def test_cancel_interrupts_pacing_wait_and_blocks_other_downloads(tmp_path, monk
     looked = threading.Event()
     g.api = lambda req: looked.set()
     fetcher = originals.Fetcher(httpx.Client(transport=httpx.MockTransport(g)), img_delay=(60, 60))
-    api = TestClient(web.create_app(c, fetcher=fetcher))
+    api = RaceClient(web.create_app(c, fetcher=fetcher))
     for pids in ids.values():
         label(api, pids[0], "me")
     ann = api.post("/api/profiles", json={"name": "Ann"}).json()["id"]
@@ -248,7 +247,7 @@ def test_api_failure_stops_job_with_error(tmp_path, monkeypatch):
     assert status["state"] == "error" and status["done"] == 0
     assert "yipai360 API unavailable" in status["errors"][-1]
     assert len(g.lookups) == 1 and g.fetched == []
-    assert [r[7] for r in read_csv(tmp_path)[1:]] == ["", ""]
+    assert [r[8] for r in read_csv(tmp_path)[1:]] == ["", ""]
 
 
 def test_lookups_stay_under_the_sites_rate_limit():
@@ -303,7 +302,7 @@ def test_start_needs_marked_photos(tmp_path, monkeypatch):
     assert api.post("/api/originals", json={"profile_id": 9}).status_code == 404
     assert api.get("/api/originals").json() == {
         "state": "idle", "profile_id": None, "profile": None, "done": 0, "total": 0, "current": None,
-        "counts": {"downloaded": 0, "skipped": 0, "buy_on_site": 0, "failed": 0}, "errors": [], "folder": None}
+        "counts": {"downloaded": 0, "skipped": 0, "buy_on_site": 0, "failed": 0, "open_on_site": 0}, "errors": [], "folder": None}
 
 
 def test_zip_contains_originals_and_csv(tmp_path, monkeypatch):
@@ -450,9 +449,22 @@ def test_invalid_existing_file_is_removed_when_refetch_fails(tmp_path, monkeypat
     (d / "20260925-080100_cam_1.jpg").write_bytes(jpeg(1)[:-2])
     status = run(api)
     assert status["counts"]["failed"] == 1 and files(tmp_path) == []
-    assert [r[6:] for r in read_csv(tmp_path)[1:]] == [["", "failed: HTTP 503"]]
+    assert [r[7:9] for r in read_csv(tmp_path)[1:]] == [["", "failed: HTTP 503"]]
     assert api.get("/api/me", params={"profile_id": ME}).json()["photos"][0]["original"] == "failed: HTTP 503"
     assert api.get("/api/originals/zip", params={"profile_id": ME}).status_code == 404
+
+
+def test_csv_without_group_column_keeps_its_statuses(tmp_path, monkeypatch):
+    c, conn, ids, t, g, api = setup(tmp_path, monkeypatch, [("A1.JPG", "2026-09-25 08:01:00", "cam")])
+    old = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "preview_path",
+           "original_path", "status"]
+    folder(tmp_path).mkdir(parents=True)
+    (folder(tmp_path) / "photos.csv").write_text(
+        ",".join(old) + "\n1,A1.JPG,cam,,9.25 赛事,x,,buy on site: HTTP 403\n", encoding="utf-8-sig")
+    assert api.post("/api/export", json={"profile_id": ME}).status_code == 200
+    rows = read_csv(tmp_path)
+    assert rows[0] == originals.COLUMNS and rows[1][4:6] == ["", "9.25 赛事"]
+    assert rows[1][8] == "buy on site: HTTP 403"
 
 
 def test_rename_after_download_rewrites_csv_paths(tmp_path, monkeypatch):
@@ -463,7 +475,7 @@ def test_rename_after_download_rewrites_csv_paths(tmp_path, monkeypatch):
     run(api, ann)
     assert api.patch(f"/api/profiles/{ann}", json={"name": "Bob"}).status_code == 200
     original = folder(tmp_path, "Bob") / "originals" / "20260925-080100_cam_1.jpg"
-    assert [(r[6], r[7]) for r in read_csv(tmp_path, "Bob")[1:]] == [(str(original), "downloaded")]
+    assert [(r[7], r[8]) for r in read_csv(tmp_path, "Bob")[1:]] == [(str(original), "downloaded")]
     z = zipfile.ZipFile(io.BytesIO(api.get("/api/originals/zip", params={"profile_id": ann}).content))
     assert str(original) in z.read("photos.csv").decode("utf-8-sig")
 
@@ -508,7 +520,7 @@ def test_folder_collisions_rejected_and_rename_moves_folder(tmp_path, monkeypatc
 def test_non_yipai_collection_has_no_originals(tmp_path, monkeypatch):
     c, conn, ids = make_index(tmp_path, [(1, (0, 0, 50, 100), A, X)], photos=1)
     monkeypatch.setattr(config, "DATA_ROOT", tmp_path / "data")
-    api = TestClient(web.create_app(c))
+    api = RaceClient(web.create_app(c))
     label(api, ids[1][0], "me")
     assert api.get("/api/facets").json()["originals"] is False
     photo = conn.execute("select id from photos").fetchone()[0]
@@ -518,10 +530,10 @@ def test_non_yipai_collection_has_no_originals(tmp_path, monkeypatch):
         assert res.status_code == 400 and "yipai360" in res.json()["detail"], res.text
     rows = list(csv.reader(open(api.post("/api/export", json={"profile_id": ME}).json()["path"],
                                 encoding="utf-8-sig")))
-    assert rows[1] == ["1", "", "", "", "", str(c.resolve() / "1.jpg"), "", ""]
+    assert rows[1] == ["1", "", "", "", "", "", str(c.resolve() / "1.jpg"), "", "", ""]
     (tmp_path / "y").mkdir()
     c2, _, _ = yipai_index(tmp_path / "y", monkeypatch, [("A1.JPG", None, None)])
-    assert TestClient(web.create_app(c2)).get("/api/facets").json()["originals"] is True
+    assert RaceClient(web.create_app(c2)).get("/api/facets").json()["originals"] is True
 
 
 @pytest.mark.parametrize("name,safe", [("Ann B", "Ann_B"), ("../../etc", "etc"), ("阿光", "阿光"), ("", "profile"),

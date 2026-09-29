@@ -45,6 +45,7 @@ class Result:
     taken_at: str | None
     photographer: str | None
     album: str | None
+    grp: str | None
 
 
 @dataclass
@@ -54,9 +55,10 @@ class Filters:
     photographers: tuple = ()
     albums: tuple = ()
     bib: str | None = None
+    groups: tuple = ()
 
     def __bool__(self):
-        return any((self.start, self.end, self.photographers, self.albums, self.bib))
+        return any((self.start, self.end, self.photographers, self.albums, self.groups, self.bib))
 
 
 def parse_time(value: str | None, minute_end=False) -> str | None:
@@ -94,11 +96,15 @@ def filter_where(filters: Filters) -> tuple[list[str], list]:
         args.append(filters.end)
     if filters.photographers:
         marks = ",".join("?" * len(filters.photographers))
-        where.append(f"(ph.photographer in ({marks}) or ph.photographer_uid in ({marks}))")
-        args += [*filters.photographers, *filters.photographers]
+        where.append(f"(ph.photographer in ({marks}) or ph.photographer_uid in ({marks}) "
+                     f"or substr(ph.photographer_uid, instr(ph.photographer_uid, ':') + 1) in ({marks}))")
+        args += [*filters.photographers] * 3
     if filters.albums:
         where.append(f"ph.album in ({','.join('?' * len(filters.albums))})")
         args += filters.albums
+    if filters.groups:
+        where.append(f"ph.grp in ({','.join('?' * len(filters.groups))})")
+        args += filters.groups
     if filters.bib:
         where.append("exists (select 1 from bibs b where b.person_id = p.id and instr(b.text, ?) > 0)")
         args.append(filters.bib)
@@ -254,7 +260,7 @@ def search(db: sqlite3.Connection, refs: dict, top: int = 24, exclude=(), weight
     results = []
     for rank, i in enumerate(picked, 1):
         photo_id = int(persons.photo_ids[i])
-        meta = db.execute("select relpath, source_photo_id, taken_at, photographer, album from photos "
+        meta = db.execute("select relpath, source_photo_id, taken_at, photographer, album, grp from photos "
                           "where id = ?", (photo_id,)).fetchone()
         results.append(Result(rank, float(scores[i]), int(persons.ids[i]), photo_id,
                               tuple(float(x) for x in persons.boxes[i]), *meta))

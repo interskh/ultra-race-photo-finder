@@ -15,8 +15,8 @@ from pathlib import Path
 
 import httpx
 
-from photofinder import config
-from photofinder.index.stages import MANIFEST_NAME
+from photofinder import config, races, sources
+from photofinder.index.stages import ALBUMS, MANIFEST_NAME
 from photofinder.sources import yipai
 
 LOOKUP_GAP = 6.0
@@ -27,9 +27,10 @@ NAME_PART_MAX = 40
 CSV_NAME = "photos.csv"
 ORIGINALS = "originals"
 DOWNLOADED = "downloaded"
-COLUMNS = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "preview_path",
-           "original_path", "status"]
-COUNTS = ("downloaded", "skipped", "buy_on_site", "failed")
+COLUMNS = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "group", "preview_path",
+           "original_path", "status", "site_url"]
+OPEN_ON_SITE = "open on site"
+COUNTS = ("downloaded", "skipped", "buy_on_site", "failed", "open_on_site")
 CSV_LOCK = threading.Lock()
 
 log = logging.getLogger("originals")
@@ -60,7 +61,57 @@ def folder_key(name: str) -> str:
 
 
 def is_yipai(collection: Path) -> bool:
-    return (collection / MANIFEST_NAME).is_file()
+    return (collection / MANIFEST_NAME).is_file() or any((collection / ALBUMS).glob(f"yipai-*/{MANIFEST_NAME}"))
+
+
+def manifest_of(collection: Path, album_key: str | None) -> Path:
+    return collection / MANIFEST_NAME if album_key is None else collection / ALBUMS / album_key / MANIFEST_NAME
+
+
+def album_site(album_key: str | None, registered: dict) -> tuple[str | None, str | None]:
+    if album_key is None:
+        return None, None
+    if album := registered.get(album_key):
+        return album.platform, album.site_id
+    platform, _, site_id = album_key.partition("-")
+    return platform, site_id or None
+
+
+def read_manifest(path: Path, platform: str | None, ids: list[str]) -> tuple[str | None, dict]:
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as m:
+        names = {n for n, in m.execute("select name from sqlite_master")}
+        if platform in (None, "yipai") and "photos" in names:
+            nums = [int(i) for i in ids if i.isdigit()]
+            return "yipai", {str(pid): (fname, order) for pid, order, fname in m.execute(
+                f"select photo_id, order_id, fname from photos where photo_id in ({','.join('?' * len(nums))})",
+                nums)}
+        if "catalog" not in names:
+            return platform, {}
+        return platform, {sid: (fname, None) for sid, fname in m.execute(
+            f"select source_id, fname from catalog where source_id in ({','.join('?' * len(ids))})", ids)}
+
+
+def sites_of(collection: Path, metas: list[dict]) -> list[dict]:
+    registered = {a.key: a for r in races.load().races for a in r.albums}
+    by_album = {}
+    for meta in metas:
+        by_album.setdefault(meta.get("album_key"), set()).add(meta["source_photo_id"] or "")
+    found = {}
+    for key, ids in by_album.items():
+        platform, site_id = album_site(key, registered)
+        path = manifest_of(collection, key)
+        rows = {}
+        if path.is_file():
+            platform, rows = read_manifest(path, platform, sorted(ids - {""}))
+        found[key] = platform, site_id, rows
+    out = []
+    for meta in metas:
+        platform, site_id, rows = found[meta.get("album_key")]
+        fname, order = rows.get(meta["source_photo_id"] or "", (None, None))
+        site = sources.site_link(platform, order if platform == "yipai" else site_id, fname) \
+            if (meta["source_photo_id"] or "") in rows else None
+        out.append({"platform": platform, "fname": fname, "site": site, "order_id": order})
+    return out
 
 
 def profile_folder(collection: Path, profile: str) -> Path:
@@ -79,15 +130,12 @@ def yipai_id(meta: dict) -> int | None:
 
 
 def rows_of(collection: Path, metas: list[dict]) -> list[dict]:
-    ids = [i for i in map(yipai_id, metas) if i is not None]
-    manifest = {}
-    if ids and is_yipai(collection):
-        uri = f"{(collection / MANIFEST_NAME).resolve().as_uri()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=10)) as m:
-            manifest = {pid: (order, fname) for pid, order, fname in m.execute(
-                f"select photo_id, order_id, fname from photos where photo_id in ({','.join('?' * len(ids))})", ids)}
-    return [{**meta, "preview": collection / meta["relpath"], "file": file_name(meta),
-             **dict(zip(("order_id", "fname"), manifest.get(yipai_id(meta), ("", ""))))} for meta in metas]
+    return [{**meta, "preview": collection / meta["relpath"], "file": file_name(meta), **site}
+            for meta, site in zip(metas, sites_of(collection, metas))]
+
+
+def downloadable(row: dict) -> bool:
+    return row["platform"] in (None, "yipai")
 
 
 def valid(path: Path) -> bool:
@@ -97,7 +145,8 @@ def valid(path: Path) -> bool:
 def read_csv(folder: Path) -> dict:
     try:
         with open(folder / CSV_NAME, newline="", encoding="utf-8-sig") as f:
-            return {r["source_photo_id"]: r["status"] for r in csv.DictReader(f)}
+            return {(r["source_photo_id"], r["original_file_name"] or ""): r["status"] for r in csv.DictReader(f)
+                    if r["status"] != OPEN_ON_SITE}
     except (OSError, KeyError, csv.Error, UnicodeDecodeError):
         return {}
 
@@ -106,10 +155,12 @@ def statuses(folder: Path, rows: list[dict]) -> dict:
     old = read_csv(folder)
     out = {}
     for r in rows:
-        if (folder / ORIGINALS / r["file"]).is_file():
+        if not downloadable(r):
+            out[r["photo_id"]] = OPEN_ON_SITE
+        elif (folder / ORIGINALS / r["file"]).is_file():
             out[r["photo_id"]] = DOWNLOADED
         else:
-            s = old.get(r["source_photo_id"] or "")
+            s = old.get((r["source_photo_id"] or "", r["fname"] or ""))
             out[r["photo_id"]] = s if s and s != DOWNLOADED else None
     return out
 
@@ -122,9 +173,10 @@ def write_csv(folder: Path, rows: list[dict], updates: dict | None = None) -> Pa
         w.writerow(COLUMNS)
         for r in rows:
             original = folder / ORIGINALS / r["file"]
-            w.writerow([r["source_photo_id"] or "", r["fname"], r["photographer"] or "", r["taken_at"] or "",
-                        r["album"] or "", r["preview"], original if original.is_file() else "",
-                        status[r["photo_id"]] or ""])
+            original = original if downloadable(r) and original.is_file() else ""
+            w.writerow([r["source_photo_id"] or "", r["fname"] or "", r["photographer"] or "", r["taken_at"] or "",
+                        r["album"] or "", r["group"] or "", r["preview"], original,
+                        status[r["photo_id"]] or "", r["site"]["url"] if r["site"] else ""])
         folder.mkdir(parents=True, exist_ok=True)
         yipai.write_atomic(folder / CSV_NAME, buf.getvalue().encode("utf-8-sig"))
     return folder / CSV_NAME
@@ -221,8 +273,10 @@ class Fetcher:
         raise Failed(error)
 
     def original(self, row: dict, dest: Path) -> str:
+        if not downloadable(row):
+            return OPEN_ON_SITE
         dest.unlink(missing_ok=True)
-        if not row["fname"]:
+        if row["platform"] is None or not row["fname"]:
             return "failed: not in the gallery manifest"
         try:
             data = self.fetch(self.lookup(row["order_id"], row["fname"], yipai_id(row)))
@@ -286,7 +340,7 @@ class Job:
                 self.fetcher.pause(0)
                 self.update(current=row["fname"] or row["relpath"])
                 dest = folder / ORIGINALS / row["file"]
-                if valid(dest):
+                if downloadable(row) and valid(dest):
                     key, result = "skipped", DOWNLOADED
                 else:
                     result = self.fetcher.original(row, dest)
@@ -295,7 +349,7 @@ class Job:
                 with self.lock:
                     self.state["counts"][key] += 1
                     self.state["done"] = i + 1
-                    if result != DOWNLOADED:
+                    if result not in (DOWNLOADED, OPEN_ON_SITE):
                         self.state["errors"].append(f"{row['source_photo_id']} {row['fname']}: {result}")
         except Cancelled:
             state = "cancelled"
@@ -317,7 +371,7 @@ class Job:
 
     def single(self, row: dict, folder: Path, rows: list[dict]) -> tuple[str, Path]:
         dest = folder / ORIGINALS / row["file"]
-        result = DOWNLOADED if valid(dest) else self.fetcher.original(row, dest)
+        result = DOWNLOADED if downloadable(row) and valid(dest) else self.fetcher.original(row, dest)
         if any(r["photo_id"] == row["photo_id"] for r in rows):
             write_csv(folder, rows, {row["photo_id"]: result})
         return result, dest

@@ -78,6 +78,55 @@ def test_failed_migration_after_drop_rolls_back_everything(tmp_path, monkeypatch
     assert_untouched(conn, rows)
 
 
+OLD_PHOTOS = """create table photos(
+  id integer primary key, relpath text not null unique, source_photo_id text,
+  width integer, height integer, taken_at text, taken_ts real, camera text,
+  photographer_uid text, photographer text, album text,
+  scanned_at text, detected_at text, scene_done_at text,
+  status text not null default 'ok', error text);"""
+
+
+def old_photos_index(tmp_path):
+    c = tmp_path / "coll"
+    c.mkdir()
+    raw = sqlite3.connect(c / db.INDEX_NAME)
+    raw.executescript(OLD_PHOTOS)
+    raw.executemany("insert into photos(relpath, album) values (?,?)", [("1.jpg", "终点"), ("2.jpg", None)])
+    raw.commit()
+    raw.close()
+    return c
+
+
+def test_fresh_index_has_album_key_and_grp(tmp_path):
+    _, conn, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+    assert {"album", "album_key", "grp"} <= set(columns(conn, "photos"))
+
+
+def test_migration_moves_album_tag_to_grp_once(tmp_path):
+    c = old_photos_index(tmp_path)
+    conn = db.connect(c)
+    assert {"album_key", "grp"} <= set(columns(conn, "photos")) and not conn.in_transaction
+    assert conn.execute("select relpath, album, album_key, grp from photos order by relpath").fetchall() == \
+        [("1.jpg", None, None, "终点"), ("2.jpg", None, None, None)]
+    conn.execute("update photos set album = 'Race A', grp = 'kept' where relpath = '2.jpg'")
+    conn.commit()
+    conn.close()
+    again = db.connect(c)
+    assert again.execute("select relpath, album, grp from photos order by relpath").fetchall() == \
+        [("1.jpg", None, "终点"), ("2.jpg", "Race A", "kept")]
+
+
+def test_failed_photos_migration_rolls_back(tmp_path, monkeypatch):
+    c = old_photos_index(tmp_path)
+    monkeypatch.setattr(db, "MIGRATE_PHOTOS", db.MIGRATE_PHOTOS + ["select no_such_function()"])
+    with pytest.raises(sqlite3.OperationalError):
+        db.connect(c)
+    conn = sqlite3.connect(c / db.INDEX_NAME)
+    assert "grp" not in columns(conn, "photos")
+    assert conn.execute("select relpath, album from photos order by relpath").fetchall() == \
+        [("1.jpg", "终点"), ("2.jpg", None)]
+
+
 def test_orphan_label_fails_migration_and_keeps_old_table(tmp_path):
     c, rows = old_index(tmp_path, orphan=True)
     with pytest.raises(sqlite3.IntegrityError):

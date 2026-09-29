@@ -257,6 +257,7 @@ def test_cli_prints_ranking_and_writes_contact_sheet(tmp_path, monkeypatch, caps
 def test_cli_default_sheet_goes_to_exports_outside_collection(tmp_path, monkeypatch, capsys):
     c, _, _ = search_index(tmp_path)
     Fakes(monkeypatch)
+    (tmp_path / "data").mkdir(exist_ok=True)
     monkeypatch.setattr(cli.config, "DATA_ROOT", tmp_path / "data")
     before = sorted(p.name for p in c.rglob("*.jpg"))
     cli.main(["search", str(c), "--photo", str(query_photo(tmp_path))])
@@ -470,12 +471,12 @@ def filter_index(tmp_path):
         (3, (0, 0, 50, 100), [0.7, 0.3, 0, 0], X),
         (4, (0, 0, 50, 100), [0.6, 0.4, 0, 0], X),
     ], photos=4)
-    conn.executemany("update photos set taken_at = ?, photographer_uid = ?, photographer = ?, album = ? "
+    conn.executemany("update photos set taken_at = ?, photographer_uid = ?, photographer = ?, album = ?, grp = ? "
                      "where relpath = ?", [
-                         ("2026-09-25 08:00:00", "u1", "阿光", "9.25 赛事", "1.jpg"),
-                         ("2026-09-25 09:30:00", "u2", "Lens", "9.25 赛事", "2.jpg"),
-                         ("2026-09-25 10:00:00", "u3", None, "定妆照", "3.jpg"),
-                         (None, "u1", "阿光", "9.25 赛事", "4.jpg")])
+                         ("2026-09-25 08:00:00", "u1", "阿光", "9.25 赛事", "终点", "1.jpg"),
+                         ("2026-09-25 09:30:00", "u2", "Lens", "9.25 赛事", "起点", "2.jpg"),
+                         ("2026-09-25 10:00:00", "u3", None, "定妆照", "终点", "3.jpg"),
+                         (None, "u1", "阿光", "9.25 赛事", None, "4.jpg")])
     conn.executemany("insert into bibs(person_id, text, conf) values (?,?,?)",
                      [(ids[1][1], "2001", 1.0), (ids[2][0], "12001", 0.5), (ids[3][0], "2100", 1.0)])
     conn.execute("update persons set ocr_at = '2026-09-28 00:00:00'")
@@ -508,11 +509,30 @@ def test_photographer_matches_nickname_or_uid_and_repeats(tmp_path):
     assert ranked(conn, photographers=("阿",)) == []
 
 
+def test_bare_uid_matches_platform_prefixed_and_legacy_uids(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    conn.executemany("update photos set photographer_uid = ? where relpath = ?",
+                     [("yipai:123", "1.jpg"), ("123", "2.jpg"), ("xxpie:9123", "3.jpg")])
+    assert ranked(conn, photographers=("123",)) == ["1.jpg", "2.jpg"]
+    assert ranked(conn, photographers=("yipai:123",)) == ["1.jpg"]
+    assert ranked(conn, photographers=("Lens",)) == ["2.jpg"]
+    assert ranked(conn, photographers=("yipai",)) == []
+
+
 def test_album_is_exact_and_repeatable(tmp_path):
     _, conn, _ = filter_index(tmp_path)
     assert ranked(conn, albums=("定妆照",)) == ["3.jpg"]
     assert ranked(conn, albums=("定妆照", "9.25 赛事")) == ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]
     assert ranked(conn, albums=("9.25",)) == []
+
+
+def test_group_is_exact_repeatable_and_active_alone(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    assert search.Filters(groups=("终点",))
+    assert ranked(conn, groups=("终点",)) == ["1.jpg", "3.jpg"]
+    assert ranked(conn, groups=("终点", "起点")) == ["1.jpg", "2.jpg", "3.jpg"]
+    assert ranked(conn, groups=("终",)) == []
+    assert ranked(conn, groups=("终点",), albums=("9.25 赛事",)) == ["1.jpg"]
 
 
 def test_bib_substring_keeps_only_matching_persons(tmp_path):
@@ -551,6 +571,8 @@ def cli_ranked(capsys, c, tmp_path, *flags):
     (("--to", "2026-09-25 09:00"), ["1.jpg"]),
     (("--photographer", "Lens", "--photographer", "u3"), ["2.jpg", "3.jpg"]),
     (("--album", "定妆照"), ["3.jpg"]),
+    (("--group", "终点"), ["1.jpg", "3.jpg"]),
+    (("--group", "终点", "--group", "起点", "--album", "9.25 赛事"), ["1.jpg", "2.jpg"]),
     (("--bib", "21"), ["3.jpg"]),
     (("--photographer", "u1", "--album", "9.25 赛事", "--from", "2026-09-25 07:00", "--to", "2026-09-25 09:00",
       "--bib", "001"), ["1.jpg"]),
@@ -749,6 +771,7 @@ def no_models(monkeypatch, tmp_path):
         raise AssertionError(f"eval loaded model {name}")
     monkeypatch.setattr(models, "_get", boom)
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
+    (tmp_path / "data").mkdir(exist_ok=True)
     monkeypatch.setattr(cli.config, "DATA_ROOT", tmp_path / "data")
 
 

@@ -66,14 +66,14 @@ def test_scan_indexes_images_with_exif_manifest_and_errors(tmp_path):
     counts = scan(conn, c)
     got = rows(conn)
 
-    assert counts == {"new": 5, "existing": 0, "errors": 1}
+    assert counts == {"new": 5, "existing": 0, "errors": 1, "skipped": 0}
     assert set(got) == {"photos/101.jpg", "photos/102.jpg", "photos/103.jpg", "photos/105.jpg", "sub/shot.PNG"}
 
     exif = got["photos/101.jpg"]
     assert (exif["width"], exif["height"], exif["camera"]) == (40, 30, "TestCam")
     assert exif["taken_at"] == "2026-09-26 07:15:00"
     assert exif["taken_ts"] == datetime(2026, 9, 26, 7, 15).timestamp()
-    assert (exif["photographer_uid"], exif["photographer"], exif["album"]) == ("u1", "cam-a", "finish line")
+    assert (exif["photographer_uid"], exif["photographer"], exif["grp"], exif["album"]) == ("u1", "cam-a", "finish line", None)
     assert exif["source_photo_id"] == "101" and exif["status"] == "ok"
 
     plain = got["photos/102.jpg"]
@@ -84,10 +84,10 @@ def test_scan_indexes_images_with_exif_manifest_and_errors(tmp_path):
     assert bad["status"] == "error" and bad["error"] and bad["width"] is None
 
     link = got["photos/105.jpg"]
-    assert (link["width"], link["height"], link["album"], link["photographer"]) == (64, 48, "mountain", "cam-b")
+    assert (link["width"], link["height"], link["grp"], link["photographer"]) == (64, 48, "mountain", "cam-b")
 
     png = got["sub/shot.PNG"]
-    assert (png["width"], png["height"], png["source_photo_id"], png["album"]) == (20, 10, "shot", None)
+    assert (png["width"], png["height"], png["source_photo_id"], png["grp"]) == (20, 10, "shot", None)
 
 
 def test_rerun_adds_nothing_and_leaves_rows_untouched(tmp_path):
@@ -100,7 +100,7 @@ def test_rerun_adds_nothing_and_leaves_rows_untouched(tmp_path):
 
     counts = scan(conn, c)
     got = rows(conn)
-    assert counts == {"new": 1, "existing": 5, "errors": 0}
+    assert counts == {"new": 1, "existing": 5, "errors": 0, "skipped": 0}
     assert len(got) == 6
     assert {r["camera"] for p, r in got.items() if p != "photos/106.jpg"} == {"kept"}
 
@@ -111,7 +111,7 @@ def test_scan_without_manifest_leaves_join_null(tmp_path):
     conn = db.connect(c)
     assert scan(conn, c)["new"] == 1
     r = rows(conn)["101.jpg"]
-    assert r["photographer_uid"] is None and r["album"] is None
+    assert r["photographer_uid"] is None and r["grp"] is None
 
 
 def test_index_files_are_not_scanned(tmp_path):
@@ -169,8 +169,41 @@ def test_manifest_rows_added_during_walk_are_joined(tmp_path, monkeypatch):
     conn = db.connect(c)
     scan(conn, c)
     got = rows(conn)
-    assert (got["photos/201.jpg"]["photographer"], got["photos/201.jpg"]["album"]) == ("cam-a", "mountain")
-    assert got["photos/101.jpg"]["album"] == "finish line"
+    assert (got["photos/201.jpg"]["photographer"], got["photos/201.jpg"]["grp"]) == ("cam-a", "mountain")
+    assert got["photos/101.jpg"]["grp"] == "finish line"
+
+
+def test_legacy_manifest_without_catalog_view_scans_the_same(tmp_path):
+    with_view = make_collection(tmp_path / "a")
+    legacy = make_collection(tmp_path / "b")
+    m = sqlite3.connect(legacy / "manifest.sqlite")
+    m.execute("drop view catalog")
+    m.close()
+    keep = ("source_photo_id", "photographer_uid", "photographer", "grp", "album", "album_key", "taken_at")
+    got = []
+    for c in (with_view, legacy):
+        conn = db.connect(c)
+        scan(conn, c)
+        got.append({p: tuple(r[k] for k in keep) for p, r in rows(conn).items()})
+    assert got[0] == got[1] and got[0]["photos/105.jpg"] == ("105", "u2", "cam-b", "mountain", None, None, None)
+    names = sqlite3.connect(legacy / "manifest.sqlite").execute("select name from sqlite_master").fetchall()
+    assert ("catalog",) not in names
+
+
+def test_single_album_manifest_with_catalog_table_is_read_through_catalog(tmp_path):
+    c = tmp_path / "coll"
+    jpeg(c / "photos" / "abc.jpg")
+    m = sqlite3.connect(c / "manifest.sqlite")
+    m.execute("create table catalog(source_id text primary key, photographer_uid text, photographer text, "
+              "group_name text, taken_at text)")
+    m.execute("insert into catalog values ('abc', 's1', 'cam', 'g', '2026-09-25 08:30:00')")
+    m.commit()
+    m.close()
+    conn = db.connect(c)
+    scan(conn, c)
+    r = rows(conn)["photos/abc.jpg"]
+    assert (r["photographer_uid"], r["photographer"], r["grp"], r["album"], r["album_key"], r["taken_at"]) == \
+        ("s1", "cam", "g", None, None, "2026-09-25 08:30:00")
 
 
 def test_exif_rotated_photo_stores_upright_size(tmp_path):

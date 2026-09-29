@@ -1,0 +1,16 @@
+{
+ "code": 1,
+ "message": "I'am OK",
+ "success": true,
+ "result": {
+  "name": "ACG崇礼168超级越野赛",
+  "activity_no": 89243825,
+  "activity_id": 4440799,
+  "anti_crawler_level": 0,
+  "start_time": "00:00",
+  "end_date": "2026.07.14",
+  "city": ""
+ },
+ "miniCode": 0,
+ "meta": null
+}

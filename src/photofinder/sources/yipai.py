@@ -6,11 +6,14 @@ import sqlite3
 import sys
 import threading
 import time
-from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
+
+from photofinder import config, races
+from photofinder.sources.common import (RETRYABLE, AlreadyRunning, Blocked, RetriesExhausted, backoff_seconds,
+                                        looks_like_jpeg, retry_after, write_atomic)
 
 SITE = "https://www.yipai360.com"
 HEADERS = {
@@ -19,58 +22,22 @@ HEADERS = {
     "referer": f"{SITE}/photolivepc/",
     "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
 }
-RETRYABLE = {429, 500, 502, 503, 504}
 SIZE_KEY = "s1920"
-DEFAULT_DATA_ROOT = Path("/Volumes/Ext1TB/Projects/photo-finder/data")
 
-SCHEMA = """
+CATALOG_SELECT = """select cast(p.photo_id as text) as source_id, p.file, p.fname, p.uid as photographer_uid,
+  g.nickname as photographer, t.name as group_name, null as taken_at, p.width, p.height, p.status, p.error
+  from photos p left join photographers g on g.uid = p.uid left join tags t on t.tag_id = p.tag_id"""
+SCHEMA = f"""
 create table if not exists photos(
   photo_id integer primary key, order_id text, tag_id integer, uid text, fname text,
   width integer, height integer, size integer, create_time integer, path text,
   file text, status text not null default 'pending', error text);
 create table if not exists tags(tag_id integer primary key, order_id text, name text);
 create table if not exists photographers(uid text primary key, nickname text);
+create view if not exists catalog as {CATALOG_SELECT};
 """
 
 log = logging.getLogger("yipai")
-
-
-class Blocked(Exception):
-    pass
-
-
-class RetriesExhausted(Blocked):
-    pass
-
-
-class AlreadyRunning(Exception):
-    pass
-
-
-def looks_like_jpeg(data: bytes) -> bool:
-    return len(data) > 1024 and data[:2] == b"\xff\xd8" and b"\xff\xd9" in data[-64:]
-
-
-def backoff_seconds(attempt: int) -> float:
-    return min(60, 2 ** (attempt + 1)) + random.uniform(0, 1)
-
-
-def retry_after(r: httpx.Response) -> float:
-    value = r.headers.get("retry-after", "0")
-    try:
-        return float(value)
-    except ValueError:
-        pass
-    try:
-        return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def write_atomic(dest: Path, data: bytes):
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    tmp.write_bytes(data)
-    tmp.replace(dest)
 
 
 def request_json(client: httpx.Client, method: str, url: str, *, tries=5, sleep=time.sleep, **kw) -> dict:
@@ -129,6 +96,12 @@ class Downloader:
             f.close()
             raise AlreadyRunning(f"another download is already running for {self.out_dir}")
         self._lockfile = f
+
+    def close(self):
+        self.db.close()
+        if self._lockfile is not None:
+            self._lockfile.close()
+            self._lockfile = None
 
     def _request_json(self, method: str, url: str, **kw) -> dict:
         return request_json(self.client, method, url, tries=self.tries, sleep=self.sleep, **kw)
@@ -273,16 +246,34 @@ class Downloader:
         return counts
 
 
+def site_link(site_id: str, fname: str | None) -> dict:
+    return {"url": f"{SITE}/photolivepc/?orderId={site_id}", "exact": False, "find_by": fname,
+            "hint": "search the full file name (with extension) in 通过照片名搜索 and press Enter"}
+
+
+def refusal(order_id: str) -> str | None:
+    if owner := races.load().owner(f"yipai-{order_id}"):
+        return (f"yipai order {order_id} belongs to race {owner.slug}; "
+                f"download it with: scripts/download.sh {owner.slug}")
+    if album := next((config.DATA_ROOT / "races").glob(f"*/albums/yipai-{order_id}"), None):
+        slug = album.parent.parent.name
+        return (f"yipai order {order_id}: an import into race {slug} is in progress or unfinished ({album}); "
+                f"rerun `photofinder race import {slug} …` to finish it")
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Download all watermarked 1920px previews of a yipai360 gallery")
     ap.add_argument("order_id")
-    ap.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    ap.add_argument("--data-root", type=Path, default=config.DATA_ROOT)
     ap.add_argument("--concurrency", type=int, default=6)
     ap.add_argument("--page-delay", type=float, default=3.0)
     args = ap.parse_args(argv)
 
     if not args.data_root.parent.is_dir():
         sys.exit(f"{args.data_root.parent} does not exist; is the external disk mounted?")
+    if args.data_root.resolve() == config.DATA_ROOT.resolve() and (msg := refusal(args.order_id)):
+        sys.exit(msg)
     out_dir = args.data_root / "yipai" / args.order_id
     out_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
