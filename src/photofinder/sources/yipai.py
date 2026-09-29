@@ -6,13 +6,14 @@ import sqlite3
 import sys
 import threading
 import time
-from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
 
 from photofinder import config, races
+from photofinder.sources.common import (RETRYABLE, AlreadyRunning, Blocked, RetriesExhausted, backoff_seconds,
+                                        looks_like_jpeg, retry_after, write_atomic)
 
 SITE = "https://www.yipai360.com"
 HEADERS = {
@@ -21,7 +22,6 @@ HEADERS = {
     "referer": f"{SITE}/photolivepc/",
     "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
 }
-RETRYABLE = {429, 500, 502, 503, 504}
 SIZE_KEY = "s1920"
 
 CATALOG_SELECT = """select cast(p.photo_id as text) as source_id, p.file, p.fname, p.uid as photographer_uid,
@@ -38,44 +38,6 @@ create view if not exists catalog as {CATALOG_SELECT};
 """
 
 log = logging.getLogger("yipai")
-
-
-class Blocked(Exception):
-    pass
-
-
-class RetriesExhausted(Blocked):
-    pass
-
-
-class AlreadyRunning(Exception):
-    pass
-
-
-def looks_like_jpeg(data: bytes) -> bool:
-    return len(data) > 1024 and data[:2] == b"\xff\xd8" and b"\xff\xd9" in data[-64:]
-
-
-def backoff_seconds(attempt: int) -> float:
-    return min(60, 2 ** (attempt + 1)) + random.uniform(0, 1)
-
-
-def retry_after(r: httpx.Response) -> float:
-    value = r.headers.get("retry-after", "0")
-    try:
-        return float(value)
-    except ValueError:
-        pass
-    try:
-        return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def write_atomic(dest: Path, data: bytes):
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    tmp.write_bytes(data)
-    tmp.replace(dest)
 
 
 def request_json(client: httpx.Client, method: str, url: str, *, tries=5, sleep=time.sleep, **kw) -> dict:

@@ -296,3 +296,42 @@ implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
 - `src/photofinder/sources/yipai.py` (`refusal`), `src/photofinder/race_import.py` (`default_only`, `verify`, `checkpoint`), `tests/test_download.py`, `tests/test_race_import.py`, README.md, docs/ROADMAP.md.
 
 implement-loop: slice 3 shipped 7f97594; remaining: [4, 5, 6, 7]
+
+## Slice 4 · Task 1 — sources/common.py and AlbumDownloader base
+
+**Decisions**
+- Adapter contract (duck-typed, used by task 2 and slice 5): `meta() -> {"title": str, "total": int | None}`; `list_page(cursor) -> (rows: list[CatalogRow], next_cursor | None, total | None)` — cursor is opaque (None = first page; the base only passes back what the adapter returned; calling again with the same cursor must re-list that page with fresh signed URLs); `preview_url(row) -> str` (absolute, fetchable); optional `meta_items() -> dict` written to `meta` after `title`.
+- `CatalogRow(source_id, fname, photographer_uid, photographer, group_name, taken_at, width, height, url)`; `url` is the listing's preview URL, non-persisted (`compare=False`). The base calls `preview_url(row)` on the row from the current listing, so the 403 re-list always uses the fresh one.
+- `AlbumDownloader(client, adapter, out_dir, *, concurrency=4, page_delay=3.0, img_delay=(0.2, 0.6), tries=5, max_consecutive_failures=20, sleep=time.sleep, clock=time.monotonic)`; `acquire_lock()`, `close()`, `run() -> {status: count[, "missing": n]}`.
+- Persisted statuses are only pending|done|failed (§4.2). A 403 persists as `failed`/`error='HTTP 403'` (`base.EXPIRED`); the re-list decision reads that error in memory. yipai's `expired` status is not copied.
+- `total`: meta's total, overridden by any non-None total from `list_page`; None all run → no warning, no `missing` key (xxpie).
+- Resume check `jpeg_file_ok(path)`: same rule as `looks_like_jpeg` (size > 1024, `FFD8` head, `FFD9` in last 64 bytes) but reads only 2 + 64 bytes via seek; a full read per done file would be tens of GB per top-up of the 93k photoplus album. `download()` still marks a valid existing file done without fetching (crash between write and commit).
+- Listing helper: new `common.fetch_json(client, method, url, *, check=identity, tries, sleep, **kw)`; `check(body)` returns data or raises ValueError (retried like bad JSON); non-retryable HTTP → `Blocked`; exhausted → `RetriesExhausted`. `yipai.request_json` left untouched (originals.py pins its behaviour and `HEADERS`).
+- `preview_url(row)` runs in the worker threads (inside `download()`), so it must be pure/thread-safe.
+- No headers in the contract: the caller configures `httpx.Client(headers=…)` (task 2 seam like `cli.yipai_client()`).
+- Logger name `download`; per-page line `page N: fetched X, done D/T, M min elapsed` (T is `?` when total unknown). Elapsed uses the injected clock.
+- Upsert updates metadata columns only; status/file/error untouched (tested directly on `upsert`, since `download()`'s file check masks a reset in end-to-end runs).
+
+**Rejected**
+- Adapter `pages()` iterator (spec wording): cannot re-yield a page for the 403 re-list.
+- Integer page cursor: photoplus (slice 5) needs sub-album + page + reconcile phase in the cursor.
+- Caching preview URLs by source_id in the adapter: a stale cache would silently defeat the re-list.
+- Generalising `yipai.request_json` with a callback: risk to originals' pinned behaviour for no gain.
+
+**Assumptions**
+- Adapter source_ids are filename-safe (hex/numeric per §Facts); no path sanitising in the base. Check in each adapter.
+- flock conflicts between two fds in one process on macOS (the lock test relies on it; passes).
+
+**Deferred**
+- CLI routing and per-album `download.log` handler: task 2.
+- OSError-on-write and retryable cool-down paths are copied from yipai and not separately tested in the base (covered in test_yipai for the yipai copy).
+- Project CLAUDE.md test count is stale: `uv run pytest -q` → 391 passed, 1 skipped (opt-in); not edited by the doer.
+
+**Touches**
+- New `src/photofinder/sources/common.py`, `src/photofinder/sources/base.py` (catalog/meta schema — shared read contract with `index/stages.load_catalog`), `tests/test_base_downloader.py`; `src/photofinder/sources/yipai.py` (helpers now imported from common; same objects).
+
+**Task 1 fix round**
+- A 403 on a page's first listing neither counts toward nor resets the breaker (`download(row, relisted=False)`); the re-listed attempt counts every failure, a second 403 included. Before, a page of ≥20 expired URLs tripped the breaker and skipped the re-list. This deliberately differs from yipai's `Downloader`, which still counts first-listing 403s.
+- If `next_cursor == cursor`, the loop logs a warning ("adapter returned the same cursor … ending the listing") and ends the listing. It does not raise Blocked because this is an adapter bug, not the site refusing us, and Blocked's "rerun later" would just repeat it. The run still returns counts, and `missing` shows the gap when the total is known.
+- Tests: whole page of 30 expired URLs → all done, no Blocked; 403 on both listings → Blocked after the re-list (20 failed, 10 pending); an adapter that repeats its cursor → 2 listings, then a warning. All three failed on the pre-fix code. Mutants 8/8 caught (the original 5 plus: first-listing 403 counts; re-listed 403 not counted; no cursor guard).
+- Parked: the schema is created in `__init__`, before `acquire_lock`. If two processes start within the sqlite timeout, the second can get "database is locked" instead of AlreadyRunning. Deferred, same as yipai. `fetch_json` stays because task 2's pailixiang adapter uses it.
