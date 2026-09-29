@@ -635,3 +635,31 @@ implement-loop: slice 5 shipped 82add46; remaining: [6, 7]
 - `src/photofinder/web/static/index.html` (`S.gen/failed`, `api()`/`failure()`/`fail()`, `entered()`, `entryFailed`/`retryPanel`, init precedence).
 - `tests/test_races_web.py` (listing D → not indexed; refused before drop; embedded tolerance; post-drop slug hint; path-mode dir hint; stale-write snapshot; unready-slug hint for both C and D).
 - `README.md` (open precedence sentence).
+
+## Slice 6 · Real-browser E2E and gate result (orchestrator)
+
+Setup: real `photofinder serve --port 8790` with no argument, from the worktree's `.venv` (no `uv run`), `PHOTOFINDER_DATA_ROOT=/Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-picker/data`. That root holds SQLite-backup copies of the live 贡嘎 index (69,203 photos, 193,301 persons, 3 saved people), the live Chongli index (scan only, no person embeddings) and the race925 subset index, with `albums`/`photos` symlinked to the live files; its `races.json` lists 贡嘎, Chongli, 四姑娘山 (no index) and race925. The live indexes were only read. Why not the real root: Chongli can't be loaded (below), so A→B→A needed a second indexed race, and registering a subset in the user's registry wasn't wanted. Driver: Playwright, headless Chrome (`channel="chrome"`), one browser context with two tabs. Screenshots are in `data/exports/screens/s6-e2e-01…07-*.png` and are not committed; they show saved people's names.
+- Run 1 on 4d78f62: 17/18. The one failure was the driver's own locator, which matched the hidden `<option>`; the screenshot shows the picker correctly. The run exposed a real defect: picking Chongli unloaded 贡嘎, the load then failed, and the banner said `index <collection>`. The whole-run reviewer raised the same defect as MAJOR 1.
+- Run 2 on 3d71e0f: 19/19.
+  - A fresh browser shows the picker and sends no load POST.
+  - Chongli and 四姑娘山 are disabled. The picker shows `photofinder index 2026-chongli168`.
+  - The busy bar reads "Loading 2026 贡嘎100…". Load times: 贡嘎 6.8 s (page cache already warm from run 1), race925 0.6 s, 贡嘎 again 2.8 s.
+  - A direct POST load of Chongli returns 400, and 贡嘎 stays loaded.
+  - Switching to race925 clears the results and the bib field. Its search sends race925's profile id, never 贡嘎's.
+  - Back on 贡嘎, the person chosen earlier is restored.
+  - RSS: 贡嘎 #1 1771 MB, race925 2028 MB, 贡嘎 #2 1601 MB, so it stays within 300 MB. Idle with race925 loaded later: 1628 MB. That is the allocator's high-water mark, not a race still held: the third load did not stack a second 贡嘎 on top.
+  - A second tab adopts the loaded 贡嘎 without a POST, then switches the server to race925. In the first tab, a mark gets 409, the Reload banner appears, and the label count stays at 69. Reload lands on race925.
+  - 0 page errors. No tracebacks or 500s in the server log.
+- Not exercised live: refusing a load while an originals download runs, because that would hit yipai360. Tests cover it.
+- Gate: the full suite passed 520 + 1 skipped at 4d78f62 and 523 + 1 skipped at 3d71e0f.
+  - Whole-run reviewer: APPROVE, with MAJOR 1 (the half-indexed race) and MINOR 2 (stored race vs. `serve <slug>` preload; decided F).
+  - Codex: 2 MAJOR and 2 MINOR (race-session generation, a partial-init recovery, a stale 409 from an older session, a single-DB snapshot).
+  - All were fixed in 3d71e0f. The reviewer's blocker-only recheck APPROVEd it, and the Codex recheck found all 4 RESOLVED with no new defects.
+- README's "loading a large race takes up to a minute" is kept as an upper bound. Measured: 6.8 s warm for 贡嘎. A cold first read of an index of about 850 MB from the external disk was not timed.
+
+**Operational (user)**
+- The Chongli index is not running. `index 2026-chongli168` stopped at 14:51 during detect, stopped by the memory guard ("process memory footprint 6158 MB exceeds 6144 MB … rerun to resume"). Rerun `photofinder index 2026-chongli168` when no other heavy job runs. Until then the picker shows Chongli disabled with that hint.
+- CLAUDE.md, for the user to edit: `serve` now takes an optional race slug or directory (no argument = picker); the `serve.lock` text can be `race picker (<slug>)`; the test count is 523 passed + 1 opt-in.
+- Delete the scratch root `/Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-picker` (about 1 GB of index copies) once satisfied.
+
+implement-loop: slice 6 shipped 3d71e0f; remaining: [7]
