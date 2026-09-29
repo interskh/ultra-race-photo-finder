@@ -160,3 +160,5 @@ implement-loop: slice 1 shipped 5939e35; remaining: [2, 3, 4, 5, 6, 7]
 
 **Touches**
 - `src/photofinder/index/stages.py` (scan: `skipped` count — new key in scan's return dict and log line; symlink warning), `races.py` (`Registry.require`), `cli.py` (`resolve_collection`), `tests/test_race_scan.py`, `tests/test_scan.py` (count dicts gain `skipped`).
+
+implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
