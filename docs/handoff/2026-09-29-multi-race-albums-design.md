@@ -162,3 +162,41 @@ implement-loop: slice 1 shipped 5939e35; remaining: [2, 3, 4, 5, 6, 7]
 - `src/photofinder/index/stages.py` (scan: `skipped` count — new key in scan's return dict and log line; symlink warning), `races.py` (`Registry.require`), `cli.py` (`resolve_collection`), `tests/test_race_scan.py`, `tests/test_scan.py` (count dicts gain `skipped`).
 
 implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
+
+## Slice 3 · Task 1 — race import
+
+**Decisions**
+- `config.DATA_ROOT` honours `PHOTOFINDER_DATA_ROOT`; `MODELS_DIR` pinned to the real `data/models`; `require_mounted()` checks `config.DATA_ROOT` at call time. Existing CLI tests that pointed DATA_ROOT at a nonexistent tmp dir now `mkdir` it (test_races fixture, 2 in test_search, 3 serve tests in test_web).
+- All refusals happen in `plan()` before any lock or write: slug/name, yipai URL, orderId == dir name, manifest order ids ⊆ {orderId}, slug unregistered, key unowned, not both old+album dirs, not both indexes, not both export dirs, manifest present.
+- Locks: `take_locks` opens each in `"a"` (never truncates serve.lock), flock LOCK_NB, on failure closes all taken and raises naming the holder. Race `index.lock` taken up front if the race dir exists, else right after `move_collection` creates it. fds held until after register.
+- Registration is ONE `races.save` (Race with its Album), not `add_race` + `add_album`: two saves would leave a registered race without album on a crash between them, and the rerun would refuse forever. Validation reuses `races.SLUG`/`parse_url`/`owner`.
+- Backup is taken on every run (resume too), from wherever the index is; name gets `-1`, `-2` on a same-second collision (a rerun must never overwrite the pristine first backup); written as `.part` then `os.replace`. Labels/profiles snapshot comes from the same connection; step 6 compares against this run's snapshot (no import step writes labels/profiles, so per-run comparison is sound).
+- `move_index`: checkpoint(TRUNCATE) + close, then refuse if `-wal`/`-shm` still exist (measured: last close deletes both; a checkpoint with another reader open still reports busy=0, so leftover files are the reliable "someone else has it open" signal).
+- `--title` defaults to the race name; the same string goes to `photos.album` and the registry, so scan's `title or key` yields it.
+- CSV fix: whole-text replace of `<old dir>/` and `<old exports>/` (abspath and resolved forms) — the live CSVs are the pre-`group` 8-column format, so no column parsing. BOM kept as found; atomic via `yipai.write_atomic`.
+- Symlinks (SPEC DEVIATION from §3.8 "fullcopy only"): every symlink among each `subsets/*` top-level entries and its real `photos/` dir entries whose `readlink` equals or starts with `<old dir>/` is re-pointed (tmp symlink + `os.replace`). Live has ~8.5k per-file links in race925/first2000/scenemix plus fullcopy's dir link; without this acceptance item 2 breaks.
+- SIGKILL test uses a test-only env hook `PHOTOFINDER_RACE_IMPORT_KILL_AFTER=<step>` (kills itself right after that step) — deterministic, runs the real `python -m photofinder.cli race import`.
+- Progress lines `done: <step>` are printed (flushed) after each step.
+
+**Rejected**
+- FIFO-blocking subprocess for the kill test: no production hook, but needs polling/sync on a path that moves mid-import.
+- Moving leftover `-wal`/`-shm` with the index: only exist when another process has it open; refusing is safer.
+- Persisting the step-2 snapshot to disk for resumes: labels are never written by the import, so a per-run snapshot detects anything this code could break.
+
+**Assumptions**
+- The rerun passes the same collection path (old-dir prefix is derived from it; the dir is gone on resume). Check: summary line prints the path.
+- Live symlinks and CSV paths are absolute (checked: `readlink` of race925/fullcopy entries, Me/FriendA CSV heads). Relative links would not be re-pointed.
+- The live index already has `profiles` (post people-migration); a pre-profiles index would fail the snapshot query.
+
+**Deferred**
+- Relative symlinks / CSVs written with a relative collection path: none exist live.
+- Rehearsal on a copy of the live index and the live run: Slice 3 task 3.
+
+**Touches**
+- New `src/photofinder/race_import.py`, `tests/test_race_import.py`; `cli.py` (`race import` subparser, `cmd_race_import`); `config.py` (env override, `require_mounted` — shared); tests: test_races, test_search, test_web (data root mkdir only).
+- Shared surfaces: `data/races.json` (one atomic save), `data/backups/`, `data/exports/<slug>/`, `data/subsets/*` symlinks.
+
+**Task 1 fix round**
+- Race `index.lock` is now taken before any move: after the collection/serve locks, `run` creates `races/<slug>/` (if absent) and locks its `index.lock`, then backs up and renames. Before, an indexer starting in the mkdir→rename window could create `races/<slug>/index.sqlite` and wedge every rerun as "ambiguous". Test `test_indexer_cannot_start_on_the_race_during_the_move` fails on the old ordering (checked by mutant).
+- `plan()` refuses when the collection dir or the resume album dir is a symlink (scan skips symlinked album dirs; a renamed link would register an unscannable album). Test `test_refuses_a_symlinked_collection`.
+- Deferred (parked by the orchestrator): `serve.lock` follows `PHOTOFINDER_DATA_ROOT`, so a tmp-root rehearsal does not see the live server's lock (Task 3 documents it); raw OperationalError/EXDEV tracebacks instead of friendly messages; one new backup per retry (disk use on repeated reruns). Caveat: do not run the import while an indexer runs on a `data/subsets/*` collection — its links are re-pointed underneath it and no subset lock is taken.

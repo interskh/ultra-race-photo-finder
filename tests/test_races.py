@@ -10,6 +10,7 @@ from test_search import Fakes, query_photo, search_index
 @pytest.fixture(autouse=True)
 def data_root(tmp_path, monkeypatch):
     root = tmp_path / "data"
+    root.mkdir()
     monkeypatch.setattr(config, "DATA_ROOT", root)
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
     return root

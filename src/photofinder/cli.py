@@ -7,7 +7,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from photofinder import config, db, evaluate, models, races, search
+from photofinder import config, db, evaluate, models, race_import, races, search
 from photofinder.index import stages
 from photofinder.memory import FootprintExceeded
 
@@ -236,6 +236,14 @@ def cmd_race_add(args):
     print(f"registered race {race.slug} ({race.name}) in {races.registry_path()}")
 
 
+def cmd_race_import(args):
+    try:
+        race_import.run(args.slug, args.name, args.source_dir, args.url, args.title,
+                        say=lambda s: print(s, flush=True))
+    except race_import.ImportRefused as e:
+        sys.exit(str(e))
+
+
 def resolve_collection(arg: Path) -> Path:
     if arg.is_dir():
         return arg
@@ -291,6 +299,13 @@ def main(argv=None):
     p.add_argument("slug", help="lowercase id used on the command line, e.g. 2026-gongga100")
     p.add_argument("name", help='display name, e.g. "2026 贡嘎100"')
     p.set_defaults(func=cmd_race_add)
+    p = rsub.add_parser("import", help="move a legacy yipai collection (data/yipai/<orderId>) into a new race")
+    p.add_argument("slug", help="new race slug, e.g. 2026-gongga100")
+    p.add_argument("name", help='display name, e.g. "2026 贡嘎100"')
+    p.add_argument("source_dir", type=Path, help="the collection directory, e.g. data/yipai/<orderId>")
+    p.add_argument("--url", required=True, help="the yipai gallery URL (its orderId must match the directory)")
+    p.add_argument("--title", help="album title shown in the Album filter (default: the race name)")
+    p.set_defaults(func=cmd_race_import)
     args = ap.parse_args(argv)
 
     config.require_mounted()

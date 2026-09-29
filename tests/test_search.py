@@ -257,6 +257,7 @@ def test_cli_prints_ranking_and_writes_contact_sheet(tmp_path, monkeypatch, caps
 def test_cli_default_sheet_goes_to_exports_outside_collection(tmp_path, monkeypatch, capsys):
     c, _, _ = search_index(tmp_path)
     Fakes(monkeypatch)
+    (tmp_path / "data").mkdir(exist_ok=True)
     monkeypatch.setattr(cli.config, "DATA_ROOT", tmp_path / "data")
     before = sorted(p.name for p in c.rglob("*.jpg"))
     cli.main(["search", str(c), "--photo", str(query_photo(tmp_path))])
@@ -770,6 +771,7 @@ def no_models(monkeypatch, tmp_path):
         raise AssertionError(f"eval loaded model {name}")
     monkeypatch.setattr(models, "_get", boom)
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
+    (tmp_path / "data").mkdir(exist_ok=True)
     monkeypatch.setattr(cli.config, "DATA_ROOT", tmp_path / "data")
 
 

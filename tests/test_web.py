@@ -460,6 +460,7 @@ def test_serve_exits_one_line_without_index_or_embeddings(tmp_path, monkeypatch)
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: runs.append(kw))
     empty = tmp_path / "empty"
     empty.mkdir()
+    (tmp_path / "data").mkdir()
     with pytest.raises(SystemExit) as e:
         cli.main(["serve", str(empty)])
     assert "no index" in str(e.value.code) and "\n" not in str(e.value.code)
@@ -477,6 +478,7 @@ def test_serve_binds_localhost_single_worker(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: runs.append(kw))
     c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+    (tmp_path / "data").mkdir()
     cli.main(["serve", str(c), "--port", "8765"])
     assert runs == [{"host": "127.0.0.1", "port": 8765, "workers": 1}]
     assert "http://127.0.0.1:8765/" in capsys.readouterr().out
@@ -488,6 +490,7 @@ def test_only_one_server_runs_at_a_time(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.config, "setup_model_env", lambda: None)
     monkeypatch.setattr(search, "load_persons", lambda conn, _real=search.load_persons: loads.append(1) or _real(conn))
     c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+    (tmp_path / "data").mkdir()
 
     def second_server(app, **kw):
         runs.append(kw["port"])
