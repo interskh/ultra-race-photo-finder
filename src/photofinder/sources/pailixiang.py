@@ -10,7 +10,7 @@ from photofinder.sources.common import fetch_json
 
 API = "https://mapi.pailixiang.com/plx"
 SITE = "https://live.pailixiang.com"
-KEY = "REMOVED-pailixiang-web-client-key"  # public web-client app key; gitleaks:allow
+KEY = "REMOVED-pailixiang-web-client-key"  # public web-client app key from the site's index.js; gitleaks:allow
 HEADERS = {
     "Referer": f"{SITE}/",
     "Origin": SITE,
