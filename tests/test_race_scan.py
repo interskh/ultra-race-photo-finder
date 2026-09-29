@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from datetime import datetime
 
@@ -60,7 +61,7 @@ def make_race():
 def test_race_scan_reads_each_album_catalog(tmp_path):
     r = make_race()
     conn = db.connect(r)
-    assert scan(conn, r) == {"new": 6, "existing": 0, "errors": 0}
+    assert scan(conn, r) == {"new": 6, "existing": 0, "errors": 0, "skipped": 2}
     got = {k: (v["source_photo_id"], v["album_key"], v["album"], v["grp"], v["photographer_uid"], v["photographer"])
            for k, v in rows(conn).items()}
     assert got == {
@@ -71,7 +72,32 @@ def test_race_scan_reads_each_album_catalog(tmp_path):
         "albums/xxpie-abc/photos/late.jpg": ("late", "xxpie-abc", "xxpie-abc", "A组", "xxpie:s77", "xx-cam"),
         "albums/xxpie-abc/photos/bad.jpg": ("bad", "xxpie-abc", "xxpie-abc", None, None, None),
     }
-    assert scan(conn, r) == {"new": 0, "existing": 6, "errors": 0}
+    assert scan(conn, r) == {"new": 0, "existing": 6, "errors": 0, "skipped": 2}
+
+
+def test_stray_race_images_counted_and_warned_once_per_scan(tmp_path, caplog):
+    r = make_race()
+    conn = db.connect(r)
+    for _ in range(2):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="index"):
+            assert scan(conn, r)["skipped"] == 2
+        stray = [m for m in (x.getMessage() for x in caplog.records) if "skipping" in m]
+        assert stray == ["skipping 2 images not under albums/<album>/ in a race directory, e.g. albums/loose.jpg"]
+    assert not {"stray.jpg", "albums/loose.jpg"} & set(rows(conn))
+
+
+def test_symlinked_album_dir_warns_and_is_not_scanned(tmp_path, caplog):
+    r = make_race()
+    real = tmp_path / "elsewhere" / "yipai-1003"
+    jpeg(real / "photos" / "5.jpg")
+    (r / "albums" / "yipai-1003").symlink_to(real, target_is_directory=True)
+    conn = db.connect(r)
+    with caplog.at_level(logging.WARNING, logger="index"):
+        assert scan(conn, r)["new"] == 6
+    assert [x.getMessage() for x in caplog.records if "symlink" in x.getMessage()] == [
+        "album yipai-1003 is a symlinked directory and will not be scanned; "
+        "use a real directory (file symlinks inside it are fine)"]
 
 
 def test_catalog_time_fills_missing_exif_and_time_filter_matches(tmp_path):

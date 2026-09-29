@@ -66,7 +66,7 @@ def test_scan_indexes_images_with_exif_manifest_and_errors(tmp_path):
     counts = scan(conn, c)
     got = rows(conn)
 
-    assert counts == {"new": 5, "existing": 0, "errors": 1}
+    assert counts == {"new": 5, "existing": 0, "errors": 1, "skipped": 0}
     assert set(got) == {"photos/101.jpg", "photos/102.jpg", "photos/103.jpg", "photos/105.jpg", "sub/shot.PNG"}
 
     exif = got["photos/101.jpg"]
@@ -100,7 +100,7 @@ def test_rerun_adds_nothing_and_leaves_rows_untouched(tmp_path):
 
     counts = scan(conn, c)
     got = rows(conn)
-    assert counts == {"new": 1, "existing": 5, "errors": 0}
+    assert counts == {"new": 1, "existing": 5, "errors": 0, "skipped": 0}
     assert len(got) == 6
     assert {r["camera"] for p, r in got.items() if p != "photos/106.jpg"} == {"kept"}
 

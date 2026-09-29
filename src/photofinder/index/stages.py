@@ -98,10 +98,19 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
     is_race = (collection / ALBUMS).is_dir()
     if is_race:
         albums = load_albums(collection, files)
+        for entry in sorted((collection / ALBUMS).iterdir()):
+            if entry.is_symlink() and entry.is_dir():
+                log.warning("album %s is a symlinked directory and will not be scanned; "
+                            "use a real directory (file symlinks inside it are fine)", entry.name)
+        stray = [f for f in files if album_of(f) is None]
+        if stray:
+            log.warning("skipping %d images not under %s/<album>/ in a race directory, e.g. %s",
+                        len(stray), ALBUMS, stray[0])
     else:
         catalog = load_catalog(collection)
+        stray = []
     existing = {r for (r,) in db.execute("select relpath from photos")}
-    counts = {"new": 0, "existing": 0, "errors": 0}
+    counts = {"new": 0, "existing": 0, "errors": 0, "skipped": len(stray)}
     for relpath in files:
         if relpath in existing:
             counts["existing"] += 1
@@ -111,7 +120,6 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
         if is_race:
             key = album_of(relpath)
             if key is None:
-                log.warning("skipping %s: not under %s/<album>/ in a race directory", relpath, ALBUMS)
                 continue
             title, platform, catalog = albums[key]
         uid, photographer, grp, listed_at = catalog.get(stem, (None, None, None, None))
@@ -140,7 +148,8 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
         if counts["new"] % COMMIT_EVERY == 0:
             db.commit()
     db.commit()
-    log.info("scan: %d new (%d errors), %d already indexed", counts["new"], counts["errors"], counts["existing"])
+    log.info("scan: %d new (%d errors), %d already indexed, %d skipped", counts["new"], counts["errors"],
+             counts["existing"], counts["skipped"])
     return counts
 
 

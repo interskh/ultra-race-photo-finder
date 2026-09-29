@@ -240,12 +240,13 @@ def resolve_collection(arg: Path) -> Path:
     if arg.is_dir():
         return arg
     slug = str(arg)
-    if races.SLUG.fullmatch(slug) and races.load().race(slug):
+    reg = races.load()
+    if races.SLUG.fullmatch(slug) and reg.race(slug):
         d = races.race_dir(slug)
         if not d.is_dir():
             sys.exit(f"race {slug} has no directory {d} yet; add and download its albums first")
         return d
-    known = ", ".join(r.slug for r in races.load().races) or "none registered"
+    known = ", ".join(r.slug for r in reg.races) or "none registered"
     sys.exit(f"{arg} is neither a directory nor a registered race (races: {known})")
 
 

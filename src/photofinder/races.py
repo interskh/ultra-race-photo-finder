@@ -41,6 +41,12 @@ class Registry:
     def race(self, slug: str) -> Race | None:
         return next((r for r in self.races if r.slug == slug), None)
 
+    def require(self, slug: str) -> Race:
+        found = self.race(slug)
+        if found is None:
+            raise RaceError(f"no race {slug!r} registered; add it with `photofinder race add {slug} \"<name>\"`")
+        return found
+
     def owner(self, key: str) -> Race | None:
         return next((r for r in self.races if any(a.key == key for a in r.albums)), None)
 
@@ -78,10 +84,7 @@ def save(reg: Registry):
 
 
 def race(slug: str) -> Race:
-    found = load().race(slug)
-    if found is None:
-        raise RaceError(f"no race {slug!r} registered; add it with `photofinder race add {slug} \"<name>\"`")
-    return found
+    return load().require(slug)
 
 
 def add_race(slug: str, name: str) -> Race:
@@ -127,9 +130,7 @@ def parse_url(url: str) -> tuple[str, str]:
 def add_album(slug: str, url: str, title: str | None = None) -> Album:
     platform, site_id = parse_url(url)
     reg = load()
-    target = reg.race(slug)
-    if target is None:
-        raise RaceError(f"no race {slug!r} registered; add it with `photofinder race add {slug} \"<name>\"`")
+    target = reg.require(slug)
     album = Album(f"{platform}-{site_id}", platform, site_id, url.strip(), title)
     if owner := reg.owner(album.key):
         raise RaceError(f"album {album.key} already belongs to race {owner.slug}")

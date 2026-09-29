@@ -139,3 +139,24 @@ implement-loop: slice 1 shipped 5939e35; remaining: [2, 3, 4, 5, 6, 7]
 **Touches**
 - `src/photofinder/sources/yipai.py` (`CATALOG_SELECT`, `SCHEMA` view — shared manifest contract §4.2), `index/stages.py` (`load_catalog` replaces `load_manifest`, `ALBUMS`, `album_of`, `load_albums`, `shot_time`, `catalog_time`, scan), `search.py` (photographer filter), `originals.py` (`is_yipai`, `manifest_of`, `rows_of`), `web/app.py` (`photo_meta` adds `album_key` — public key in search/me/photo responses).
 - Tests: new `tests/test_race_scan.py`; `test_scan.py` (legacy-no-view, catalog-table), `test_search.py` (bare uid).
+
+## Slice 2 · Whole-run gate fix
+
+**Decisions**
+- Stray race images (race root, `albums/x.jpg`): counted up front as `counts["skipped"]` (key present for every collection, 0 outside races) and logged once per scan with the count and the first path; the per-file warning is gone. Still never inserted.
+- Symlinked `albums/<key>` dirs: one warning per entry at scan time ("will not be scanned; use a real directory"); walk semantics unchanged (`os.walk`, no followlinks).
+- `Registry.require(slug)` holds the single "no race … registered" lookup+error; `races.race` and `add_album` use it. `resolve_collection` loads the registry once.
+
+**Rejected**
+- Following dir symlinks in `find_images`: spec rejected dir symlinks (cycles, double-indexing a shared album).
+- Tracking already-warned strays in the DB to warn only once ever: needs state; one summary line per run is enough.
+- Codex MINOR on leading-zero stems (`0101.jpg` vs photo_id 101): the yipai downloader names files `f"{pid}.jpg"` from the integer photo_id (`sources/yipai.py:193`), so no yipai manifest produces such a stem.
+
+**Deferred**
+- A race mixing yipai and non-yipai albums makes `is_yipai` true for the whole race, so an originals job accepts non-yipai marked photos and records failures (empty fname) instead of "open on site". Impossible until Slice 4 adds non-yipai albums; Slice 7 owns that status.
+- Album title is copied into `photos.album` at scan time, so a registry retitle leaves old rows stale (spec §7 metadata-refresh deferral); two albums with the same title merge in the Album facet (spec keys the filter on title).
+- `album_key` is an additive field in photo API responses, not listed in spec §4.5.
+- Project CLAUDE.md test count is stale; the orchestrator/Slice 3 docs task updates it.
+
+**Touches**
+- `src/photofinder/index/stages.py` (scan: `skipped` count — new key in scan's return dict and log line; symlink warning), `races.py` (`Registry.require`), `cli.py` (`resolve_collection`), `tests/test_race_scan.py`, `tests/test_scan.py` (count dicts gain `skipped`).
