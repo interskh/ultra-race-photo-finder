@@ -514,3 +514,23 @@ implement-loop: slice 4 shipped 2f43047; remaining: [5, 6, 7]
 - `src/photofinder/sources/photoplus.py` (`group_of`, `warned`, `rows()` signature, stop rule).
 - `tests/test_photoplus.py`: FakePP `upload_on_expiry`. Updated shape assertions. New tests: shift, over-total.
 - `tests/test_xxpie.py`: FakeXx `listings`/`expire_first_listing`/`image_status`, 2 new tests.
+
+**Gate result (orchestrator)**: whole-run reviewer APPROVE (2 MINOR: early-stop trust, missing xxpie 403/breaker tests), Codex 2 MAJOR (403 + page shift strands a photo; early stop on an inconsistent total) + 1 MINOR (skipped rows subtracted from the total; rejected, Slice 4 decision). All but the rejected one fixed in 82add46; reviewer blocker-only recheck APPROVE. Full suite 502 passed, 1 skipped. Residual (accepted): a coincidental seen == pics_total with photos only on later `/pic/list` pages still stops early.
+
+## Slice 5 · Real proof — Chongli and 四姑娘山 on the live data root (orchestrator)
+
+Live root `/Volumes/Ext1TB/Projects/photo-finder/data` (user-authorized), real CLI from the worktree with `PHOTOFINDER_DATA_ROOT` set; spec A6 pacing. The live `index 2026-gongga100` (715 pailixiang photos) finished at 11:39:34 before any Chongli index work.
+- `race add 2026-chongli168 "2026 Chongli 168"`, `race add 2026-siguniang "2026 四姑娘山 - 云间花径"`. `album add` fetched every title live: `xxpie-65178998a458227944415097` 八千个瞬间@2026崇礼168 (URL form `/m/album?id=…`), `photoplus-39352660` ACG 2026崇礼168超级越野赛 新闻图, `photoplus-89243825` ACG崇礼168超级越野赛, `photoplus-84984877` …总决赛——精选照, `photoplus-30326728` …总决赛——照片/冲线/个人视频.
+- xxpie (6c38ae0 code): 62 pages, 3,670/3,670 done in 78 min, no warnings, no `xxpie code` renewals, 2560×3838 previews without EXIF.
+- photoplus 89243825 (1b5fbc4 code, the small-album check): 16 pages, 2,156/2,156 in 49 min; 8 sub-albums cover every photo (Σ = total), and the list phase stopped after `/pic/list` p1 (exact match). No warnings.
+- photoplus 39352660 (82add46 code): 87 pages, 6,113 done in 95 min; 3,579 grouped, 2,534 via `/pic/list` (group null); finished `{'done': 6113, 'missing': 2}`. The run and the rerun both listed 6,113 of the reported 6,115, so the gap is on the site's side (pics_total counts 2 photos no listing returns) and does not come from uploads during the run. `download` exits 1 for it, by design.
+- Rerun of the whole race (`photofinder download 2026-chongli168`, 14:24–14:42): every page `fetched 0`. xxpie {'done': 3670}, 39352660 {'done': 6113, 'missing': 2}, 89243825 {'done': 2156}.
+- `index 2026-chongli168` started 14:42 detached (`nohup caffeinate`, log `data/races/2026-chongli168/index.log`). Scan: 11,939 new, 0 errors, 0 skipped. Every photo has `taken_at` and `taken_ts` from the catalog (previews carry no EXIF): xxpie 3,670 (07-08 18:05 → 07-15 01:47, converted from UTC), 39352660 6,113, 89243825 2,156. `album` = the three titles, uids `photoplus:` 8,269 / `xxpie:` 3,670, `grp` set on 5,735 photoplus photos. Detect/embed were still running when the slice ended; the memory guard was at `level=warn batch=1`.
+- 四姑娘山: `scripts/download.sh 2026-siguniang` started 14:42 detached, after the Chongli rerun, so photoplus never had two downloads at once. 84984877 (8,117) first, then 30326728 (≈92.9k, ≈1 day at the measured ~1 photo/s). Top-up: rerun the same command. Not indexed in this slice.
+
+**Operational follow-ups (user)**
+- When `index 2026-chongli168` ends (`index finished` in its log), Chongli is searchable via `photofinder serve 2026-chongli168`.
+- After 四姑娘山 finishes (`data/races/2026-siguniang/download-console.log`), run `photofinder index 2026-siguniang`. It is one heavy job and must not overlap another index.
+- CLAUDE.md test count: 502 passed + 1 opt-in.
+
+implement-loop: slice 5 shipped 82add46; remaining: [6, 7]
