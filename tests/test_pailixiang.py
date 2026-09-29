@@ -44,6 +44,7 @@ class FakePlx:
         self.lists = 0
         self.code = 0
         self.view_status = 200
+        self.total_for = lambda listing: len(self.photos)
         self._lock = threading.Lock()
 
     def __call__(self, req):
@@ -62,7 +63,7 @@ class FakePlx:
             return httpx.Response(200, json={"Code": self.code, "Msg": "illegal request", "Data": None})
         start = body["StartIndex"]
         return httpx.Response(200, json={"Code": 0, "Msg": "", "Data": self.photos[start - 1:start - 1 + body["SearchCount"]],
-                                         "TotalCount": len(self.photos), "OptTime": f"2026-09-29 08:14:{self.lists:02d}"})
+                                         "TotalCount": self.total_for(self.lists), "OptTime": f"2026-09-29 08:14:{self.lists:02d}"})
 
     def lists_sent(self):
         return [b for a, b in self.calls if a == "AlbumSearchPhoto"]
@@ -124,6 +125,24 @@ def test_pages_step_by_80_and_echo_the_first_opt_time():
     assert [b["OptTime"] for b in sent] == ["", "2026-09-29 08:14:01", "2026-09-29 08:14:01", "2026-09-29 08:14:01"]
     assert all(b["AlbumID"] == ALBUM_ID and b["SearchCount"] == 80 and b["pid"] == "albumview" for b in sent)
     assert len({b["ak"] for b in sent} | {site.calls[0][1]["ak"]}) > 1
+
+
+def test_first_positive_total_count_is_kept():
+    site = FakePlx(synthetic(170))
+    site.total_for = lambda listing: {1: 0, 2: 200}.get(listing, 0)
+    a = adapter(site)
+    a.meta()
+    assert [a.list_page(c)[2] for c in (None, 81, 161)] == [None, 200, 200]
+
+
+def test_later_zero_total_count_still_reports_missing(tmp_path):
+    site = FakePlx(synthetic(170))
+    site.total_for = lambda listing: 200 if listing == 1 else 0
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None)
+    try:
+        assert d.run() == {"done": 170, "missing": 30}
+    finally:
+        d.close()
 
 
 def test_full_last_page_needs_one_more_empty_page():

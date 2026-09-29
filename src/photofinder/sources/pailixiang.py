@@ -57,6 +57,7 @@ class Adapter:
         self.sleep = sleep
         self.album_id = None
         self.opt_time = None
+        self.total = None
 
     def post(self, action: str, body: dict) -> dict:
         return fetch_json(self.client, "POST", f"{API}/WapAbm/{action}", check=ok, tries=self.tries,
@@ -85,7 +86,10 @@ class Adapter:
                 rows.append(to_row(p))
             else:
                 log.warning("skipping pailixiang photo with unusable ID %r", p.get("ID"))
-        return rows, (start + PAGE if len(data) >= PAGE else None), body.get("TotalCount")
+        count = body.get("TotalCount")
+        if self.total is None and isinstance(count, int) and count > 0:
+            self.total = count
+        return rows, (start + PAGE if len(data) >= PAGE else None), self.total
 
     def preview_url(self, row: CatalogRow) -> str:
         return row.url

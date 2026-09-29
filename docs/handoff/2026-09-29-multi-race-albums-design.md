@@ -370,3 +370,10 @@ implement-loop: slice 3 shipped 7f97594; remaining: [4, 5, 6, 7]
 **Touches**
 - New `src/photofinder/sources/pailixiang.py`, `tests/test_pailixiang.py`, `tests/fixtures/pailixiang_{list,view}.json`.
 - `src/photofinder/sources/common.py` (`fetch_json(fresh=)` — shared helper), `races.py` (`check_album` — registry API), `cli.py` (`album add` subcommand, `ADAPTERS`, `album_client`/`album_adapter`/`album_downloader` seams, `download_yipai` → `download_album`, routing), `tests/test_download.py` (skip test now uses xxpie; pailixiang CLI download, pacing, headers, blocked tests), README.md, docs/ROADMAP.md.
+
+**Task 2 fix — TotalCount 0 on later pages**
+- Found in the live run: after page 1, AlbumSearchPhoto answers `TotalCount 0` when OptTime is echoed (`done 160/0`). Because base lets any non-None page total override, the listed-vs-total check compared against 0 and could never report a shortfall.
+- Fix is in the adapter only. `Adapter.total` keeps the first positive integer `TotalCount` seen, and `list_page` returns it every time (None until one is seen). A later 0 or missing value never replaces it.
+- base.py is unchanged. The quirk is pailixiang's. A generic "ignore 0" rule in base would hide a real empty album on another platform. Slice 5 adapters should each check how their totals behave on later pages.
+- Tests: `test_first_positive_total_count_is_kept` (0, then 200, then 0 → None, 200, 200) and `test_later_zero_total_count_still_reports_missing` (AlbumDownloader over 170 listed photos, 200 on page 1 and 0 afterwards → `{"done": 170, "missing": 30}`). Both fail on f6ad978's adapter (checked by swapping the file in from `git show`, then restoring and checking sha256).
+- Touches: `src/photofinder/sources/pailixiang.py`, `tests/test_pailixiang.py` (FakePlx `total_for` hook).
