@@ -72,3 +72,5 @@
 
 **Touches**
 - `src/photofinder/web/app.py` (photo_meta keys — public API for search/me/photo), `src/photofinder/originals.py` (write_csv), `tests/test_web.py`, README.md, docs/ROADMAP.md.
+
+implement-loop: slice 1 shipped 5939e35; remaining: [2, 3, 4, 5, 6, 7]
