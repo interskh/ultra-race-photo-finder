@@ -8,12 +8,17 @@ import pytest
 
 from photofinder import cli, config, races
 from photofinder.sources import yipai
+from photofinder.sources.base import AlbumDownloader
+from test_pailixiang import LISTING, FakePlx
+from test_pailixiang import client_for as plx_client
 from test_yipai import ORDER, FakeSite
 
 REPO = Path(__file__).resolve().parents[1]
 YIPAI_URL = f"https://www.yipai360.com/photolivepc/?orderId={ORDER}"
 OTHER_URL = "https://www.yipai360.com/photolivepc/?orderId=ORD2"
 PLX_URL = "https://live.pailixiang.com/album/a13800138000"
+XX_ID = "65178998a458227944415097"
+XX_URL = f"https://www.xxpie.com/m/album?album_id={XX_ID}"
 
 
 @pytest.fixture(autouse=True)
@@ -102,11 +107,66 @@ def test_unknown_album_key_lists_the_keys(data_root, site):
     assert not (data_root / "races").exists()
 
 
-def test_non_yipai_album_is_skipped(site, capsys):
-    race(PLX_URL, YIPAI_URL)
+def test_unsupported_platform_album_is_skipped(site, capsys):
+    race(XX_URL, YIPAI_URL)
     cli.main(["download", "2026-x"])
-    assert "skipping pailixiang-a13800138000: pailixiang downloads are not supported yet" in capsys.readouterr().out
+    assert f"skipping xxpie-{XX_ID}: xxpie downloads are not supported yet" in capsys.readouterr().out
     assert site.made == [ORDER]
+
+
+@pytest.fixture
+def plx(monkeypatch):
+    plx = FakePlx()
+    made = []
+
+    def downloader(client, adapter, out_dir, **kw):
+        made.append(out_dir.name)
+        return AlbumDownloader(client, adapter, out_dir, sleep=lambda s: None, **kw)
+    monkeypatch.setattr(cli, "album_client", lambda platform: plx_client(plx))
+    monkeypatch.setattr(cli, "album_downloader", downloader)
+    plx.made = made
+    return plx
+
+
+def test_downloads_pailixiang_album_into_the_race(data_root, plx, site, caplog):
+    caplog.set_level(logging.INFO)
+    race(PLX_URL, YIPAI_URL)
+    for _ in range(2):
+        cli.main(["download", "2026-x"])
+    album = data_root / "races" / "2026-x" / "albums" / "pailixiang-a13800138000"
+    assert sorted(p.name for p in (album / "photos").iterdir()) == sorted(f"{p['ID']}.jpg" for p in LISTING["Data"])
+    assert sum(plx.images.values()) == 3
+    assert plx.made == ["pailixiang-a13800138000"] * 2 and site.made == [ORDER] * 2
+    assert "pailixiang-a13800138000 finished" in (album / "download.log").read_text()
+    assert not album_handlers()
+
+
+def test_album_pacing_is_the_new_platform_default(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli, "AlbumDownloader", lambda client, adapter, out_dir, **kw: seen.update(kw))
+    cli.album_downloader(None, None, Path("unused"))
+    assert seen == {"concurrency": 4, "page_delay": 3.0, "img_delay": (0.2, 0.6), "tries": 5,
+                    "max_consecutive_failures": 20}
+
+
+def test_pailixiang_client_sends_the_site_headers():
+    with cli.album_client("pailixiang") as client:
+        assert client.headers["referer"] == "https://live.pailixiang.com/"
+        assert client.headers["origin"] == "https://live.pailixiang.com"
+        assert client.headers["content-type"] == "application/json;charset=UTF-8"
+
+
+def test_blocked_pailixiang_album_stops_the_whole_run(data_root, plx, site, monkeypatch):
+    race(PLX_URL, YIPAI_URL)
+    monkeypatch.setattr(cli, "album_downloader", lambda client, adapter, out_dir: AlbumDownloader(
+        client, adapter, out_dir, tries=1, max_consecutive_failures=1, sleep=lambda s: None))
+    monkeypatch.setattr(cli, "album_client", lambda platform: httpx.Client(transport=httpx.MockTransport(
+        lambda req: httpx.Response(401) if req.url.host == "img.pailixiang.com" else plx(req))))
+    assert fail("download", "2026-x") == 2
+    assert site.made == []
+    log = (data_root / "races" / "2026-x" / "albums" / "pailixiang-a13800138000" / "download.log").read_text()
+    assert "rerun later to resume" in log
+    assert not album_handlers()
 
 
 def test_incomplete_album_exits_nonzero_after_the_rest(site):

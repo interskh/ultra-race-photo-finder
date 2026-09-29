@@ -12,9 +12,12 @@ import httpx
 from photofinder import config, db, evaluate, models, race_import, races, search
 from photofinder.index import stages
 from photofinder.memory import FootprintExceeded
-from photofinder.sources import yipai
+from photofinder.sources import pailixiang, yipai
+from photofinder.sources.base import AlbumDownloader
+from photofinder.sources.common import AlreadyRunning, Blocked
 
 log = logging.getLogger("photofinder")
+ADAPTERS = {"pailixiang": pailixiang}
 LOCK_NAME = "index.lock"
 SERVE_LOCK_NAME = "serve.lock"
 COLLECTION_HELP = "race slug (registered in data/races.json) or collection directory"
@@ -247,6 +250,28 @@ def cmd_race_import(args):
         sys.exit(str(e))
 
 
+def cmd_album_add(args):
+    try:
+        album = races.check_album(races.load(), args.race, args.url, args.title)
+    except races.RaceError as e:
+        sys.exit(str(e))
+    title = args.title
+    if title is None and album.platform in ADAPTERS:
+        try:
+            with album_client(album.platform) as client:
+                title = album_adapter(album.platform, client, album.site_id).meta()["title"]
+        except (Blocked, KeyError, TypeError) as e:
+            sys.exit(f"could not fetch the album title from {album.platform} ({e}); "
+                     f"rerun with --title \"<title>\"")
+    try:
+        album = races.add_album(args.race, args.url, title)
+    except races.RaceError as e:
+        sys.exit(str(e))
+    print(f"registered {album.key} ({album.title or 'no title; the Album filter shows the key'}) "
+          f"in race {args.race}")
+    print(f"next: scripts/download.sh {args.race}, then uv run photofinder index {args.race}")
+
+
 def select_albums(slug: str, key: str | None = None) -> list[races.Album]:
     reg = races.load()
     race = reg.race(slug)
@@ -272,19 +297,34 @@ def yipai_downloader(client, order_id: str, out_dir: Path):
     return yipai.Downloader(client, order_id, out_dir, concurrency=6, page_delay=3.0)
 
 
-def download_yipai(album: races.Album, out_dir: Path) -> dict[str, int]:
+def album_client(platform: str):
+    return httpx.Client(headers=ADAPTERS[platform].HEADERS, timeout=60, follow_redirects=True)
+
+
+def album_adapter(platform: str, client, site_id: str):
+    return ADAPTERS[platform].Adapter(client, site_id)
+
+
+def album_downloader(client, adapter, out_dir: Path):
+    return AlbumDownloader(client, adapter, out_dir, concurrency=4, page_delay=3.0, img_delay=(0.2, 0.6), tries=5,
+                           max_consecutive_failures=20)
+
+
+def download_album(album: races.Album, out_dir: Path) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(out_dir / "download.log")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logging.getLogger().addHandler(handler)
     try:
-        with yipai_client() as client:
-            dl = yipai_downloader(client, album.site_id, out_dir)
+        yip = album.platform == "yipai"
+        with yipai_client() if yip else album_client(album.platform) as client:
+            dl = (yipai_downloader(client, album.site_id, out_dir) if yip else
+                  album_downloader(client, album_adapter(album.platform, client, album.site_id), out_dir))
             try:
                 counts = dl.run()
-            except yipai.AlreadyRunning as e:
+            except AlreadyRunning as e:
                 sys.exit(str(e))
-            except yipai.Blocked as e:
+            except Blocked as e:
                 log.error("%s stopped: %s (rerun later to resume)", album.key, e)
                 sys.exit(2)
             finally:
@@ -300,10 +340,10 @@ def cmd_download(args):
     logging.getLogger("httpx").setLevel(logging.WARNING)
     unfinished = []
     for album in select_albums(args.race, args.album_key):
-        if album.platform != "yipai":
+        if album.platform != "yipai" and album.platform not in ADAPTERS:
             print(f"skipping {album.key}: {album.platform} downloads are not supported yet", flush=True)
             continue
-        if set(download_yipai(album, races.album_dir(args.race, album.key))) - {"done"}:
+        if set(download_album(album, races.album_dir(args.race, album.key))) - {"done"}:
             unfinished.append(album.key)
     if unfinished:
         sys.exit(f"not every photo downloaded in {', '.join(unfinished)}; rerun later to resume")
@@ -375,6 +415,13 @@ def main(argv=None):
     p.add_argument("--url", required=True, help="the yipai gallery URL (its orderId must match the directory)")
     p.add_argument("--title", help="album title shown in the Album filter (default: the race name)")
     p.set_defaults(func=cmd_race_import)
+    p = sub.add_parser("album", help="manage a race's albums (data/races.json)")
+    asub = p.add_subparsers(dest="album_command", required=True)
+    p = asub.add_parser("add", help="add a gallery album to a race (yipai360, pailixiang, xxpie, photoplus URL)")
+    p.add_argument("race", help="registered race slug")
+    p.add_argument("url", help="album URL, e.g. https://live.pailixiang.com/album/a13800138000")
+    p.add_argument("--title", help="album title shown in the Album filter (default: fetched from the site)")
+    p.set_defaults(func=cmd_album_add)
     args = ap.parse_args(argv)
 
     config.require_mounted()

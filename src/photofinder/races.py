@@ -127,13 +127,18 @@ def parse_url(url: str) -> tuple[str, str]:
     return platform, site_id
 
 
-def add_album(slug: str, url: str, title: str | None = None) -> Album:
+def check_album(reg: Registry, slug: str, url: str, title: str | None = None) -> Album:
     platform, site_id = parse_url(url)
-    reg = load()
-    target = reg.require(slug)
+    reg.require(slug)
     album = Album(f"{platform}-{site_id}", platform, site_id, url.strip(), title)
     if owner := reg.owner(album.key):
         raise RaceError(f"album {album.key} already belongs to race {owner.slug}")
-    target.albums.append(album)
+    return album
+
+
+def add_album(slug: str, url: str, title: str | None = None) -> Album:
+    reg = load()
+    album = check_album(reg, slug, url, title)
+    reg.require(slug).albums.append(album)
     save(reg)
     return album

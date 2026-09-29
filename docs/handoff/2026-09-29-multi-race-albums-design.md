@@ -335,3 +335,38 @@ implement-loop: slice 3 shipped 7f97594; remaining: [4, 5, 6, 7]
 - If `next_cursor == cursor`, the loop logs a warning ("adapter returned the same cursor … ending the listing") and ends the listing. It does not raise Blocked because this is an adapter bug, not the site refusing us, and Blocked's "rerun later" would just repeat it. The run still returns counts, and `missing` shows the gap when the total is known.
 - Tests: whole page of 30 expired URLs → all done, no Blocked; 403 on both listings → Blocked after the re-list (20 failed, 10 pending); an adapter that repeats its cursor → 2 listings, then a warning. All three failed on the pre-fix code. Mutants 8/8 caught (the original 5 plus: first-listing 403 counts; re-listed 403 not counted; no cursor guard).
 - Parked: the schema is created in `__init__`, before `acquire_lock`. If two processes start within the sqlite timeout, the second can get "database is locked" instead of AlreadyRunning. Deferred, same as yipai. `fetch_json` stays because task 2's pailixiang adapter uses it.
+
+## Slice 4 · Task 2 — pailixiang adapter, album add, download routing
+
+**Decisions**
+- SPEC/TASK DEVIATION: `meta()["total"]` is always None. `Data.PhotoSearchCount` in the real AlbumGetView is 80, the page size (beside VideoSearchCount 20 and CommentSearchCount 100), not the album total. The total comes from each listing's `TotalCount` (715 live).
+- `common.fetch_json` gained `fresh=dict`: a callable whose kwargs are rebuilt on every attempt. The adapter passes `json=` through it, so each retry (Code≠0 included) sends a new `ak`. Existing callers are unchanged.
+- Cursor = StartIndex int (None → 1); next = start+80 while `len(Data) >= 80`, else None. `opt_time` is stored on the adapter from the first listing response, so later pages and a re-list of page 1 both echo it.
+- `Code != 0` raises ValueError inside `check`, so it is retried like bad JSON and ends in RetriesExhausted. Rows whose `ID` isn't `[A-Za-z0-9_-]+` are skipped with a warning (the ID becomes a file name).
+- `meta_items()` key is `album_id`, the same as task 1's FakeAdapter.
+- `races.check_album(reg, slug, url, title)` does the validation with no save; `add_album` now calls it. `album add` runs it before any client exists, fetches the title, then calls `add_album` (which re-validates).
+- Title fetch failure: catches `Blocked` (RetriesExhausted included) plus KeyError/TypeError for a malformed body → exit suggesting `--title`. Nothing is registered. An empty fetched title is stored as null.
+- CLI seams: `ADAPTERS = {"pailixiang": module}` (module provides `HEADERS`, `Adapter`); `album_client(platform)` (headers, timeout 60, redirects); `album_adapter(platform, client, site_id)`; `album_downloader(client, adapter, out_dir)` passes the A6 values explicitly (pinned by a test). `download_yipai` became `download_album`, one log/close/exit wrapper for both kinds.
+- Blocked on any album stops the whole run (exit 2), even albums on another host. A breaker trip means the pacing assumptions are already wrong. Continuing elsewhere with the same settings is the same gamble, and the user reruns anyway. Tested with pailixiang blocked and the yipai album never started.
+- Fixtures copied verbatim to `tests/fixtures/pailixiang_{list,view}.json`. Multi-page tests clone the first real row with synthetic IDs.
+
+**Rejected**
+- A retry loop inside the adapter (fetch_json with tries=1): it would duplicate the backoff/Retry-After/Blocked logic.
+- Validating in the CLI by copying the parse/require/owner code: this would give two copies of the duplicate-key rule.
+- Using PhotoSearchCount as the total: it is wrong (see above), and it is only harmless because TotalCount overrides it.
+- Continuing to other-host albums after Blocked: see Decisions.
+
+**Assumptions**
+- Reusing an OptTime across pages is fine for a re-list after a 403. The probe only showed page 2 and the 641 page with the first OptTime. Check on the real download's re-list log line, if one ever occurs.
+- `ShootTime` is camera-local Beijing time (spec A4/§Facts), so it is stored as-is.
+- Previews carry no EXIF (spec), so `taken_at` always comes from the catalog. The scan test uses an EXIF-less JPEG.
+- `album add` title fetch on a connection error retries 5× with backoff (~30 s worst case) before the `--title` hint; a 403 exits at once.
+
+**Deferred**
+- Real pailixiang download/index (715 photos): the orchestrator runs it. No live request was made here.
+- `site_link` for pailixiang: Slice 7.
+- CLAUDE.md test count (now 420 passed + 1 skipped): not edited by the doer.
+
+**Touches**
+- New `src/photofinder/sources/pailixiang.py`, `tests/test_pailixiang.py`, `tests/fixtures/pailixiang_{list,view}.json`.
+- `src/photofinder/sources/common.py` (`fetch_json(fresh=)` — shared helper), `races.py` (`check_album` — registry API), `cli.py` (`album add` subcommand, `ADAPTERS`, `album_client`/`album_adapter`/`album_downloader` seams, `download_yipai` → `download_album`, routing), `tests/test_download.py` (skip test now uses xxpie; pailixiang CLI download, pacing, headers, blocked tests), README.md, docs/ROADMAP.md.

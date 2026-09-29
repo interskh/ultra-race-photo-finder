@@ -50,11 +50,11 @@ def write_atomic(dest: Path, data: bytes):
 
 
 def fetch_json(client: httpx.Client, method: str, url: str, *, check=lambda body: body, tries=5,
-               sleep=time.sleep, **kw):
+               sleep=time.sleep, fresh=dict, **kw):
     for attempt in range(tries):
         wait = backoff_seconds(attempt)
         try:
-            r = client.request(method, url, **kw)
+            r = client.request(method, url, **kw, **fresh())
             if r.status_code == 200:
                 return check(r.json())
             if r.status_code not in RETRYABLE:
