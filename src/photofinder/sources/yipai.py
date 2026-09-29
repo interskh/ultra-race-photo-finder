@@ -288,6 +288,10 @@ def refusal(order_id: str) -> str | None:
     if owner := races.load().owner(f"yipai-{order_id}"):
         return (f"yipai order {order_id} belongs to race {owner.slug}; "
                 f"download it with: scripts/download.sh {owner.slug}")
+    if album := next((config.DATA_ROOT / "races").glob(f"*/albums/yipai-{order_id}"), None):
+        slug = album.parent.parent.name
+        return (f"yipai order {order_id}: an import into race {slug} is in progress or unfinished ({album}); "
+                f"rerun `photofinder race import {slug} …` to finish it")
     return None
 
 

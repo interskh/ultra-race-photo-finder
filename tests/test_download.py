@@ -157,6 +157,32 @@ def test_yipai_refusal_is_none_for_unregistered_order():
     assert yipai.refusal("ORD2") is None
 
 
+def unfinished_import(root):
+    album = root / "races" / "2026-x" / "albums" / f"yipai-{ORDER}"
+    album.mkdir(parents=True)
+    return album
+
+
+def test_yipai_module_refuses_order_of_an_unfinished_import(data_root):
+    unfinished_import(data_root)
+    with pytest.raises(SystemExit) as e:
+        yipai.main([ORDER])
+    assert "import into race 2026-x is in progress or unfinished" in str(e.value.code)
+    assert "photofinder race import 2026-x" in str(e.value.code)
+    assert not (data_root / "yipai").exists()
+    assert yipai.refusal("ORD2") is None
+
+
+def test_download_yipai_script_refuses_order_of_an_unfinished_import(data_root, tmp_path):
+    unfinished_import(data_root)
+    r = subprocess.run(["bash", "scripts/download_yipai.sh", ORDER], cwd=REPO, env=shell_env(data_root, tmp_path),
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 1
+    assert "is in progress or unfinished" in r.stderr
+    assert not (data_root / "yipai").exists()
+    assert not (tmp_path / "caffeinate-ran").exists()
+
+
 def shell_env(root, tmp_path):
     fake = tmp_path / "bin"
     fake.mkdir()

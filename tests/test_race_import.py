@@ -358,6 +358,40 @@ def test_verify_failure_stops_before_registering(root):
     assert len(list((root / "backups").iterdir())) == 1
 
 
+def without_profiles(src):
+    with closing(sqlite3.connect(src / "index.sqlite")) as conn:
+        conn.execute("delete from labels")
+        conn.execute("delete from profiles")
+        conn.commit()
+
+
+def test_index_without_profiles_imports_with_the_default_profile(root):
+    src = make_collection(root)
+    without_profiles(src)
+    assert run(src)["profiles"] == 1
+    s = final_state(root)
+    assert [name for _, name, _ in s["profiles"]] == [db.DEFAULT_PROFILE] and s["labels"] == []
+
+
+@pytest.mark.parametrize("change", ["update profiles set name = 'Pat'",
+                                    "insert into profiles(name, created_at) values ('Pat', 'x')",
+                                    "insert into labels values (1, 1, 'me', 'x')"])
+def test_verify_rejects_other_changes_to_an_index_without_profiles(root, monkeypatch, change):
+    src = make_collection(root)
+    without_profiles(src)
+    real = race_import.rewrite_index
+
+    def also_change(p):
+        real(p)
+        with closing(sqlite3.connect(p.race / "index.sqlite")) as conn:
+            conn.execute(change)
+            conn.commit()
+    monkeypatch.setattr(race_import, "rewrite_index", also_change)
+    with pytest.raises(race_import.ImportRefused, match="differ from the backup"):
+        run(src)
+    assert not (root / "races.json").exists()
+
+
 def test_verify_detects_changed_labels(root, monkeypatch):
     src = make_collection(root)
     real = race_import.rewrite_index
@@ -399,6 +433,7 @@ def test_sigkilled_import_completes_on_rerun(root, reference):
     argv = [sys.executable, "-m", "photofinder.cli", "race", "import", SLUG, "2026 X", str(src), "--url", URL]
     killed = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
     assert killed.returncode == -signal.SIGKILL, killed.stderr
+    assert f"{race_import.KILL_AFTER}=rewrite_index is set (test hook)" in killed.stderr
     assert "done: rewrite_index" in killed.stdout and "done: move_exports" not in killed.stdout
     assert not src.exists() and (root / "exports" / ORDER).is_dir() and not (root / "races.json").exists()
     del env[race_import.KILL_AFTER]

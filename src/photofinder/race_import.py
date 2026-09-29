@@ -2,6 +2,7 @@ import fcntl
 import os
 import signal
 import sqlite3
+import sys
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -237,11 +238,18 @@ def repoint_links(p: Plan) -> int:
     return n
 
 
+def default_only(snap: dict) -> bool:
+    return ([name for _, name, _ in snap["profiles"]] == [db.DEFAULT_PROFILE]
+            and not any(pid == snap["profiles"][0][0] for pid, *_ in snap["labels"]))
+
+
 def verify(p: Plan, before: dict) -> dict:
     with closing(db.connect(p.race)) as conn:
         after = snapshot(conn)
         relpaths = [r for (r,) in conn.execute("select relpath from photos")]
         persons = conn.execute("select count(*) from persons").fetchone()[0]
+    if not before["profiles"] and default_only(after):
+        before = {**before, "profiles": after["profiles"]}
     problems = [f"{k} differ from the backup ({len(before[k])} before, {len(after[k])} after)"
                 for k in ("profiles", "labels") if after[k] != before[k]]
     missing = [r for r in relpaths if not (p.race / r).is_file()]
@@ -264,6 +272,7 @@ def register(p: Plan):
 def checkpoint(step: str, say):
     say(f"done: {step}")
     if os.environ.get(KILL_AFTER) == step:
+        print(f"{KILL_AFTER}={step} is set (test hook): killing this import after {step}", file=sys.stderr, flush=True)
         os.kill(os.getpid(), signal.SIGKILL)
 
 

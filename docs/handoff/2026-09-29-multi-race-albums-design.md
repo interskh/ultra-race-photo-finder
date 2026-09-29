@@ -271,3 +271,26 @@ implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
 
 **Touches**
 - README.md, CLAUDE.md (project), docs/ROADMAP.md (merge with master 72e538c: both set "Last updated 2026-09-29"; no other overlapping lines).
+
+## Slice 3 · Whole-run gate fix
+
+**Decisions**
+- `yipai.refusal` also refuses when any `DATA_ROOT/races/*/albums/yipai-<id>` exists (import in progress or unfinished → "rerun `photofinder race import <slug> …`"), so `download_yipai.sh` / `python -m photofinder.sources.yipai` can't recreate `data/yipai/<id>/` and wedge the import as "both exist". Registered owner still wins (its message first).
+- Kill hook prints `PHOTOFINDER_RACE_IMPORT_KILL_AFTER=<step> is set (test hook): killing this import after <step>` to stderr before SIGKILL; the SIGKILL test asserts it.
+- `verify` accepts exactly one profiles difference: backup had no profiles and the race index has only `db.DEFAULT_PROFILE` (inserted by `db.connect`) with no labels on it. Any other profile/label change still refuses (renamed, extra profile, label added — tested).
+- Mutants: default never accepted / always accepted / refusal glob removed / hook notice removed → 4/4 caught.
+
+**Corrections to the Task 3 human-action list** (replace those lines):
+- Step 1 adds: start nothing (no download, index, serve) until the import prints its summary.
+- Step 3: the labels/profiles check is the summary's "(unchanged)" — 69 labels / 3 profiles were the copy's counts, not a hard expectation (the user may have added marks since). The backup is about the index size (~0.8 GB).
+- Step 4 is REQUIRED, not optional: `uv run photofinder index 2026-gongga100` must scan 0 new photos — the only live check that relpaths match the scan (the rehearsal couldn't show it).
+- CLAUDE.md not edited here (doer does not edit CLAUDE.md on agent request). Needed there: test count 376 passed + 1 opt-in, and line 24's `race import` rule could add "start nothing until the summary; then `index <slug>` must scan 0 new".
+
+**Deferred**
+- Registry read-modify-write is unlocked vs a concurrent `race add`: single user by hand (already deferred in Slice 2).
+- `scripts/download.sh` creating a missing race dir: rejected as a fix — new races legitimately have none until their first download.
+- download.sh's console-log path is checkout-relative without `PHOTOFINDER_DATA_ROOT`: documented; scripts run from the main checkout.
+- download and index on the same race share no lock: pre-existing rule (one heavy job at a time, by hand).
+
+**Touches**
+- `src/photofinder/sources/yipai.py` (`refusal`), `src/photofinder/race_import.py` (`default_only`, `verify`, `checkpoint`), `tests/test_download.py`, `tests/test_race_import.py`, README.md, docs/ROADMAP.md.
