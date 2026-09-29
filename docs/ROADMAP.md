@@ -1,6 +1,6 @@
 # Roadmap / status
 
-Last updated 2026-09-28.
+Last updated 2026-09-29.
 
 ## Done
 - yipai360 downloader: paced, resumable, single-instance, Retry-After aware (`src/photofinder/sources/yipai.py`, `scripts/download_yipai.sh`).
@@ -8,14 +8,18 @@ Last updated 2026-09-28.
 - Search: fused clothing similarity (osnet 0.3 / siglip 0.7), person/scene text, filters (time, photographer, album, group, bib), me/not-me labels, CLI `search` and `eval`.
 - Web UI (`photofinder serve`): bib / upload / click-a-person start points, Me/Not me, Find more, full-photo viewer, My photos + export.
 - Saved people + originals (2026-09-28, `docs/superpowers/specs/2026-09-28-people-and-originals-design.md`): per-person marks ("Searching for" switcher, ✓ <name> / ✗ Not <name>), "matched via" thumbnails on Find more, My photos with per-photo original status, background originals download (progress, cancel, resume), zip, CSV, single-photo download in the viewer, M/N/←/→/Esc shortcuts. Real run: 10/10 originals downloaded from a copy of the live index.
+- Races and albums, slices 1–3 of `docs/superpowers/specs/2026-09-29-multi-race-albums-design.md` (branch `implement-loop/2026-09-29-multi-race-albums-design`, not merged yet): Group filter (old yipai tag moves from album to group on first open), race registry `data/races.json` + `race add`, slug-or-path for index/search/eval/serve, multi-album scan (album title, `<platform>:<uid>` photographers), `race import` (one-time legacy move, forward-recoverable; rehearsed on a copy of the live 贡嘎 index), `photofinder download <race>` / `scripts/download.sh <race>` (yipai only), `download_yipai.sh` refuses registered order ids.
 - Measured quality (race925, 36 bibs): photo R@50 .354, cross-photographer R@50 only .153 — clothing search is a candidate generator; the bib → mark → Find more loop does the rest. Details: `docs/handoff/2026-09-27-photo-finder-search-design.md`.
 
 ## In progress (operational)
 - FUGA 贡嘎100 (`data/yipai/83415673067642538672`, 68,488 photos) downloaded 2026-09-28 07:42 and fully indexed 2026-09-28 (190,980 people; scenes done). Bib OCR stopped at 60,096 of 190,980 people by choice — the user doesn't need it (platforms already offer bib search); finish with `photofinder index <collection> --ocr` if ever wanted.
 - 2026-09-28: fixed a Vision OCR leak (new VNRecognizeTextRequest per call → 22 GB footprint, 38 GB swap); OCR is now opt-in.
 - Top-up: rerun `scripts/download_yipai.sh 83415673067642538672` a day or two after the race, then `photofinder index` again (incremental).
+- **Live 贡嘎 migration pending (human step).** After merging the branch, from the main checkout, with the user's confirmation and nothing photofinder running: `uv run photofinder race import 2026-gongga100 "2026 贡嘎100" data/yipai/83415673067642538672 --url "https://www.yipai360.com/photolivepc/?orderId=83415673067642538672" --title "FUGA 贡嘎100"`. Full checklist: handoff `docs/handoff/2026-09-29-multi-race-albums-design.md`, "Slice 3 · Task 3". This is also the first new-code open of that index, so the Album → Group move happens during the import. Afterwards the collection lives in `data/races/2026-gongga100/`, top-up becomes `scripts/download.sh 2026-gongga100` (download_yipai.sh refuses this id) and `photofinder index 2026-gongga100`.
 
 ## Next (ranked)
+Under way first: **races and albums, slices 4–7** (spec above): 4 downloader base + pailixiang album into 贡嘎 (`album add`); 5 xxpie + photoplus (Chongli 168, 四姑娘山); 6 race picker in the UI (one server, lazy per-race load); 7 Open on site.
+
 1. **Cross-photographer recall** — biggest lever. Ideas: tighter crops / drop ghost & prop detections; stronger re-ID (CLIP-ReID, SOLIDER); part-based colour features (top / bottom / shoes / pack); use `eval --bib` across the 36 bibs as the benchmark.
 2. Soft score boost for the user's own bib (reasoning for deferring in handoff S3-T1).
 3. De-duplicate nested YOLO detections (box inside box) at index time.

@@ -233,3 +233,41 @@ implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
 
 **Touches**
 - `src/photofinder/cli.py` (`download` subcommand, `select_albums`, `yipai_client`, `yipai_downloader`, `download_yipai`, `cmd_download`; imports httpx + sources.yipai), `src/photofinder/sources/yipai.py` (`refusal`, `Downloader.close`, `--data-root` default, imports config/races), `scripts/download.sh` (new), `scripts/download_yipai.sh`, `tests/test_download.py` (new).
+
+## Slice 3 · Task 3 — rehearsal on a copy, docs
+
+**Rehearsal** (real CLI `uv run --frozen photofinder race import …` from the worktree, `PHOTOFINDER_DATA_ROOT=/Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-import-rehearsal2/data`; collection copy = SQLite-backup-API copies of the live index.sqlite (taken while the old-code OCR run was writing; old schema, no grp) and manifest.sqlite + a `photos` symlink to the live photos dir; exports/<id> copied with CSV paths re-rooted to the scratch root; subsets: fullcopy/photos dir symlink, 3 per-file symlinks, an unrelated link and a look-alike `…/<id>0/…` link)
+- pre: 68,488 photos, 190,980 persons, 3 profiles, 69 labels (sha256 of labels+profiles e8872f8c87ba1801).
+- Refused (exit 1, nothing changed) while the copy's index.lock was held, and while serve.lock was held.
+- Run 1 SIGKILLed during the backup (378 MB .part left); run 2 SIGKILLed by the test hook right after move_index (index already in races/2026-gongga100/, relpaths not yet rewritten); run 3 same command completed in 2.3 s, removed the stale .part; run 4 refused ("race 2026-gongga100 is already registered").
+- post: labels/profiles hash identical (e8872f8c87ba1801); 68,488 relpaths == {'albums/yipai-83415673067642538672/photos/' + f for f in live photos listing} and all resolve; all 68,488 uids `yipai:`-prefixed, 0 double; album 'FUGA 贡嘎100' / key yipai-83415673067642538672 on all rows; grp from the migration: 9.26 赛事 52,175 · 9.25 赛事 5,752 · 9.25 签到 5,371 · 定妆照 4,486 · 9.27 赛事 444 · 挑选图片 189 · null 71; catalog view 68,488 rows all done; 3 photos.csv rewritten (BOM kept, every path now under races/…/albums/… and exports/2026-gongga100/); 4 subset symlinks re-pointed, the unrelated and look-alike links untouched; registry holds the race with title "FUGA 贡嘎100".
+- `index 2026-gongga100 adds 0 photos` could not be shown on the copy (photos is a dir symlink; os.walk doesn't follow it) — the relpath-set equality above is the equivalent check; the real scan is verified on the live run.
+- Live index.lock probe (read-only flock attempt, released at once): HELD at 10:07 during the old-code OCR run; that run finished at 10:16:37 ("index finished in 7729.9s"), and a second probe found it FREE. The live collection has NOT been imported.
+- A first rehearsal (scratch root …-import-rehearsal) showed the stale-.part leak (fixed in 7bea619) and that CSVs pointing at another root are left alone.
+
+**Decisions**
+- README: new "Races" section (race add, race import, layout, slug-or-path) before the numbered steps; step 1 is `scripts/download.sh <race>`, `download_yipai.sh` kept as the path for unregistered galleries; new "another data root" section for `PHOTOFINDER_DATA_ROOT`.
+- README says outright that albums can't be added to a race from the CLI yet (no `album add` until Slice 4): `race add` alone yields a race `download` rejects ("has no albums yet").
+- CLAUDE.md test count 370 passed + 1 opt-in (measured: `uv run pytest -q` → 370 passed, 1 skipped = `test_model_memory.py:269`, PHOTOFINDER_REAL_MODELS).
+- ROADMAP: the Done line and the pending-migration line are added beside master's untouched lines; the old Top-up line is kept as-is (still true until the import).
+
+**Rejected**
+- Rewriting ROADMAP's FUGA/OCR and Top-up lines: master 72e538c (not on this branch) rewrote the neighbouring OCR lines; editing them here would conflict at merge and duplicate its facts.
+- Fixing README's "one lookup per second" for originals (code: `originals.LOOKUP_GAP = 6.0`): pre-existing, outside this task.
+
+**Assumptions**
+- `data/exports/2026-gongga100/{Me,FriendA,FriendB}` in step 3 below comes from the rehearsal's copied exports; check with `ls data/exports/83415673067642538672` before the live run.
+
+**Deferred — HUMAN-ACTION STEP (live import)** — run from the main checkout /Volumes/Ext1TB/Projects/photo-finder after merging the branch; the user must confirm touching production data:
+1. Stop-check: `pgrep -fl photofinder` prints nothing (no index, serve, download, or subset indexer); the import also refuses by flock if any of the collection's index.lock/.download.lock, data/serve.lock is held.
+2. Do NOT run `race add 2026-gongga100` first (import creates the race). Run: `uv run photofinder race import 2026-gongga100 "2026 贡嘎100" data/yipai/83415673067642538672 --url "https://www.yipai360.com/photolivepc/?orderId=83415673067642538672" --title "FUGA 贡嘎100"`. If interrupted, rerun the identical command (forward recovery).
+3. Verify: the printed summary shows persons 190,980, profiles 3, labels 69 "(unchanged)" and photos 68,488; `data/yipai/` no longer has the id; `data/races/2026-gongga100/index.sqlite` exists; `data/exports/2026-gongga100/{Me,FriendA,FriendB}`; `ls -L data/subsets/race925/photos | head` resolves; backup (~835 MB) in data/backups/.
+4. Optional: `uv run photofinder index 2026-gongga100` should scan 0 new photos (it is one heavy job; later stages have nothing pending apart from OCR, which only runs with --ocr).
+5. Restart the server only if the user wants it running: `uv run photofinder serve 2026-gongga100`.
+6. Top-ups from now on: `scripts/download.sh 2026-gongga100` (download_yipai.sh refuses this order id once it's registered).
+7. Delete the scratch rehearsal roots /Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-import-rehearsal{,2} (~2 GB) once satisfied.
+- Memory note (orchestrator/user, not the doer): fuga-download-topup.md names `scripts/download_yipai.sh 83415673067642538672` and data/yipai/<orderId>/ — after the live import it should say `scripts/download.sh 2026-gongga100` and data/races/2026-gongga100/.
+- After the live import: CLAUDE.md's "贡嘎 stays here until the live `race import` runs" and ROADMAP's pending-migration/Top-up lines need a one-line update.
+
+**Touches**
+- README.md, CLAUDE.md (project), docs/ROADMAP.md (merge with master 72e538c: both set "Last updated 2026-09-29"; no other overlapping lines).
