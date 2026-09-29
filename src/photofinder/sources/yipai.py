@@ -248,7 +248,7 @@ class Downloader:
 
 def site_link(site_id: str, fname: str | None) -> dict:
     return {"url": f"{SITE}/photolivepc/?orderId={site_id}", "exact": False, "find_by": fname,
-            "hint": "paste the file name into 通过照片名搜索"}
+            "hint": "search the full file name (with extension) in 通过照片名搜索 and press Enter"}
 
 
 def refusal(order_id: str) -> str | None:

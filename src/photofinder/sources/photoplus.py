@@ -52,7 +52,7 @@ def to_row(p: dict, group: str | None) -> CatalogRow:
 
 def site_link(site_id: str, fname: str | None) -> dict:
     return {"url": f"{API}/live/{site_id}?accessFrom=live#/live", "exact": False, "find_by": fname,
-            "hint": "open the group, sort by time; file name in the photo info"}
+            "hint": "open the group tab; the ⓘ icon under a photo shows its file name"}
 
 
 class Adapter:

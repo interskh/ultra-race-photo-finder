@@ -144,7 +144,10 @@ a.btn { text-decoration: none; color: inherit; }
 .export { flex-wrap: wrap; }
 .row2.export > .btn { flex: none; min-width: auto; }
 .export .hint { flex: 1 1 260px; }
-.meta .orig.ok { color: var(--me); } .meta .orig.bad { color: var(--nm); }
+.meta .orig.ok { color: var(--me); } .meta .orig.bad { color: var(--nm); } .meta .orig.info { color: var(--muted); }
+.meta .site { flex: none; color: var(--muted); } .meta .site ~ .orig { flex: 0 1 auto; min-width: 0; }
+.meta .site:hover { color: var(--text); }
+.m-meta .copy { margin-left: var(--s1); }
 .card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .card.hl { outline: 3px solid var(--pick); outline-offset: 2px; }
 .shot { position: relative; }
@@ -770,6 +773,9 @@ function card(r, i, list) {
       h('div', {class: 'l1'}, r.rank ? h('span', {class: 'rank', title: tip}, `#${r.rank}`) : null, h('span', {class: 't'}, t),
         h('span', {class: 'flag', hidden: true})),
       h('div', {class: 'l2'}, h('span', {class: 'who', title: who(r)}, who(r)), bib ? h('span', {class: 'bib', title: 'bib read'}, `bib ${bib}`) : null,
+        list === S.me && r.site ? h('a', {class: 'site', href: r.site.url, target: '_blank', rel: 'noopener noreferrer',
+          title: r.site.exact ? 'Open this photo on its site' : `Open the album on its site; find file ${r.site.find_by || '(unknown)'} there`,
+          onclick: e => e.stopPropagation()}, 'Open on site') : null,
         r.original ? origTag(r.original) : null)),
     h('div', {class: 'acts'}, labelButtons(pid, r.photo_id)));
   queueMicrotask(() => paint(pid));
@@ -910,8 +916,10 @@ function showMatched(pid) {
 
 function origTag(s) {
   const text = s === 'downloaded' ? '✓ original' : s;
-  return h('span', {class: `orig${s === 'downloaded' ? ' ok' : s.startsWith('failed') ? ' bad' : ''}`,
-    title: s === 'downloaded' ? 'Original downloaded into this person’s folder' : s}, text);
+  const site = s === 'open on site';
+  return h('span', {class: `orig${s === 'downloaded' ? ' ok' : site ? ' info' : s.startsWith('failed') ? ' bad' : ''}`,
+    title: s === 'downloaded' ? 'Original downloaded into this person’s folder'
+      : site ? 'Originals are downloaded only from yipai360; use Open on site to buy or download this photo there' : s}, text);
 }
 
 async function exportList() {
@@ -935,7 +943,8 @@ function renderJob() {
     return;
   }
   const c = j.counts;
-  const tally = `${c.downloaded} downloaded, ${c.skipped} already there, ${c.buy_on_site} buy on site, ${c.failed} failed`;
+  const tally = `${c.downloaded} downloaded, ${c.skipped} already there, ${c.buy_on_site} buy on site, ${c.failed} failed` +
+    (c.open_on_site ? `, ${c.open_on_site} open on site` : '');
   const head = {running: `Downloading originals for ${S.name}: ${j.done} / ${j.total}`, done: `Originals for ${S.name} done: ${j.done} / ${j.total}`,
     cancelled: `Originals for ${S.name} cancelled at ${j.done} / ${j.total}`, error: `Originals for ${S.name} stopped with an error at ${j.done} / ${j.total}`}[j.state] || j.state;
   const parts = [head];
@@ -1036,7 +1045,7 @@ async function openModal(list, i) {
   $('#m-prev').hidden = $('#m-next').hidden = false;
   $('#m-prev').disabled = i === 0;
   $('#m-next').disabled = i === list.length - 1;
-  $('#m-acts').hidden = !S.facets.originals;
+  $('#m-acts').hidden = true;
   $('#m-orig-msg').textContent = 'Full-size file from the site, as its own download button gives it.';
   $('#m-orig').disabled = false;
   $('#m-frame').innerHTML = '';
@@ -1060,13 +1069,24 @@ function renderModal() {
   const m = S.modal, d = m.d;
   const dl = $('#m-meta');
   dl.innerHTML = '';
-  const row = (k, v) => dl.append(h('dt', {}, k), h('dd', {}, v));
+  const row = (k, ...v) => dl.append(h('dt', {}, k), h('dd', {}, ...v));
   row('Time', d.taken_at || 'unknown');
   row('Photographer', d.photographer || d.photographer_uid || 'unknown');
   row('Album', d.album || '—');
   row('Group', d.group || '—');
   row('Source photo', d.source_photo_id || '—');
   row('Size', `${d.width} × ${d.height}`);
+  const s = d.site;
+  if (s) {
+    row('On site', h('a', {id: 'm-site', href: s.url, target: '_blank', rel: 'noopener noreferrer'}, 'Open on site'));
+    if (!s.exact) {
+      const name = h('code', {id: 'm-fname'}, s.find_by || 'unknown');
+      row('File name', name, s.find_by ? h('button', {class: 'btn small copy', id: 'm-copy', type: 'button',
+        onclick: e => copyText(s.find_by, name, e.currentTarget)}, 'Copy') : null);
+      if (s.hint) row('Find it', h('span', {id: 'm-hint'}, s.hint));
+    }
+  }
+  $('#m-acts').hidden = !S.facets.originals || !!(d.platform && d.platform !== 'yipai');
   const frame = $('#m-frame');
   frame.querySelectorAll('.box').forEach(b => b.remove());
   const list = $('#m-list');
@@ -1091,6 +1111,22 @@ function renderModal() {
             onclick: () => { closeModal(); run({persons: [pid], label: runner}); }}, 'Find people like this')))));
     paint(pid);
   });
+}
+
+function copyText(text, el, btn) {
+  const say = t => { if (btn.isConnected) btn.textContent = t; };
+  const select = () => {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { }
+    say(ok ? 'Copied' : 'Press ⌘C');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => say('Copied'), select);
+  else select();
 }
 
 function legend(hit) {

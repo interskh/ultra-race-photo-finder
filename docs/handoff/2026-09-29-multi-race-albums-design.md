@@ -696,3 +696,36 @@ implement-loop: slice 6 shipped 3d71e0f; remaining: [7]
 - `src/photofinder/originals.py`: `COLUMNS` + `site_url` (CSV contract), `COUNTS` + `open_on_site` (job status API), `OPEN_ON_SITE`, `manifest_of` (no longer returns None), `album_site`, `read_manifest`, `sites_of`, `rows_of`, `statuses`, `Fetcher.original`, `Job.run`.
 - `src/photofinder/web/app.py`: `site_fields`; photo detail and `/me` gain `platform`/`fname`/`site` (public API); `photo_original` 409.
 - Tests: new `tests/test_site_links.py`. `test_originals.Gallery` gains an `order` param. Count dicts and CSV rows were updated in `test_originals.py`/`test_web.py`, and `test_race_scan` rows_of expectations in `test_race_scan.py`. README My photos.
+
+## Slice 7 · Task 2 — Open on site in the viewer and My photos
+
+**Decisions**
+- Viewer: the site rows go after the existing meta rows in `#m-meta`: `On site` (link `#m-site`, `target=_blank`, `rel="noopener noreferrer"`). When `!exact`, it adds `File name` (`<code id=m-fname>` + Copy `#m-copy`, only if `find_by` is set) and `Find it` (`#m-hint`). The Time/Photographer/Group rows stay above them. `site: null` renders no site rows.
+- `#m-acts` is set to hidden in `openModal` before the fetch. `renderModal` then applies `!S.facets.originals || (d.platform && d.platform !== 'yipai')`, so a non-yipai photo never shows the button. With a cached detail, `renderModal` runs synchronously, so there is no flicker on Prev/Next. `platform` null (legacy or unknown) keeps the button, as before.
+- Copy: `navigator.clipboard.writeText`. If it is missing or rejects, `select()` puts a Range on the `<code>`, tries `execCommand('copy')`, and says "Copied" or "Press ⌘C". The async `.then` only writes to its own button (`isConnected` check). There is no `api()` call, so no `S.gen` guard is needed.
+- My photos card: the link sits in `.l2` before the originals tag. `.l1` is nowrap/overflow-hidden, and there the link pushed the Me flag out of the card (seen in a screenshot). `onclick: stopPropagation` covers both a click and Enter (Enter fires a click on the anchor). The card's own Enter handler already requires `e.target === el`.
+- `origTag('open on site')` gets the new class `info` (muted colour; before this it fell through to `--warn`). Its title says originals come only from yipai360 and to use Open on site.
+- `renderJob` appends `, N open on site` only when the count is non-zero, so older job payloads without the key also work.
+- Hints are rewritten from the orchestrator's live checks (yipai: full name with extension + Enter; pailixiang: near the shot time, 照片信息; photoplus: group tab, ⓘ icon). The pailixiang wording is shortened to keep the line under 130 chars. The UI shows the hint verbatim and doesn't insert `d.group`, because the Group row sits right above it.
+
+**Rejected**
+- Keeping `#m-acts` visible until the detail arrives: a non-yipai photo would flash an enabled Download original.
+- Deciding the platform up front from `S.races` album platforms: that needs extra logic, and path-mode races aren't in the registry.
+- Putting the card link in `.l1`: it clipped the Me/Not Me flag.
+- Hiding the `open on site` tag because the link already says it: requirement 3 asks for a neutral tag.
+- A pytest that greps the HTML for the new attributes: it would only mirror the implementation. The behaviour is covered by the intercepted-Playwright harness instead.
+
+**Assumptions**
+- `execCommand('copy')` still works on plain-http LAN pages in Chrome and Safari. If it doesn't, the selection is left in place for ⌘C. Check: open the viewer over a LAN IP in the real-browser E2E.
+- Registry hints are shown as-is. If a site changes its UI, only the `site_link` strings need editing.
+
+**Deferred**
+- Search-result cards get no link: search results carry no site fields, by design. The viewer has the link.
+- Real-browser check per platform on the live sites: the orchestrator does it (spec acceptance 6).
+- If the photo detail fetch fails, the viewer now shows no Download original (before this, the button showed). This is safe: the meta panel is empty in that case too, and Prev/Next or reopening retries.
+- The intercepted-Playwright harness stays in scratch like Slice 6's, not in `tests/`. Playwright is not a project dependency.
+
+**Touches**
+- `src/photofinder/web/static/index.html` (CSS `.orig.info`, `.site`, `.copy`; `card`, `origTag`, `renderJob`, `openModal`, `renderModal`, new `copyText`).
+- `src/photofinder/sources/{yipai,pailixiang,photoplus}.py` (`site_link` hint strings, part of the public photo API `site.hint`), `tests/test_site_links.py`.
+- `README.md` (§5 viewer/My photos bullets).

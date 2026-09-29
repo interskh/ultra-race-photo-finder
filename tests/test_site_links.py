@@ -15,11 +15,11 @@ from test_yipai import FakeTime
 
 @pytest.mark.parametrize("platform, site_id, fname, url, exact, hint", [
     ("yipai", "1001", "IMG_1.JPG", "https://www.yipai360.com/photolivepc/?orderId=1001", False,
-     "paste the file name into 通过照片名搜索"),
+     "search the full file name (with extension) in 通过照片名搜索 and press Enter"),
     ("pailixiang", "a123", "DSC_1.JPG", "https://live.pailixiang.com/album/a123", False,
-     "sort by time; file name in the photo info"),
+     "look near the shot time (照片直播 order is loose); 照片信息 under a photo shows file name and shot time"),
     ("photoplus", "4567", "P1.JPG", "https://live.photoplus.cn/live/4567?accessFrom=live#/live", False,
-     "open the group, sort by time; file name in the photo info"),
+     "open the group tab; the ⓘ icon under a photo shows its file name"),
     ("xxpie", "abc", "IMG_1.JPG", "https://www.xxpie.com/m/albumFilenameSearch?album_id=abc&search_word=IMG_1.JPG",
      True, None),
     ("xxpie", "abc", "终点 A&B/1.JPG",

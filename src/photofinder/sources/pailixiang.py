@@ -51,7 +51,7 @@ def to_row(p: dict) -> CatalogRow:
 
 def site_link(site_id: str, fname: str | None) -> dict:
     return {"url": f"{SITE}/album/{site_id}", "exact": False, "find_by": fname,
-            "hint": "sort by time; file name in the photo info"}
+            "hint": "look near the shot time (照片直播 order is loose); 照片信息 under a photo shows file name and shot time"}
 
 
 class Adapter:
