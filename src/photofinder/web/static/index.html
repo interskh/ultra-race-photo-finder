@@ -49,6 +49,11 @@ header { height: 48px; display: flex; align-items: center; gap: var(--s4); paddi
 .who-pick { display: flex; align-items: center; gap: var(--s2); flex: none; color: var(--muted); }
 .who-pick select { height: 30px; max-width: 160px; padding: 0 var(--s2); border: 1px solid var(--line2); border-radius: var(--r);
   background: var(--bg); color: var(--text); font-weight: 600; text-overflow: ellipsis; }
+.race-pick select { max-width: 220px; }
+.who-pick select:disabled, .who-pick .btn:disabled, .tab:disabled { opacity: .45; cursor: not-allowed; }
+.races { list-style: none; padding: 0; margin: var(--s3) 0 0; }
+.races li { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s2); }
+.races .hint { margin: 0; }
 .tabs { margin-left: auto; display: flex; gap: var(--s1); flex: none; }
 .tab { height: 30px; padding: 0 var(--s3); border: 1px solid transparent; border-radius: var(--r); background: none; cursor: pointer; color: var(--muted); }
 .tab[aria-selected=true] { color: var(--text); background: var(--raised); border-color: var(--line2); }
@@ -207,7 +212,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <body>
 <header>
   <span class="brand">photofinder</span>
-  <span class="coll" id="coll">Loading collection…</span>
+  <div class="who-pick race-pick">
+    <label for="race">Race:</label>
+    <select id="race" disabled></select>
+  </div>
+  <span class="coll" id="coll">Loading races…</span>
   <div class="who-pick">
     <label for="prof">Searching for:</label>
     <select id="prof"></select>
@@ -296,6 +305,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
       </div>
       <div class="progress" id="progress" hidden></div>
     </div>
+    <div class="banners" id="stale" hidden></div>
     <div class="banners" id="banners" aria-live="polite"></div>
     <section class="content" id="view-search">
       <div class="grid" id="grid"></div>
@@ -336,7 +346,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
-  profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0};
+  profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0, races: [], loading: null, stale: null};
+const RACE_KEY = 'photofinder.race';
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -356,12 +367,33 @@ async function api(path, opts = {}) {
   try { res = await fetch(path, opts); } catch (e) { throw new Error(`Cannot reach the photofinder server (${e.message}). Is it still running?`); }
   let body = null;
   try { body = await res.json(); } catch (e) { }
-  if (!res.ok) throw new Error(body && body.detail ? body.detail : `Request failed: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const err = new Error(body && body.detail ? body.detail : `Request failed: ${res.status} ${res.statusText}`);
+    err.status = res.status;
+    err.body = body;
+    err.stale = isStale(res.status, body);
+    if (err.stale) stale(err.message);
+    throw err;
+  }
   return body;
+}
+const isStale = (status, body) => status === 409 && !!body && typeof body === 'object' && 'loaded' in body;
+
+function stale(detail) {
+  if (S.stale) return;
+  S.stale = detail;
+  clearTimeout(S.pollT);
+  S.pollT = null;
+  const box = $('#stale');
+  box.innerHTML = '';
+  box.append(h('div', {class: 'banner error', role: 'alert'}, h('p', {}, detail),
+    h('button', {class: 'btn', type: 'button', onclick: () => location.reload()}, 'Reload')));
+  box.hidden = false;
 }
 const post = (path, data) => api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
 
 function banner(msg, kind = 'error') {
+  if (kind === 'error' && msg === S.stale) return;
   const box = $('#banners');
   if ([...box.children].some(b => b.dataset.msg === msg)) return;
   const b = h('div', {class: `banner ${kind}`, role: kind === 'error' ? 'alert' : 'status'},
@@ -377,7 +409,15 @@ function setBusy(msg) {
   $('#busy').hidden = $('#progress').hidden = !on;
   if (on) watchModels(); else $('#busy-model').hidden = true;
   $('#grid').classList.toggle('dim', on && !S.appending);
-  document.querySelectorAll('[data-run]').forEach(b => b.disabled = on || (b.id === 'more' && !meCount()));
+  syncControls();
+}
+
+function syncControls() {
+  const none = !S.facets || !!S.loading;
+  document.querySelectorAll('[data-run]').forEach(b => b.disabled = none || S.busy > 0 || (b.id === 'more' && !meCount()));
+  ['prof', 'prof-new', 'prof-rename', 'prof-delete', 'tab-me', 'export'].forEach(id => $('#' + id).disabled = none);
+  if (none) $('#orig-start').disabled = true;
+  $('#race').disabled = !!S.loading || !S.races.length;
 }
 
 const MODEL_LABELS = {encode_text: 'text search', detect_and_embed: 'person detection'};
@@ -410,7 +450,8 @@ function renderCounts() {
   const f = S.facets;
   if (!f) return;
   $('#coll').innerHTML = '';
-  $('#coll').append(h('b', {}, f.collection), ` · ${fmt(f.photos)} photos · ${fmt(f.persons)} people`);
+  $('#coll').append(h('b', {}, f.race.name), ` · ${fmt(f.photos)} photos · ${fmt(f.persons)} people`);
+  document.title = `${f.race.name} · photofinder`;
   $('#c-me').textContent = fmt(f.labels.me);
   $('#c-me2').textContent = fmt(S.mePhotos);
   $('#c-nm').textContent = fmt(f.labels.not_me);
@@ -426,7 +467,7 @@ function renderCounts() {
   $('#orig-start').disabled = !S.mePhotos || (S.job && S.job.state === 'running');
 }
 
-const profileKey = () => `photofinder.profile.${S.facets.collection}`;
+const profileKey = () => `photofinder.profile.${S.race}`;
 
 function renderProfiles() {
   const sel = $('#prof');
@@ -480,18 +521,20 @@ async function switchProfile(id) {
 async function newProfile() {
   const name = prompt('Name of the person to search for (e.g. a friend):');
   if (name == null || !name.trim()) return;
+  const race = S.race;
   try {
     const p = await post(`/api/r/${S.race}/profiles`, {name});
-    await switchProfile(p.id);
+    if (S.race === race) await switchProfile(p.id);
   } catch (e) { banner(e.message); }
 }
 
 async function renameProfile() {
   const name = prompt(`Rename “${S.name}” to:`, S.name);
   if (name == null || !name.trim() || name.trim() === S.name) return;
+  const race = S.race;
   try {
     await api(`/api/r/${S.race}/profiles/${S.profile}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name})});
-    await switchProfile(S.profile);
+    if (S.race === race) await switchProfile(S.profile);
   } catch (e) { banner(e.message); }
 }
 
@@ -500,9 +543,10 @@ async function deleteProfile() {
   const n = S.facets.labels;
   if (!confirm(`Delete “${p.name}”?\n\nOnly this person’s marks are removed (${n.me} marked as ${p.name}, ${n.not_me} marked Not ${p.name}). ` +
     'Photos, other people and any downloaded originals stay.')) return;
+  const race = S.race;
   try {
     await api(`/api/r/${S.race}/profiles/${S.profile}`, {method: 'DELETE'});
-    await switchProfile(null);
+    if (S.race === race) await switchProfile(null);
   } catch (e) { banner(e.message); }
 }
 
@@ -672,13 +716,14 @@ function paint(pid) {
 }
 
 async function setLabel(pid, want, photoId) {
-  if (S.pending.has(pid)) return;
-  S.pending.add(pid);
+  const pending = S.pending;
+  if (pending.has(pid)) return;
+  pending.add(pid);
   const prev = S.labels[pid] ?? null;
-  const profile = S.profile;
+  const profile = S.profile, race = S.race;
   try {
     const r = await post(`/api/r/${S.race}/labels`, {profile_id: profile, person_id: pid, label: prev === want ? null : want});
-    if (S.profile !== profile) return;
+    if (S.profile !== profile || S.race !== race) return;
     S.labels[pid] = r.label;
     paint(pid);
     if (S.facets) {
@@ -690,7 +735,7 @@ async function setLabel(pid, want, photoId) {
     if (mine.size) S.mine.set(photoId, mine); else S.mine.delete(photoId);
     S.mePhotos = S.mine.size;
     renderCounts();
-  } catch (e) { banner(e.message); } finally { S.pending.delete(pid); }
+  } catch (e) { banner(e.message); } finally { pending.delete(pid); }
 }
 
 function broken(e) {
@@ -726,8 +771,10 @@ async function upload(file) {
   const fd = new FormData();
   fd.append('file', file);
   setBusy('Finding people in your photo…');
+  const race = S.race;
   try {
     const r = await api(`/api/r/${S.race}/upload`, {method: 'POST', body: fd});
+    if (S.race !== race) return;
     S.upload = r;
     if (S.start && S.start.upload) { S.start = null; renderStart(); }
     renderUpload();
@@ -794,6 +841,7 @@ function showView(v) {
 }
 
 function welcome() {
+  if (!S.race) { picker(); return; }
   $('#summary').innerHTML = '';
   $('#summary').append(h('div', {class: 'title'}, 'Find your photos'), h('div', {class: 'sub'}, 'Pick a start point on the left.'));
   if (S.base) return;
@@ -810,10 +858,10 @@ function welcome() {
 async function loadMe() {
   $('#summary').innerHTML = '';
   $('#summary').append(h('div', {class: 'title'}, 'My photos'), h('div', {class: 'sub'}, 'Loading…'));
-  const profile = S.profile;
+  const profile = S.profile, race = S.race;
   try {
     const r = await api(`/api/r/${S.race}/me?profile_id=${profile}`);
-    if (S.view !== 'me' || S.profile !== profile) return;
+    if (S.view !== 'me' || S.profile !== profile || S.race !== race) return;
     setMine(r.photos);
     renderCounts();
     S.me = r.photos.map(p => {
@@ -894,27 +942,37 @@ function renderJob() {
 async function pollOriginals() {
   clearTimeout(S.pollT);
   const was = S.job && S.job.state === 'running';
-  try { S.job = await api(`/api/r/${S.race}/originals`); } catch (e) {
+  const race = S.race;
+  let job;
+  try { job = await api(`/api/r/${S.race}/originals`); } catch (e) {
     banner(e.message);
-    if (was) S.pollT = setTimeout(pollOriginals, 3000);
+    if (was && !e.stale && S.race === race) S.pollT = setTimeout(pollOriginals, 3000);
     return;
   }
+  if (S.race !== race) return;
+  S.job = job;
   renderJob();
   if (S.job.state === 'running') S.pollT = setTimeout(pollOriginals, 1000);
   else if (was && S.view === 'me') loadMe();
 }
 
 async function startOriginals() {
+  const race = S.race;
   try {
-    S.job = await post(`/api/r/${S.race}/originals`, {profile_id: S.profile});
+    const job = await post(`/api/r/${S.race}/originals`, {profile_id: S.profile});
+    if (S.race !== race) return;
+    S.job = job;
     renderJob();
     S.pollT = setTimeout(pollOriginals, 1000);
   } catch (e) { banner(e.message); }
 }
 
 async function cancelOriginals() {
+  const race = S.race;
   try {
-    S.job = await post(`/api/r/${S.race}/originals/cancel`, {});
+    const job = await post(`/api/r/${S.race}/originals/cancel`, {});
+    if (S.race !== race) return;
+    S.job = job;
     renderJob();
   } catch (e) { banner(e.message); }
 }
@@ -924,6 +982,7 @@ async function downloadOriginal() {
   if (!m || !m.list) return;
   const i = m.i, r = m.list[i];
   const say = t => { if (S.modal === m && m.i === i) $('#m-orig-msg').textContent = t; };
+  const race = S.race;
   $('#m-orig').disabled = true;
   say('Fetching the original from the site…');
   try {
@@ -933,8 +992,9 @@ async function downloadOriginal() {
         body: JSON.stringify({profile_id: S.profile})});
     } catch (e) { say(''); banner(`Cannot reach the photofinder server (${e.message}). Is it still running?`); return; }
     if (!res.ok) {
-      let detail = `Request failed: ${res.status} ${res.statusText}`;
-      try { detail = (await res.json()).detail || detail; } catch (e) { }
+      let detail = `Request failed: ${res.status} ${res.statusText}`, body = null;
+      try { body = await res.json(); detail = body.detail || detail; } catch (e) { }
+      if (isStale(res.status, body)) { say(''); stale(detail); return; }
       if (res.status === 402) { say(detail.replace(/^buy on site/, 'Buy on site')); return; }
       say('');
       banner(detail);
@@ -950,7 +1010,7 @@ async function downloadOriginal() {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     say(`Saved ${name} into ${S.name}’s originals folder and sent it to your browser’s downloads.`);
-    if (S.view === 'me') loadMe();
+    if (S.view === 'me' && S.race === race) loadMe();
   } catch (e) { say(''); banner(e.message); } finally {
     if (S.modal === m) $('#m-orig').disabled = false;
   }
@@ -1102,7 +1162,115 @@ function closeModal() {
   if (card) { card.focus({preventScroll: true}); card.scrollIntoView({block: 'nearest'}); }
 }
 
+function renderRaces() {
+  const sel = $('#race');
+  sel.innerHTML = '';
+  if (!S.race) sel.append(h('option', {value: '', disabled: true}, S.races.length ? 'Pick a race…' : 'No races registered'));
+  for (const r of S.races) sel.append(h('option', {value: r.slug, disabled: !r.indexed,
+    title: r.indexed ? r.name : `Not indexed yet: run photofinder index ${r.slug}`}, r.indexed ? r.name : `${r.name} (not indexed)`));
+  sel.value = S.race || '';
+  const cur = S.races.find(r => r.slug === S.race);
+  sel.title = cur ? cur.name : 'Pick a race to search';
+  syncControls();
+}
+
+function albumsText(r) {
+  if (!r.albums.length) return '';
+  const n = r.albums.reduce((s, a) => s + a.downloaded, 0);
+  return `${r.albums.length} album${r.albums.length === 1 ? '' : 's'} · ${fmt(n)} photos downloaded`;
+}
+
+function picker() {
+  $('#summary').innerHTML = '';
+  $('#summary').append(h('div', {class: 'title'}, 'Pick a race'), h('div', {class: 'sub'}, 'Choose which race’s photos to search.'));
+  if (!S.loading) $('#coll').textContent = 'No race loaded';
+  document.title = 'photofinder';
+  const empty = $('#empty');
+  empty.innerHTML = '';
+  empty.append(h('div', {class: 'empty'}, h('h3', {}, 'Pick a race'),
+    h('p', {}, S.races.length
+      ? 'Choose a race here or in the Race menu at the top. The server keeps one race loaded at a time; loading a large race takes up to a minute. This browser remembers your choice.'
+      : 'No race is registered yet. Register one with photofinder race add, then download and index it.'),
+    h('ul', {class: 'races'}, S.races.map(r => h('li', {},
+      h('button', {class: 'btn', type: 'button', disabled: !r.indexed, 'data-race': r.slug, onclick: () => switchRace(r.slug)}, r.name),
+      h('p', {class: 'hint'}, r.indexed ? albumsText(r) : ['Not indexed yet: run ', h('code', {}, `photofinder index ${r.slug}`)]))))));
+}
+
+function clearRace(slug) {
+  ++S.seq;
+  ++S.pseq;
+  clearTimeout(S.pollT);
+  S.pollT = null;
+  closeModal();
+  Object.assign(S, {race: slug, facets: null, base: null, query: null, start: null, results: [], total: null, timing: null, done: true,
+    labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), me: [], upload: null, details: new Map(), profile: null,
+    profiles: [], name: 'Me', job: null, highlight: null, descIgnored: false});
+  for (const id of ['bib', 'q-text', 'q-scene', 'f-start', 'f-end', 'f-bib', 'file']) $('#' + id).value = '';
+  $('#f-start').placeholder = $('#f-end').placeholder = 'YYYY-MM-DD HH:MM';
+  $('#q-scene').placeholder = 'e.g. finish arch, 雪山';
+  $('#f-range').textContent = '';
+  for (const id of ['f-ph', 'f-al', 'f-gr', 'grid', 'empty', 'me-grid', 'me-empty', 'up-frame', 'banners', 'prof']) $('#' + id).innerHTML = '';
+  countFilters();
+  renderStart();
+  $('#up').hidden = $('#tail').hidden = $('#job').hidden = $('#zip').hidden = $('#orig-start').hidden = true;
+  $('#c-me').textContent = $('#c-nm').textContent = $('#c-me2').textContent = $('#more-n').textContent = '';
+  $('.nm-me').textContent = 'Me';
+  $('.nm-not').textContent = 'Not me';
+  showView('search');
+  syncControls();
+}
+
+async function enterRace() {
+  const race = S.race;
+  const [p, f] = await Promise.all([api(`/api/r/${race}/profiles`), api(`/api/r/${race}/facets`)]);
+  if (S.race !== race) return;
+  S.facets = f;
+  try { localStorage.setItem(RACE_KEY, race); } catch (e) { }
+  let saved = null;
+  try { saved = Number(localStorage.getItem(profileKey())); } catch (e) { }
+  if (!await useProfile(saved, p.profiles)) return;
+  renderRaces();
+  renderFacets();
+  welcome();
+  for (const w of f.warnings) banner(w, 'warn');
+  if (!f.scenes) $('#q-scene').placeholder = 'Scene search unavailable (not indexed)';
+  if (f.originals) pollOriginals();
+}
+
+async function reconcile() {
+  try { S.races = await api('/api/races'); } catch (e) { renderRaces(); return; }
+  const loaded = S.races.find(r => r.loaded);
+  if (loaded && loaded.slug === S.race && S.facets) { renderRaces(); return; }
+  clearRace(loaded ? loaded.slug : null);
+  renderRaces();
+  if (loaded) try { await enterRace(); } catch (e) { banner(e.message); }
+}
+
+async function switchRace(slug) {
+  const r = S.races.find(x => x.slug === slug);
+  if (!r || S.loading || (slug === S.race && S.facets)) { renderRaces(); return; }
+  S.loading = r;
+  $('#coll').textContent = `Loading ${r.name}…`;
+  setBusy(`Loading ${r.name}…`);
+  try {
+    await post(`/api/races/${slug}/load`, {});
+    S.stale = null;
+    $('#stale').innerHTML = '';
+    $('#stale').hidden = true;
+    clearRace(slug);
+    await enterRace();
+  } catch (e) {
+    S.loading = null;
+    await reconcile();
+    banner(e.message);
+  } finally {
+    S.loading = null;
+    setBusy(null);
+  }
+}
+
 function wire() {
+  $('#race').addEventListener('change', e => switchRace(e.target.value));
   $('#bib-form').addEventListener('submit', e => {
     e.preventDefault();
     const bib = $('#bib').value.trim();
@@ -1178,32 +1346,22 @@ function onKey(e) {
 
 async function init() {
   wire();
-  welcome();
-  try {
-    const races = await api('/api/races');
-    let race = races.find(r => r.loaded);
-    if (!race) {
-      race = races.find(r => r.indexed);
-      if (!race) throw new Error('No indexed race yet; run `photofinder index <race>` first');
-      await post(`/api/races/${race.slug}/load`, {});
-    }
-    S.race = race.slug;
-    let p;
-    [p, S.facets] = await Promise.all([api(`/api/r/${S.race}/profiles`), api(`/api/r/${S.race}/facets`)]);
-    let saved = null;
-    try { saved = Number(localStorage.getItem(profileKey())); } catch (e) { }
-    await useProfile(saved, p.profiles);
-  } catch (e) {
-    $('#coll').textContent = 'Collection unavailable';
+  syncControls();
+  try { S.races = await api('/api/races'); } catch (e) {
+    $('#coll').textContent = 'Races unavailable';
     banner(e.message);
     return;
   }
-  renderCounts();
-  renderFacets();
-  welcome();
-  for (const w of S.facets.warnings) banner(w, 'warn');
-  if (!S.facets.scenes) $('#q-scene').placeholder = 'Scene search unavailable (not indexed)';
-  if (S.facets.originals) pollOriginals();
+  let stored = null;
+  try { stored = localStorage.getItem(RACE_KEY); } catch (e) { }
+  const want = S.races.find(r => r.slug === stored && r.indexed);
+  const open = want || S.races.find(r => r.loaded);
+  renderRaces();
+  if (!open) { welcome(); return; }
+  if (!open.loaded) { await switchRace(open.slug); return; }
+  clearRace(open.slug);
+  renderRaces();
+  try { await enterRace(); } catch (e) { $('#coll').textContent = 'Race unavailable'; banner(e.message); }
 }
 
 init();

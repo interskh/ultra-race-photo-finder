@@ -221,7 +221,7 @@ def cmd_eval(args):
 
 def cmd_serve(args):
     if args.collection is not None and not (args.collection / db.INDEX_NAME).is_file():
-        sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
+        sys.exit(f"no index in {args.collection}; run `photofinder index {args.race or args.collection}` first")
     import uvicorn
     from photofinder.web import app as web
     models.half_precision = True

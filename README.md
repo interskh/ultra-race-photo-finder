@@ -62,8 +62,12 @@ Stages: scan (EXIF time, photographer, album, group) → detect people → cloth
 ## 3. Search in the browser
 
 ```
-uv run photofinder serve <race>                  # http://127.0.0.1:8000/
+uv run photofinder serve                         # race picker, http://127.0.0.1:8000/
+uv run photofinder serve <race>                  # same, with that race preloaded
+uv run photofinder serve <collection-dir>        # serve one directory alone (e.g. data/subsets/race925)
 ```
+
+With no argument the page opens on the race picker: pick any indexed race from **Race:** at the top (races that are not indexed yet are greyed out and name the `photofinder index <race>` command). The server keeps one race loaded at a time; switching unloads the previous race (loading a large race takes up to a minute) and clears the page's search, filters and viewer. The browser remembers the last race and, per race, the last person you searched for. A second tab still on the old race shows a banner with a Reload button instead of writing marks into the wrong race. Switching is refused while an originals download runs.
 
 Only one server runs at a time: a second `serve` exits right away and names the running one (pid, URL, collection).
 

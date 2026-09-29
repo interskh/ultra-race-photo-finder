@@ -568,3 +568,38 @@ implement-loop: slice 5 shipped 82add46; remaining: [6, 7]
 - `src/photofinder/web/static/index.html` (URL prefix, `S.race`, init race bootstrap).
 - tests: `test_web.py` (RaceClient), `test_originals.py`, `test_model_memory.py`, `test_race_scan.py` (client swap), new `tests/test_races_web.py` (16 tests).
 - (Correction, orchestrator) `serve <slug>` follows spec §3.6. An existing directory still wins and is path mode. Otherwise a registered slug starts registry mode with that race loaded eagerly (`create_app(None, load=slug)`), so an unindexed race or one with missing embeddings still exits with one line before uvicorn. The serve.lock text is `race picker (<slug>)`, `race picker`, or the directory path. `main()` sets `args.race` only when the argument was not a directory.
+
+
+## Slice 6 · Task 2 — UI race picker, CLI index hint, README/ROADMAP
+
+**Decisions**
+- Header `Race: <select id=race>` before `#coll`/`Searching for:`. Unindexed races are disabled options labelled "(not indexed)" with a `title` of `photofinder index <slug>`. The empty-state picker in `#empty` lists the races as buttons and puts the command in visible text, because `<option title>` tooltips are unreliable in macOS native selects.
+- On open, with localStorage `photofinder.race` (try/catch): a registered, indexed stored race is used. No POST is sent if it is already loaded. Otherwise there is one POST load. Else the server's loaded race is adopted (serve <slug> or path mode). Else the picker is shown. It never auto-loads the first race. The slug is stored whenever a race is entered, including an adopted one.
+- After a successful load, the page re-fetches both profiles and facets. It ignores the facets body the load returns (the literal reading of the task; costs one facets query).
+- `clearRace(slug)` resets everything race-scoped in one place: bumps `S.seq`/`S.pseq`, clears pollT, closes the modal, resets S fields (results, base/query/start, labels, pending, mine/me, upload, details, profile(s), job, highlight), clears inputs, checkboxes, placeholders, grids and `#banners`, and switches to the Search view.
+- After any failed load, the page GETs `/api/races` and reconciles. If the same race is still loaded, only the select is restored. If nothing is loaded (MissingEmbeddings drops the old race), it clears the page and shows the picker. If another race is loaded, the page adopts it. The page never infers the outcome from the status code.
+- Race guard (`const race = S.race` + check after await) in setLabel, upload, loadMe, polling/start/cancel originals, downloadOriginal, and new/rename/delete profile. Profile ids collide across races (A's 1 ≠ B's 1), so profile-only guards are blind to a switch. setLabel captures `S.pending` locally.
+- Stale: `api()` attaches `status`/`body`/`stale` to the thrown Error. A 409 with a `loaded` key goes to `stale(detail)`, which shows one persistent banner in its own `#stale` container (showView wipes `#banners`) with a Reload button and stops pollOriginals. `banner()` drops an error whose text equals the stale detail, so call sites keep `banner(e.message)`. The raw `/original` fetch uses the same `isStale`. A later successful switch clears the stale banner.
+- `syncControls()` disables `[data-run]`, the profile controls, the My photos tab and Export while there is no race (`!S.facets`) or a load is running. The select is disabled while loading. It is called from setBusy and on every race transition.
+- `profileKey()` = `photofinder.profile.<race slug>`, so 贡嘎's existing key carries over (its slug is its old dir name).
+- CLI: `serve <slug>` without an index hints `photofinder index <slug>` (`args.race or args.collection`).
+
+**Rejected**
+- Showing the stale message through `banner()` in `#banners`: that box is cleared on every view change, so the message would not persist.
+- Suppressing all error banners once stale: that would hide a real load error in a stale tab. Only exact duplicates of the stale detail are dropped.
+- Disabling the picker buttons while loading: they were rendered during the load and stayed disabled after a failed load. `switchRace` guards on `S.loading` instead.
+- Retrying the stored race after a failed load, or clearing it from localStorage: the next open simply tries once more.
+
+**Assumptions**
+- Loading a large race takes tens of seconds and the page shows no progress beyond "Loading <name>…". Check: switch to 贡嘎 on the live server after the merge.
+- Registry slugs are `[a-z0-9-]`, so `${S.race}` stays unencoded in URLs (same as task 1).
+- Opening a path-mode server (`serve data/subsets/race925`) stores `race925` as the last race. The next registry-mode open doesn't find it and falls back to the loaded race or the picker, so the old preference is lost but nothing errors.
+
+**Deferred**
+- CLAUDE.md needs updating (not edited, per task): serve rule → "`photofinder serve` with no argument = race picker; `serve <slug>` preloads; `serve <dir>` for subsets"; test count stays 520 + 1 opt-in.
+- A real-browser E2E against a real server (task scope was intercepted Playwright only; no server may start on the live data root here).
+
+**Touches**
+- `src/photofinder/web/static/index.html` (header race select, `#stale` container, `S.races/loading/stale`, `api()` error fields, race lifecycle functions, `profileKey`).
+- `src/photofinder/cli.py` (cmd_serve hint), `tests/test_races_web.py` (unready-slug test asserts the slug hint).
+- `README.md` (§3 serve forms and picker behaviour), `docs/ROADMAP.md` (one Done line).

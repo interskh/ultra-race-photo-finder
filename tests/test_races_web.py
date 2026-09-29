@@ -385,6 +385,8 @@ def test_serve_with_an_unready_slug_exits_one_line_before_serving(world, monkeyp
         with pytest.raises(SystemExit) as e:
             cli.main(["serve", slug])
         assert text in str(e.value.code) and "\n" not in str(e.value.code)
+        if slug == RC:
+            assert f"run `photofinder index {RC}` first" in e.value.code
     assert runs == []
 
 
