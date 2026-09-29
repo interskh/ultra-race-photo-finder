@@ -452,3 +452,36 @@ implement-loop: slice 4 shipped 2f43047; remaining: [5, 6, 7]
 **Touches**
 - New: `src/photofinder/sources/xxpie.py`, `tests/test_xxpie.py`, `tests/fixtures/xxpie_{list,subalbum_info,register,style}.json`, `docs/handoff/2026-09-29-platform-probes/xxpie_{register,style}.json`.
 - `src/photofinder/cli.py` (`ADAPTERS["xxpie"]`, import), `src/photofinder/races.py` (`parse_url` xxpie `id`), `tests/test_races.py` (`?id=` accept/reject cases), `tests/test_download.py` (skip test → photoplus), README.md (title fetch and download lines).
+
+
+## Slice 5 · Task 2 — photoplus adapter
+
+**Decisions**
+- `sign(params, t)`: nulls dropped, bools sent as `"false"`/`"true"`, `_s` over the sorted `k=v` of JSON values with quotes stripped. The whole signed query is built in `fresh` from `clock()` (new `clock=time.time` kwarg), so each attempt gets a new `_t`. `check` requires `code == 1` and returns `result` unchanged (a list for `/album/albums`, a dict elsewhere).
+- Cursor: `("album", i, page)` → `("list", page)` → None. `None` resolves to `("album", 0, 1)`, or `("list", 1)` when there are no sub-albums. The `/album/albums` answer is cached per run, so a re-list refetches only the page.
+- First group: `first_seen[id]` holds the cursor where the id was first listed. A row is emitted only when that equals the current cursor. A re-list of the same cursor re-emits it; a later sub-album or `/pic/list` page never does. The listing order is deterministic, so a rerun gives the same first groups.
+- Total, learned without an extra request: `/pic/list` page 1 is always the first reconcile page (it emits only unseen ids) and gives `pics_total`. The first positive non-bool int is kept (a later 0 or different value is ignored). The list phase continues while `page < ceil(total/100)` and seen+skipped < total. If the total is unknown, it continues while pages are full. `meta()` = `/live/detail` only, so `album add` costs 1 request.
+- Sub-album pages: 200 per page; next page while full (probe: page 3 of a 223-photo sub-album was `pics: []`).
+- Photographer = `camer`/`camer_no` when `camer` is set, else `retoucher`/`retoucher_no`. In 89243825 `/album/one`, camer is filled (three names) and retoucher is `Photographer B` on every row (an editor). In 39352660, camer is null.
+- `HEADERS` = Referer `https://live.photoplus.cn/` + desktop UA. Checked live with the real adapter: `meta()` + the first `list_page` on 89243825.
+
+**Rejected**
+- Fetching `/pic/list` page 1 in `meta()` for the total: it doubles `album add` cost and throws away 100 rows.
+- Carrying `key` in the cursor: `key=""` pages 1/2/22 are disjoint (probe), so `key` isn't needed.
+- Stopping `/pic/list` on a short page: the spec says `ceil(pics_total/100)`, and `pageTotal` is wrong (2.0 for 22 pages).
+
+**Assumptions**
+- Live probe (15 GETs, ≥2.5 s apart). 89243825: 8 sub-albums with Σpic_num 2156 = pics_total. Two sub-albums fully listed (放松跑 223, ACG大本营 146) share no ids. So there the sub-albums look disjoint and complete, and the list phase costs 1 request. 39352660: 16 sub-albums, Σpic_num **3590 vs pics_total 6115**, so ~41% of photos are in no sub-album and get group null. The list phase walks all 62 pages there.
+- `/pic/list` with `key=""`: p1 (100) / p2 (100) / p22 (56 = 2156−2100) disjoint, p23 empty. `pics_total` is present and stable on every page, including the empty one. Only page 1 has `key`.
+- `/album/one` shape: `result.{pageTotal, album, pic_total, pics}`. Row fields match `/pic/list` plus `album_pic_id`.
+- `big_img` downloaded 200 with no headers at all (1600×1067 JPEG), so no Referer is needed for images. How long the signature stays valid is unmeasured; the 403 re-list covers it.
+- `/live/detail` has `anti_crawler_level` (value in `photoplus_detail.json`). What it controls is unknown. Watch the first real run for code -1 or 403 bursts.
+- 30326728 (四姑娘山, 92,889) was not probed. If it is like 39352660, listing alone takes ~930 `/pic/list` + ~465 `/album/one` pages. At page_delay 3–6 s that is ~1.5–2.5 h of pacing on top of the downloads. One `/album/albums` request (Σpic_num vs 92,889) would tell.
+
+**Deferred**
+- Photos in several sub-albums keep only the first group (spec §7).
+- The `raw None cursor` mutant survives. It is equivalent: stored None never equals a later non-None cursor, so behaviour is the same.
+
+**Touches**
+- New: `src/photofinder/sources/photoplus.py`, `tests/test_photoplus.py`, `tests/fixtures/photoplus_{detail,albums,list,album_one}.json`. Probe copies in `docs/handoff/2026-09-29-platform-probes/photoplus_*.json` (also `albums_39352660`, `list_p2`, `list_p23`, `album_one_p3`; signed query strings stripped).
+- `src/photofinder/cli.py` (`ADAPTERS["photoplus"]`, import), `tests/test_download.py` (skip test drops photoplus from `cli.ADAPTERS`), README.md (title fetch and download lines).

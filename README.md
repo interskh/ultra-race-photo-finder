@@ -18,7 +18,7 @@ Add an album by its gallery URL (yipai360, pailixiang, xxpie or photoplus; the p
 uv run photofinder album add <slug> <album URL> [--title "<title>"]   # e.g. album add 2026-gongga100 https://live.pailixiang.com/album/a13800138000
 ```
 
-The race, the URL and "album already in a race" are checked before anything is sent to the site. Without `--title`, the title is fetched from the site where the downloader supports it (pailixiang, xxpie); yipai albums, and for now photoplus albums (until its downloader arrives), are registered with no title and the Album filter shows the key (e.g. `yipai-<orderId>`). If the title fetch fails, rerun with `--title`. Then `scripts/download.sh <slug>` and `photofinder index <slug>`.
+The race, the URL and "album already in a race" are checked before anything is sent to the site. Without `--title`, the title is fetched from the site where the downloader supports it (pailixiang, xxpie, photoplus); yipai albums are registered with no title and the Album filter shows the key (e.g. `yipai-<orderId>`). If the title fetch fails, rerun with `--title`. Then `scripts/download.sh <slug>` and `photofinder index <slug>`.
 
 **One-time move of an old yipai collection** (`data/yipai/<orderId>/`) into a new race, without re-indexing and keeping marks and saved people:
 
@@ -47,7 +47,7 @@ scripts/download.sh <race> [album-key]           # e.g. scripts/download.sh 2026
 tail -f data/races/<race>/download-console.log   # per album: data/races/<race>/albums/<key>/download.log
 ```
 
-Runs `photofinder download <race> [album-key]` detached under `caffeinate`: the race's albums one after another (or only the given one), paced, resumable. Rerun the same command a day or two later to pick up photos uploaded after the race. yipai360, pailixiang and xxpie albums download (pailixiang: 1600px previews; xxpie: watermarked previews of about 2560px; both 4 workers); photoplus comes later and is skipped with a message until then. The yipai downloader fetches only the free 1920px previews; full-size originals of the photos you mark come later from the web UI (step 3).
+Runs `photofinder download <race> [album-key]` detached under `caffeinate`: the race's albums one after another (or only the given one), paced, resumable. Rerun the same command a day or two later to pick up photos uploaded after the race. yipai360, pailixiang, xxpie and photoplus albums download (pailixiang: 1600px previews; xxpie: watermarked previews of about 2560px; photoplus: 1600px watermarked previews, each photo tagged with the first sub-album it appears in as its Group, then the rest of the album with no group; all 4 workers). The yipai downloader fetches only the free 1920px previews; full-size originals of the photos you mark come later from the web UI (step 3).
 
 A yipai gallery not in any race still downloads the old way, `scripts/download_yipai.sh <orderId>` into `data/yipai/<orderId>/`. It refuses an order id registered in a race and names the `scripts/download.sh <race>` command to use instead.
 

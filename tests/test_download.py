@@ -106,7 +106,8 @@ def test_unknown_album_key_lists_the_keys(data_root, site):
     assert not (data_root / "races").exists()
 
 
-def test_unsupported_platform_album_is_skipped(site, capsys):
+def test_unsupported_platform_album_is_skipped(site, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "ADAPTERS", {k: v for k, v in cli.ADAPTERS.items() if k != "photoplus"})
     race(PP_URL, YIPAI_URL)
     cli.main(["download", "2026-x"])
     assert "skipping photoplus-39352660: photoplus downloads are not supported yet" in capsys.readouterr().out
