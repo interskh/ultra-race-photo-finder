@@ -50,6 +50,11 @@ def to_row(p: dict, group: str | None) -> CatalogRow:
                       width=p.get("width"), height=p.get("height"), url=url)
 
 
+def site_link(site_id: str, fname: str | None) -> dict:
+    return {"url": f"{API}/live/{site_id}?accessFrom=live#/live", "exact": False, "find_by": fname,
+            "hint": "open the group, sort by time; file name in the photo info"}
+
+
 class Adapter:
     def __init__(self, client: httpx.Client, site_id: str, *, tries=5, sleep=time.sleep, clock=time.time):
         self.client = client

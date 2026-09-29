@@ -148,14 +148,16 @@ def test_rows_of_reads_order_and_fname_from_each_album_manifest(tmp_path):
     conn = db.connect(r)
     scan(conn, r)
     meta = web.photo_meta(conn, [i for (i,) in conn.execute("select id from photos")])
-    got = {m["relpath"]: (m["order_id"], m["fname"]) for m in originals.rows_of(r, list(meta.values()))}
+    got = {m["relpath"]: (m["platform"], m["order_id"], m["fname"], m["site"]["url"])
+           for m in originals.rows_of(r, list(meta.values()))}
+    yp, xx = "https://www.yipai360.com/photolivepc/?orderId=", "https://www.xxpie.com/m/albumFilenameSearch?album_id=abc"
     assert got == {
-        "albums/yipai-1001/photos/101.jpg": ("1001", "IMG_101.JPG"),
-        "albums/yipai-1001/photos/102.jpg": ("1001", "IMG_102.JPG"),
-        "albums/yipai-1002/photos/101.jpg": ("1002", "DSC_101.JPG"),
-        "albums/xxpie-abc/photos/abc.jpg": ("", ""),
-        "albums/xxpie-abc/photos/late.jpg": ("", ""),
-        "albums/xxpie-abc/photos/bad.jpg": ("", ""),
+        "albums/yipai-1001/photos/101.jpg": ("yipai", "1001", "IMG_101.JPG", yp + "1001"),
+        "albums/yipai-1001/photos/102.jpg": ("yipai", "1001", "IMG_102.JPG", yp + "1001"),
+        "albums/yipai-1002/photos/101.jpg": ("yipai", "1002", "DSC_101.JPG", yp + "1002"),
+        "albums/xxpie-abc/photos/abc.jpg": ("xxpie", None, "X1.JPG", xx + "&search_word=X1.JPG"),
+        "albums/xxpie-abc/photos/late.jpg": ("xxpie", None, "X2.JPG", xx + "&search_word=X2.JPG"),
+        "albums/xxpie-abc/photos/bad.jpg": ("xxpie", None, "X3.JPG", xx + "&search_word=X3.JPG"),
     }
 
 

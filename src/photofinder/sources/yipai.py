@@ -246,6 +246,11 @@ class Downloader:
         return counts
 
 
+def site_link(site_id: str, fname: str | None) -> dict:
+    return {"url": f"{SITE}/photolivepc/?orderId={site_id}", "exact": False, "find_by": fname,
+            "hint": "paste the file name into 通过照片名搜索"}
+
+
 def refusal(order_id: str) -> str | None:
     if owner := races.load().owner(f"yipai-{order_id}"):
         return (f"yipai order {order_id} belongs to race {owner.slug}; "

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import httpx
 
-from photofinder import config
+from photofinder import config, races, sources
 from photofinder.index.stages import ALBUMS, MANIFEST_NAME
 from photofinder.sources import yipai
 
@@ -28,8 +28,9 @@ CSV_NAME = "photos.csv"
 ORIGINALS = "originals"
 DOWNLOADED = "downloaded"
 COLUMNS = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "group", "preview_path",
-           "original_path", "status"]
-COUNTS = ("downloaded", "skipped", "buy_on_site", "failed")
+           "original_path", "status", "site_url"]
+OPEN_ON_SITE = "open on site"
+COUNTS = ("downloaded", "skipped", "buy_on_site", "failed", "open_on_site")
 CSV_LOCK = threading.Lock()
 
 log = logging.getLogger("originals")
@@ -63,10 +64,54 @@ def is_yipai(collection: Path) -> bool:
     return (collection / MANIFEST_NAME).is_file() or any((collection / ALBUMS).glob(f"yipai-*/{MANIFEST_NAME}"))
 
 
-def manifest_of(collection: Path, album_key: str | None) -> Path | None:
+def manifest_of(collection: Path, album_key: str | None) -> Path:
+    return collection / MANIFEST_NAME if album_key is None else collection / ALBUMS / album_key / MANIFEST_NAME
+
+
+def album_site(album_key: str | None, registered: dict) -> tuple[str | None, str | None]:
     if album_key is None:
-        return collection / MANIFEST_NAME
-    return collection / ALBUMS / album_key / MANIFEST_NAME if album_key.startswith("yipai-") else None
+        return None, None
+    if album := registered.get(album_key):
+        return album.platform, album.site_id
+    platform, _, site_id = album_key.partition("-")
+    return platform, site_id or None
+
+
+def read_manifest(path: Path, platform: str | None, ids: list[str]) -> tuple[str | None, dict]:
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as m:
+        names = {n for n, in m.execute("select name from sqlite_master")}
+        if platform in (None, "yipai") and "photos" in names:
+            nums = [int(i) for i in ids if i.isdigit()]
+            return "yipai", {str(pid): (fname, order) for pid, order, fname in m.execute(
+                f"select photo_id, order_id, fname from photos where photo_id in ({','.join('?' * len(nums))})",
+                nums)}
+        if "catalog" not in names:
+            return platform, {}
+        return platform, {sid: (fname, None) for sid, fname in m.execute(
+            f"select source_id, fname from catalog where source_id in ({','.join('?' * len(ids))})", ids)}
+
+
+def sites_of(collection: Path, metas: list[dict]) -> list[dict]:
+    registered = {a.key: a for r in races.load().races for a in r.albums}
+    by_album = {}
+    for meta in metas:
+        by_album.setdefault(meta.get("album_key"), set()).add(meta["source_photo_id"] or "")
+    found = {}
+    for key, ids in by_album.items():
+        platform, site_id = album_site(key, registered)
+        path = manifest_of(collection, key)
+        rows = {}
+        if path.is_file():
+            platform, rows = read_manifest(path, platform, sorted(ids - {""}))
+        found[key] = platform, site_id, rows
+    out = []
+    for meta in metas:
+        platform, site_id, rows = found[meta.get("album_key")]
+        fname, order = rows.get(meta["source_photo_id"] or "", (None, None))
+        site = sources.site_link(platform, order if platform == "yipai" else site_id, fname) \
+            if (meta["source_photo_id"] or "") in rows else None
+        out.append({"platform": platform, "fname": fname, "site": site, "order_id": order})
+    return out
 
 
 def profile_folder(collection: Path, profile: str) -> Path:
@@ -85,21 +130,8 @@ def yipai_id(meta: dict) -> int | None:
 
 
 def rows_of(collection: Path, metas: list[dict]) -> list[dict]:
-    by_album = {}
-    for meta in metas:
-        if (i := yipai_id(meta)) is not None:
-            by_album.setdefault(meta.get("album_key"), []).append(i)
-    manifest = {}
-    for key, ids in by_album.items():
-        path = manifest_of(collection, key)
-        if path is None or not path.is_file():
-            continue
-        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as m:
-            manifest |= {(key, pid): (order, fname) for pid, order, fname in m.execute(
-                f"select photo_id, order_id, fname from photos where photo_id in ({','.join('?' * len(ids))})", ids)}
-    return [{**meta, "preview": collection / meta["relpath"], "file": file_name(meta),
-             **dict(zip(("order_id", "fname"), manifest.get((meta.get("album_key"), yipai_id(meta)), ("", ""))))}
-            for meta in metas]
+    return [{**meta, "preview": collection / meta["relpath"], "file": file_name(meta), **site}
+            for meta, site in zip(metas, sites_of(collection, metas))]
 
 
 def valid(path: Path) -> bool:
@@ -118,7 +150,9 @@ def statuses(folder: Path, rows: list[dict]) -> dict:
     old = read_csv(folder)
     out = {}
     for r in rows:
-        if (folder / ORIGINALS / r["file"]).is_file():
+        if r["platform"] not in (None, "yipai"):
+            out[r["photo_id"]] = OPEN_ON_SITE
+        elif (folder / ORIGINALS / r["file"]).is_file():
             out[r["photo_id"]] = DOWNLOADED
         else:
             s = old.get(r["source_photo_id"] or "")
@@ -134,9 +168,9 @@ def write_csv(folder: Path, rows: list[dict], updates: dict | None = None) -> Pa
         w.writerow(COLUMNS)
         for r in rows:
             original = folder / ORIGINALS / r["file"]
-            w.writerow([r["source_photo_id"] or "", r["fname"], r["photographer"] or "", r["taken_at"] or "",
+            w.writerow([r["source_photo_id"] or "", r["fname"] or "", r["photographer"] or "", r["taken_at"] or "",
                         r["album"] or "", r["group"] or "", r["preview"], original if original.is_file() else "",
-                        status[r["photo_id"]] or ""])
+                        status[r["photo_id"]] or "", r["site"]["url"] if r["site"] else ""])
         folder.mkdir(parents=True, exist_ok=True)
         yipai.write_atomic(folder / CSV_NAME, buf.getvalue().encode("utf-8-sig"))
     return folder / CSV_NAME
@@ -233,8 +267,10 @@ class Fetcher:
         raise Failed(error)
 
     def original(self, row: dict, dest: Path) -> str:
+        if row["platform"] not in (None, "yipai"):
+            return OPEN_ON_SITE
         dest.unlink(missing_ok=True)
-        if not row["fname"]:
+        if row["platform"] is None or not row["fname"]:
             return "failed: not in the gallery manifest"
         try:
             data = self.fetch(self.lookup(row["order_id"], row["fname"], yipai_id(row)))
@@ -307,7 +343,7 @@ class Job:
                 with self.lock:
                     self.state["counts"][key] += 1
                     self.state["done"] = i + 1
-                    if result != DOWNLOADED:
+                    if result not in (DOWNLOADED, OPEN_ON_SITE):
                         self.state["errors"].append(f"{row['source_photo_id']} {row['fname']}: {result}")
         except Cancelled:
             state = "cancelled"

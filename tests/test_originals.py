@@ -24,20 +24,20 @@ def jpeg(pid):
 
 
 class Gallery:
-    def __init__(self, t, page_size=2):
-        self.t, self.page_size = t, page_size
+    def __init__(self, t, page_size=2, order=ORDER):
+        self.t, self.page_size, self.order = t, page_size, order
         self.photos, self.images = [], {}
         self.lookups, self.fetched = [], []
         self.api = lambda req: None
         self.on_image = lambda pid: None
 
     def add(self, pid, fname):
-        self.photos.append({"photoId": pid, "orderId": ORDER, "fname": fname, "img": {
+        self.photos.append({"photoId": pid, "orderId": self.order, "fname": fname, "img": {
             "primary": "https://o-a.test", "failover": "https://o-b.test", "path": f"/o/{pid}", "sign": "?Expires=1"}})
 
     def __call__(self, req):
         if req.url.path.endswith("/audience/photos"):
-            assert req.url.path == f"/api/v1/yipai/order/{ORDER}/audience/photos"
+            assert req.url.path == f"/api/v1/yipai/order/{self.order}/audience/photos"
             self.lookups.append((self.t.now, req.url.params["fileName"], int(req.url.params["page"])))
             forced = self.api(req)
             if forced is not None:
@@ -119,7 +119,7 @@ def test_duplicate_names_resolved_by_photo_id_across_pages_with_paced_lookups(tm
         g.add(pid, fname)
     status = run(api)
     assert status["state"] == "done" and (status["done"], status["total"]) == (2, 2)
-    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 0, "failed": 0}
+    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 0, "failed": 0, "open_on_site": 0}
     assert status["folder"] == str(folder(tmp_path)) and status["profile"] == "Me"
     assert [(f, p) for _, f, p in g.lookups] == [("未标题-1", 1), ("IMG_1", 1), ("IMG_1", 2)]
     times = [when for when, _, _ in g.lookups]
@@ -147,7 +147,7 @@ def test_403_non_jpeg_and_missing_are_buy_on_site_and_job_continues(tmp_path, mo
                 5: [httpx.Response(200, content=jpeg(5)[:-2])] * 2}
     status = run(api)
     assert status["state"] == "done" and status["done"] == 6
-    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 3, "failed": 1}
+    assert status["counts"] == {"downloaded": 2, "skipped": 0, "buy_on_site": 3, "failed": 1, "open_on_site": 0}
     assert [e.split(": ", 1)[1] for e in status["errors"]] == [
         "buy on site: HTTP 403", "buy on site: not a JPEG", "buy on site: not found in the gallery",
         "failed: truncated JPEG"]
@@ -181,7 +181,7 @@ def test_rerun_skips_existing_without_requests_and_refetches_stale_part(tmp_path
     g.lookups.clear(), g.fetched.clear()
     status = run(api)
     assert (g.lookups, g.fetched) == ([], [])
-    assert status["counts"] == {"downloaded": 0, "skipped": 2, "buy_on_site": 0, "failed": 0}
+    assert status["counts"] == {"downloaded": 0, "skipped": 2, "buy_on_site": 0, "failed": 0, "open_on_site": 0}
     d = folder(tmp_path) / "originals"
     (d / "20260925-080200_cam_2.jpg").rename(d / "20260925-080200_cam_2.jpg.part")
     (d / "20260925-080100_cam_1.jpg").write_bytes(jpeg(1)[:-2])
@@ -302,7 +302,7 @@ def test_start_needs_marked_photos(tmp_path, monkeypatch):
     assert api.post("/api/originals", json={"profile_id": 9}).status_code == 404
     assert api.get("/api/originals").json() == {
         "state": "idle", "profile_id": None, "profile": None, "done": 0, "total": 0, "current": None,
-        "counts": {"downloaded": 0, "skipped": 0, "buy_on_site": 0, "failed": 0}, "errors": [], "folder": None}
+        "counts": {"downloaded": 0, "skipped": 0, "buy_on_site": 0, "failed": 0, "open_on_site": 0}, "errors": [], "folder": None}
 
 
 def test_zip_contains_originals_and_csv(tmp_path, monkeypatch):
@@ -449,7 +449,7 @@ def test_invalid_existing_file_is_removed_when_refetch_fails(tmp_path, monkeypat
     (d / "20260925-080100_cam_1.jpg").write_bytes(jpeg(1)[:-2])
     status = run(api)
     assert status["counts"]["failed"] == 1 and files(tmp_path) == []
-    assert [r[7:] for r in read_csv(tmp_path)[1:]] == [["", "failed: HTTP 503"]]
+    assert [r[7:9] for r in read_csv(tmp_path)[1:]] == [["", "failed: HTTP 503"]]
     assert api.get("/api/me", params={"profile_id": ME}).json()["photos"][0]["original"] == "failed: HTTP 503"
     assert api.get("/api/originals/zip", params={"profile_id": ME}).status_code == 404
 
@@ -530,7 +530,7 @@ def test_non_yipai_collection_has_no_originals(tmp_path, monkeypatch):
         assert res.status_code == 400 and "yipai360" in res.json()["detail"], res.text
     rows = list(csv.reader(open(api.post("/api/export", json={"profile_id": ME}).json()["path"],
                                 encoding="utf-8-sig")))
-    assert rows[1] == ["1", "", "", "", "", "", str(c.resolve() / "1.jpg"), "", ""]
+    assert rows[1] == ["1", "", "", "", "", "", str(c.resolve() / "1.jpg"), "", "", ""]
     (tmp_path / "y").mkdir()
     c2, _, _ = yipai_index(tmp_path / "y", monkeypatch, [("A1.JPG", None, None)])
     assert RaceClient(web.create_app(c2)).get("/api/facets").json()["originals"] is True

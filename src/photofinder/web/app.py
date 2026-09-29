@@ -117,6 +117,10 @@ def photo_meta(conn, photo_ids) -> dict:
     return {r[0]: dict(zip(keys, r)) for r in rows}
 
 
+def site_fields(row: dict) -> dict:
+    return {k: row[k] for k in ("platform", "fname", "site")}
+
+
 def bibs_of(conn, person_ids) -> dict:
     out = {}
     for pid, text, conf in conn.execute("select person_id, text, conf from bibs "
@@ -715,7 +719,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
                                 (photo_id,)).fetchall()
             ids = [r[0] for r in rows]
             bibs, labels = bibs_of(conn, ids), labels_of(conn, ids, profile_id)
-        return {**meta, "persons": [{"person_id": r[0], "box": list(r[1:]), "bibs": bibs.get(r[0], []),
+        return {**meta, **site_fields(originals.sites_of(st.dir, [meta])[0]), "persons": [{"person_id": r[0], "box": list(r[1:]), "bibs": bibs.get(r[0], []),
                                      "label": labels.get(r[0])} for r in rows]}
 
     def photo_path(st: RaceState, photo_id) -> Path:
@@ -777,11 +781,13 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             rows = me_rows(conn, profile_id)
             meta = photo_meta(conn, {r[0] for r in rows})
             bibs = bibs_of(conn, [r[1] for r in rows])
-        status = originals.statuses(originals.profile_folder(st.dir, name),
-                                    originals.rows_of(st.dir, list(meta.values())))
+        found = originals.rows_of(st.dir, list(meta.values()))
+        status = originals.statuses(originals.profile_folder(st.dir, name), found)
+        sites = {r["photo_id"]: site_fields(r) for r in found}
         photos = {}
         for photo_id, pid, *box in rows:
-            photos.setdefault(photo_id, {**meta[photo_id], "original": status[photo_id], "persons": []})["persons"].append(
+            photos.setdefault(photo_id, {**meta[photo_id], **sites[photo_id], "original": status[photo_id],
+                                         "persons": []})["persons"].append(
                 {"person_id": pid, "box": box, "bibs": bibs.get(pid, []), "label": "me"})
         return {"photos": list(photos.values()), "count": len(photos)}
 
@@ -862,6 +868,9 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             raise bad("download was cancelled; try again", 409)
         except Blocked as e:
             raise bad(f"yipai360 API unavailable: {e}", 502)
+        if result == originals.OPEN_ON_SITE:
+            raise bad(f"{result}: originals are downloaded only from yipai360; open this photo on "
+                      f"{row['platform']} instead", 409)
         if result.startswith("buy on site"):
             raise bad(result, 402)
         if result != originals.DOWNLOADED:

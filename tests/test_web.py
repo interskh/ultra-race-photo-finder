@@ -438,9 +438,9 @@ def test_my_photos_and_export(tmp_path, monkeypatch):
     assert raw.startswith("﻿".encode())
     assert list(csv.reader(io.StringIO(raw.decode("utf-8-sig")))) == [
         ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "group",
-         "preview_path", "original_path", "status"],
-        ["1", "", "阿光", "2026-09-25 08:00:00", "9.25 赛事", "终点", str(c.resolve() / "1.jpg"), "", ""],
-        ["", "", "阿光", "", "9.25 赛事", "", str(c.resolve() / "4.jpg"), "", ""],
+         "preview_path", "original_path", "status", "site_url"],
+        ["1", "", "阿光", "2026-09-25 08:00:00", "9.25 赛事", "终点", str(c.resolve() / "1.jpg"), "", "", ""],
+        ["", "", "阿光", "", "9.25 赛事", "", str(c.resolve() / "4.jpg"), "", "", ""],
     ]
 
 

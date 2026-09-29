@@ -663,3 +663,36 @@ Setup: real `photofinder serve --port 8790` with no argument, from the worktree'
 - Delete the scratch root `/Volumes/Ext1TB/Projects/photo-finder-scratch/2026-09-29-picker` (about 1 GB of index copies) once satisfied.
 
 implement-loop: slice 6 shipped 3d71e0f; remaining: [7]
+
+## Slice 7 · Task 1 — site links, fname in the photo API, open on site
+
+**Decisions**
+- `site_link(site_id, fname)` in each of `sources/{yipai,pailixiang,xxpie,photoplus}.py` plus a dispatcher `sources.site_link(platform, site_id, fname)` in `sources/__init__.py` (lazy imports; returns None for an unknown platform or a missing site_id). Shape `{url, exact, find_by, hint}`; hints are the spec §4.4 wording; xxpie hint is `None`; xxpie `exact` is `bool(fname)`, and fname is encoded with `quote(safe="")`.
+- `originals.sites_of(collection, metas)` resolves each photo once: platform/site_id come from the registry album by key, else from `key.partition("-")`. Every album key maps to `albums/<key>/manifest.sqlite`, and a None key maps to the root manifest. One read-only connection per album, with rows keyed per album by source_id, so the effective key is (album_key, source_id). `rows_of` = meta + preview/file + `sites_of` fields.
+- yipai rows are read from the `photos` table by integer `photo_id` (`order_id`, `fname`), not from the `catalog` view. On the live yipai manifest (68k rows, 60 ids, read-only) that took 0.2 ms, against 10.4 ms for the view, which filters on `cast(photo_id as text)` and so can't use the index. It is equivalent because `CATALOG_SELECT.fname` is `p.fname`, and legacy manifests without the view need no fallback. Non-yipai albums query `catalog where source_id in (…)`.
+- A None-key (legacy single-album) collection counts as yipai iff its root manifest has a `photos` table. A catalog-only root manifest gets `platform` None and `site` None.
+- `site` needs the photo's catalog row. A yipai site_id is the row's `order_id`, which keeps race925-style collections working.
+- API additions: `platform`, `fname` and `site` on `GET /photos/{id}` and on `/me` photos, via `web.app.site_fields`. `platform` is additive (not in §4.5), like `album_key` was; it lets the UI hide the per-photo download. `photo_meta`/`hydrate` are unchanged, so search results do no manifest lookup (tested).
+- Originals: the platform gate comes first in `Fetcher.original`, so no request is made and no dest is unlinked. It covers `Job.run` and `Job.single`. Known non-yipai platform → `open on site`; platform None or empty fname → the old `failed: not in the gallery manifest`. Also: `open_on_site` added to `COUNTS`, `open on site` rows are not added to `errors`, and `statuses()` returns `open on site` for non-yipai rows before the file/CSV checks. `photo_original` → 409 `open on site: …`. The UI's stale check needs a `loaded` key, which this 409 doesn't have, so the UI shows it as a plain banner.
+- CSV: `site_url` is appended as the last column, so existing column positions stay the same. `read_csv` is DictReader-based, so 8- and 9-column files still read.
+
+**Rejected**
+- Reading yipai through the `catalog` view: 50× slower per lookup, and `order_id` still needs the `photos` table.
+- An index column for fname: live indexes are already scanned, and one is being indexed.
+- `site` built from the registry/key alone, without a catalog row: legacy yipai has no key and needs `order_id`, and xxpie without fname can't be exact.
+- 400 for the non-yipai per-photo download: 409 (state conflict) is equally clear, and it doesn't collide with the UI's stale handling.
+
+**Assumptions**
+- The registry `site_id` equals the key suffix for every registered album; `races.check_album` builds the key from it.
+- Only yipai manifests have a `photos` table (base `SCHEMA` creates `catalog` and `meta` only).
+
+**Deferred**
+- `file_name`/`statuses`/`read_csv` are still keyed on `source_photo_id` alone. Safe now: non-yipai rows get `open on site` before any CSV/file lookup and never get an originals file, and yipai ids are site-global, so two yipai albums can't share one.
+- Viewer / My photos UI (Open on site, copy button, hints, hiding the per-photo download when `platform != "yipai"`): Task 2.
+- A non-yipai-only job still writes the CSV once per row, same as yipai rows (O(n) rewrites; fine at marked-photo scale).
+
+**Touches**
+- `src/photofinder/sources/__init__.py` (new `site_link` dispatcher), `sources/{yipai,pailixiang,xxpie,photoplus}.py` (`site_link`).
+- `src/photofinder/originals.py`: `COLUMNS` + `site_url` (CSV contract), `COUNTS` + `open_on_site` (job status API), `OPEN_ON_SITE`, `manifest_of` (no longer returns None), `album_site`, `read_manifest`, `sites_of`, `rows_of`, `statuses`, `Fetcher.original`, `Job.run`.
+- `src/photofinder/web/app.py`: `site_fields`; photo detail and `/me` gain `platform`/`fname`/`site` (public API); `photo_original` 409.
+- Tests: new `tests/test_site_links.py`. `test_originals.Gallery` gains an `order` param. Count dicts and CSV rows were updated in `test_originals.py`/`test_web.py`, and `test_race_scan` rows_of expectations in `test_race_scan.py`. README My photos.

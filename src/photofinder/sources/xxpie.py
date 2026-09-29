@@ -3,6 +3,7 @@ import re
 import time
 import uuid
 from datetime import datetime
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -46,6 +47,11 @@ def registered(body):
     if not token:
         raise ValueError(f"xxpie visitor registration code {body.get('code')} {body.get('message') or ''}".rstrip())
     return token
+
+
+def site_link(site_id: str, fname: str | None) -> dict:
+    return {"url": f"{SITE}/m/albumFilenameSearch?album_id={site_id}&search_word={quote(fname or '', safe='')}",
+            "exact": bool(fname), "find_by": fname, "hint": None}
 
 
 class Adapter:
