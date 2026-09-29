@@ -12,12 +12,12 @@ import httpx
 from photofinder import config, db, evaluate, models, race_import, races, search
 from photofinder.index import stages
 from photofinder.memory import FootprintExceeded
-from photofinder.sources import pailixiang, yipai
+from photofinder.sources import pailixiang, xxpie, yipai
 from photofinder.sources.base import AlbumDownloader
 from photofinder.sources.common import AlreadyRunning, Blocked
 
 log = logging.getLogger("photofinder")
-ADAPTERS = {"pailixiang": pailixiang}
+ADAPTERS = {"pailixiang": pailixiang, "xxpie": xxpie}
 LOCK_NAME = "index.lock"
 SERVE_LOCK_NAME = "serve.lock"
 COLLECTION_HELP = "race slug (registered in data/races.json) or collection directory"

@@ -1,0 +1,16 @@
+{
+ "code": 0,
+ "result": {
+  "user_id": "900000000000000001",
+  "username": "00000000000000000000000000000001",
+  "open_id": "visitor_open_id_795247487790631435",
+  "nick_name": "Photographer F",
+  "sex": "UNKNOWN",
+  "role": "visitor",
+  "status": "NORMAL",
+  "icon_photo_key": "avatar-flat_27-crocodile.png",
+  "bucket_name": "yijiaren-prod",
+  "union_id": null,
+  "token": "test-visitor-token"
+ }
+}

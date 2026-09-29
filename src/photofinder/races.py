@@ -115,7 +115,7 @@ def parse_url(url: str) -> tuple[str, str]:
     if platform == "yipai":
         site_id = query.get("orderId", [""])[0]
     elif platform == "xxpie":
-        site_id = query.get("album_id", [""])[0]
+        site_id = (query.get("album_id") or query.get("id") or [""])[0]
     elif platform == "pailixiang":
         m = re.fullmatch(r"/album/(a\d+)/?", u.path)
         site_id = m[1] if m else ""

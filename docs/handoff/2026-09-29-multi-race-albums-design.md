@@ -418,3 +418,37 @@ Scratch root: `PHOTOFINDER_DATA_ROOT=/Volumes/Ext1TB/Projects/photo-finder-scrat
 
 implement-loop: slice 4 shipped 2f43047; remaining: [5, 6, 7]
 
+
+## Slice 5 · Task 1 — xxpie adapter
+
+**Decisions**
+- Token renewal is lazy. `check` (`Adapter.ok`) clears `self.token` on a non-zero `code` and raises ValueError. `fresh` (`Adapter.auth`) registers a new visitor when the token is None, so each retry carries a new token. TASK DEVIATION: the task said "renew in the check path". Doing it lazily means no registration is wasted after the last failed attempt: `tries` failures cost `tries` registrations. A test pins this (3 tries → tok1/tok2/tok3, 3 registrations).
+- The token is sent per request (`fresh` headers), not on the client. Image GETs go without it, like the probe's curl fetches.
+- Register: `fresh` builds a new `uuid4().hex` username on each attempt. The check needs `code == 0` and a non-empty `result.token`, else ValueError (retried). A registration that exhausts its retries raises from inside `fresh`: RetriesExhausted/Blocked are not caught by fetch_json, so the outer call raises at once (no nested retry loop).
+- `platform=H5` is a query param on every GET. Register sends it in the JSON body only, as probed.
+- Total: `meta()` reads `querySubAlbumPhotoInfo.photo_count` (any non-bool int, 0 included). `list_page` returns `photo_count - len(skipped)` (None if unknown), so skipped rows don't show up as `missing`. This is the pailixiang fix applied to a total that comes from meta. The listing's `count` (always 0) is never read.
+- `photographer_uid = photographer.team_id`. In the fixture, `upload_by` is absent from every listing row, and `team_id` 61a8abc6… equals Photographer E's `sys_user_id` in `upload_bys`. A test checks every sample row against `upload_bys`.
+- `record_time`: must fully match `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z`, then `fromisoformat` (py ≥3.13 accepts Z) → Asia/Shanghai → `%Y-%m-%d %H:%M:%S` (ms dropped). Anything else, including an impossible date, becomes None.
+- Cursor = page_no int (None → 1). Next = page+1 while `len(photos) >= 60`. A full last page costs one extra empty request.
+- No `meta_items()`. The manifest `meta` keeps only `title`.
+- `races.parse_url` for xxpie takes `album_id`, else `id`. The user's `/m/album?id=…` URL now works; `?id=../x` is still refused by SITE_ID.
+- Fixtures: `xxpie_list.json` and `xxpie_subalbum_info.json` are verbatim copies of the probe files. `xxpie_register.json` (token REDACTED, icon URL dropped) and `xxpie_style.json` (trimmed) come from 3 live requests, ≥2.5 s apart; the same trimmed copies are in the probe folder.
+
+**Rejected**
+- Storing the visitor token in `meta` (spec §4.2 names it as an example): nothing reads `meta` back (the adapter contract has no read path), so it would be a bearer credential on disk that nothing uses. Registering once per run costs a single request.
+- Registering inside `check` (the literal task wording): it wastes a registration after the final failed attempt, and it nests a network call inside response validation.
+- Using `upload_by` for the uid: it isn't in the listing.
+
+**Assumptions**
+- The body shape of a non-zero `code` is unverified. `queryAlbumStyleH5` answered `code 0` with a garbage token (live), so the style call doesn't depend on the token. Renewal is tested only against a synthetic `{"code": 401, "message": …}`. The listing endpoint was outside the probe allowance. To check: a real download log would show `xxpie code …` warnings.
+- `album add` costs 3 requests: register, style, subalbum info.
+- `photo_count` (3670 at probe) equals what the ALL sub-album listing returns. Any gap shows as `missing`.
+
+**Deferred**
+- Real xxpie download and index of Chongli: the orchestrator runs them (register `2026-chongli168`, then `album add … https://www.xxpie.com/m/album?id=65178998a458227944415097`).
+- Task 2: `test_download.test_unsupported_platform_album_is_skipped` now uses a photoplus URL. Once photoplus registers, no platform is unsupported, so the test must monkeypatch `cli.ADAPTERS` (e.g. drop a key) or be deleted.
+- `site_link` for xxpie: Slice 7.
+
+**Touches**
+- New: `src/photofinder/sources/xxpie.py`, `tests/test_xxpie.py`, `tests/fixtures/xxpie_{list,subalbum_info,register,style}.json`, `docs/handoff/2026-09-29-platform-probes/xxpie_{register,style}.json`.
+- `src/photofinder/cli.py` (`ADAPTERS["xxpie"]`, import), `src/photofinder/races.py` (`parse_url` xxpie `id`), `tests/test_races.py` (`?id=` accept/reject cases), `tests/test_download.py` (skip test → photoplus), README.md (title fetch and download lines).

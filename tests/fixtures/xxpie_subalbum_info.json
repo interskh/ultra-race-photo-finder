@@ -1,0 +1,84 @@
+{
+ "code": 0,
+ "result": {
+  "album_id": "65178998a458227944415097",
+  "create_by": "000000000000000000000c01",
+  "team_id": "000000000000000000000c01",
+  "group_type": "CHILDREN_ALBUM",
+  "upload_bys": [
+   {
+    "nick_name": "全部",
+    "nick_name_en": "ALL in",
+    "is_display": 1,
+    "sys_user_id": "ALL",
+    "total": 3670,
+    "seq": 0
+   },
+   {
+    "nick_name": "Photographer E",
+    "is_display": 1,
+    "sys_user_id": "000000000000000000000a01",
+    "total": 798,
+    "seq": 1
+   },
+   {
+    "nick_name": "Photographer G",
+    "is_display": 1,
+    "sys_user_id": "000000000000000000000a02",
+    "total": 1621,
+    "seq": 2
+   },
+   {
+    "nick_name": "Photographer H",
+    "is_display": 1,
+    "sys_user_id": "000000000000000000000a03",
+    "total": 89,
+    "seq": 3
+   },
+   {
+    "nick_name": "Photographer I",
+    "is_display": 1,
+    "sys_user_id": "000000000000000000000a04",
+    "total": 113,
+    "seq": 4
+   },
+   {
+    "nick_name": "Photographer J",
+    "is_display": 1,
+    "sys_user_id": "000000000000000000000a05",
+    "total": 409,
+    "seq": 5
+   },
+   {
+    "nick_name": "Photographer K",
+    "is_display": 1,
+    "sys_user_id": "900000000000000002",
+    "total": 257,
+    "seq": 6
+   },
+   {
+    "nick_name": "Photographer L",
+    "is_display": 1,
+    "sys_user_id": "000000000000000000000c01",
+    "total": 383,
+    "seq": 1000
+   }
+  ],
+  "taskSubs": [
+   {
+    "album_sub_id": "ALL",
+    "task_sub_name": "全部",
+    "task_sub_name_en": "ALL in",
+    "task_sub_name_other": null,
+    "introduction": null,
+    "sub_album_type": "PARENT",
+    "is_display": 1,
+    "access_mode": "PUBLIC",
+    "sub_album_seq": 0,
+    "create_time": "2026-07-09T04:33:05.000Z",
+    "total_photos": 3670
+   }
+  ],
+  "photo_count": 3670
+ }
+}

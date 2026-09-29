@@ -72,6 +72,7 @@ def test_save_is_atomic_when_replace_fails(data_root, monkeypatch):
     ("https://live.pailixiang.com/album/a13800138000", "pailixiang", "a13800138000"),
     ("https://live.pailixiang.com/album/a13800138000/", "pailixiang", "a13800138000"),
     ("https://www.xxpie.com/m/album?album_id=66c1f0e2ab&is_visited=0", "xxpie", "66c1f0e2ab"),
+    ("https://www.xxpie.com/m/album?id=65178998a458227944415097", "xxpie", "65178998a458227944415097"),
     ("https://live.photoplus.cn/live/39352660?accessFrom=live#/live", "photoplus", "39352660"),
 ])
 def test_add_album_parses_each_platform(data_root, url, platform, site_id):
@@ -92,6 +93,7 @@ def test_add_album_parses_each_platform(data_root, url, platform, site_id):
     "https://www.yipai360.com/photolivepc/?orderId=../../x",
     "https://live.pailixiang.com/album/13800138000",
     "https://www.xxpie.com/m/album",
+    "https://www.xxpie.com/m/album?id=../x",
     "https://live.photoplus.cn/live/",
     "not a url",
 ])

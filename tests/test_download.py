@@ -17,8 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 YIPAI_URL = f"https://www.yipai360.com/photolivepc/?orderId={ORDER}"
 OTHER_URL = "https://www.yipai360.com/photolivepc/?orderId=ORD2"
 PLX_URL = "https://live.pailixiang.com/album/a13800138000"
-XX_ID = "65178998a458227944415097"
-XX_URL = f"https://www.xxpie.com/m/album?album_id={XX_ID}"
+PP_URL = "https://live.photoplus.cn/live/39352660?accessFrom=live#/live"
 
 
 @pytest.fixture(autouse=True)
@@ -108,9 +107,9 @@ def test_unknown_album_key_lists_the_keys(data_root, site):
 
 
 def test_unsupported_platform_album_is_skipped(site, capsys):
-    race(XX_URL, YIPAI_URL)
+    race(PP_URL, YIPAI_URL)
     cli.main(["download", "2026-x"])
-    assert f"skipping xxpie-{XX_ID}: xxpie downloads are not supported yet" in capsys.readouterr().out
+    assert "skipping photoplus-39352660: photoplus downloads are not supported yet" in capsys.readouterr().out
     assert site.made == [ORDER]
 
 
