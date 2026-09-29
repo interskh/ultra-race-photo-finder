@@ -96,8 +96,9 @@ def filter_where(filters: Filters) -> tuple[list[str], list]:
         args.append(filters.end)
     if filters.photographers:
         marks = ",".join("?" * len(filters.photographers))
-        where.append(f"(ph.photographer in ({marks}) or ph.photographer_uid in ({marks}))")
-        args += [*filters.photographers, *filters.photographers]
+        where.append(f"(ph.photographer in ({marks}) or ph.photographer_uid in ({marks}) "
+                     f"or substr(ph.photographer_uid, instr(ph.photographer_uid, ':') + 1) in ({marks}))")
+        args += [*filters.photographers] * 3
     if filters.albums:
         where.append(f"ph.album in ({','.join('?' * len(filters.albums))})")
         args += filters.albums

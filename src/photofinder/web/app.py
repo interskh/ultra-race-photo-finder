@@ -108,10 +108,10 @@ def filters_of(q: SearchQuery) -> search.Filters:
 
 def photo_meta(conn, photo_ids) -> dict:
     photo_ids = list(photo_ids)
-    rows = conn.execute("select id, source_photo_id, taken_at, photographer, photographer_uid, album, grp, width, "
-                        f"height, relpath from photos where id in ({marks(photo_ids)})", photo_ids)
-    keys = ("photo_id", "source_photo_id", "taken_at", "photographer", "photographer_uid", "album", "group", "width",
-            "height", "relpath")
+    rows = conn.execute("select id, source_photo_id, taken_at, photographer, photographer_uid, album, album_key, grp, "
+                        f"width, height, relpath from photos where id in ({marks(photo_ids)})", photo_ids)
+    keys = ("photo_id", "source_photo_id", "taken_at", "photographer", "photographer_uid", "album", "album_key", "group",
+            "width", "height", "relpath")
     return {r[0]: dict(zip(keys, r)) for r in rows}
 
 

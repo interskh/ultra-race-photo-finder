@@ -508,6 +508,16 @@ def test_photographer_matches_nickname_or_uid_and_repeats(tmp_path):
     assert ranked(conn, photographers=("阿",)) == []
 
 
+def test_bare_uid_matches_platform_prefixed_and_legacy_uids(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    conn.executemany("update photos set photographer_uid = ? where relpath = ?",
+                     [("yipai:123", "1.jpg"), ("123", "2.jpg"), ("xxpie:9123", "3.jpg")])
+    assert ranked(conn, photographers=("123",)) == ["1.jpg", "2.jpg"]
+    assert ranked(conn, photographers=("yipai:123",)) == ["1.jpg"]
+    assert ranked(conn, photographers=("Lens",)) == ["2.jpg"]
+    assert ranked(conn, photographers=("yipai",)) == []
+
+
 def test_album_is_exact_and_repeatable(tmp_path):
     _, conn, _ = filter_index(tmp_path)
     assert ranked(conn, albums=("定妆照",)) == ["3.jpg"]

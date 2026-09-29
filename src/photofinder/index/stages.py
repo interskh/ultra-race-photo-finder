@@ -10,11 +10,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from photofinder import models
+from photofinder import models, races
 from photofinder.memory import AdaptiveBatcher
+from photofinder.sources import yipai
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MANIFEST_NAME = "manifest.sqlite"
+ALBUMS = "albums"
 EXIF_IFD, DATETIME_ORIGINAL, MODEL, ORIENTATION = 0x8769, 0x9003, 0x0110, 0x0112
 COMMIT_EVERY = 200
 DETECT_BATCH, EMBED_BATCH, SCENE_BATCH, OCR_BATCH = 8, 64, 16, 64
@@ -38,16 +40,27 @@ def find_images(collection: Path) -> list[str]:
     return sorted(found)
 
 
-def load_manifest(collection: Path) -> dict[int, tuple]:
-    path = collection / MANIFEST_NAME
+def load_catalog(folder: Path) -> dict[str, tuple]:
+    path = folder / MANIFEST_NAME
     if not path.is_file():
         return {}
     uri = f"{path.resolve().as_uri()}?mode=ro"
     with closing(sqlite3.connect(uri, uri=True, timeout=10)) as db:
-        rows = db.execute("""select p.photo_id, p.uid, g.nickname, t.name from photos p
-                             left join photographers g on g.uid = p.uid
-                             left join tags t on t.tag_id = p.tag_id""").fetchall()
-    return {pid: (uid, nick, grp) for pid, uid, nick, grp in rows}
+        has_view = db.execute("select 1 from sqlite_master where name = 'catalog'").fetchone()
+        rows = db.execute("select source_id, photographer_uid, photographer, group_name, taken_at from "
+                          + ("catalog" if has_view else f"({yipai.CATALOG_SELECT})")).fetchall()
+    return {sid: rest for sid, *rest in rows}
+
+
+def shot_time(taken: datetime) -> tuple[str, float]:
+    return taken.strftime("%Y-%m-%d %H:%M:%S"), taken.timestamp()
+
+
+def catalog_time(value: str | None) -> tuple:
+    try:
+        return shot_time(datetime.strptime(value, "%Y-%m-%d %H:%M:%S")) if value else (None, None)
+    except ValueError:
+        return None, None
 
 
 def read_exif(img: Image.Image) -> tuple:
@@ -61,12 +74,32 @@ def read_exif(img: Image.Image) -> tuple:
         return None, None, None
     if taken is None:
         return None, None, camera
-    return taken.strftime("%Y-%m-%d %H:%M:%S"), taken.timestamp(), camera
+    return *shot_time(taken), camera
+
+
+def album_of(relpath: str) -> str | None:
+    parts = relpath.split("/")
+    return parts[1] if len(parts) > 2 and parts[0] == ALBUMS else None
+
+
+def load_albums(collection: Path, files: list[str]) -> dict[str, tuple]:
+    registered = {a.key: a for r in races.load().races for a in r.albums}
+    out = {}
+    for key in sorted({k for k in map(album_of, files) if k}):
+        album = registered.get(key)
+        platform = album.platform if album else key.split("-", 1)[0]
+        out[key] = (album.title if album and album.title else key, platform,
+                    load_catalog(collection / ALBUMS / key))
+    return out
 
 
 def scan(db: sqlite3.Connection, collection: Path) -> dict:
     files = find_images(collection)
-    manifest = load_manifest(collection)
+    is_race = (collection / ALBUMS).is_dir()
+    if is_race:
+        albums = load_albums(collection, files)
+    else:
+        catalog = load_catalog(collection)
     existing = {r for (r,) in db.execute("select relpath from photos")}
     counts = {"new": 0, "existing": 0, "errors": 0}
     for relpath in files:
@@ -74,10 +107,16 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
             counts["existing"] += 1
             continue
         stem = Path(relpath).stem
-        try:
-            uid, photographer, grp = manifest.get(int(stem), (None, None, None))
-        except ValueError:
-            uid = photographer = grp = None
+        key = title = platform = None
+        if is_race:
+            key = album_of(relpath)
+            if key is None:
+                log.warning("skipping %s: not under %s/<album>/ in a race directory", relpath, ALBUMS)
+                continue
+            title, platform, catalog = albums[key]
+        uid, photographer, grp, listed_at = catalog.get(stem, (None, None, None, None))
+        if is_race and uid is not None:
+            uid = f"{platform}:{uid}"
         width = height = taken_at = taken_ts = camera = error = None
         status = "ok"
         try:
@@ -90,10 +129,12 @@ def scan(db: sqlite3.Connection, collection: Path) -> dict:
             status, error = "error", f"{type(e).__name__}: {e}"
             counts["errors"] += 1
             log.warning("unreadable image %s: %s", relpath, error)
+        if taken_at is None:
+            taken_at, taken_ts = catalog_time(listed_at)
         db.execute("""insert into photos(relpath, source_photo_id, width, height, taken_at, taken_ts, camera,
-                      photographer_uid, photographer, grp, scanned_at, status, error)
-                      values (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                   (relpath, stem, width, height, taken_at, taken_ts, camera, uid, photographer, grp,
+                      photographer_uid, photographer, album, album_key, grp, scanned_at, status, error)
+                      values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (relpath, stem, width, height, taken_at, taken_ts, camera, uid, photographer, title, key, grp,
                     now(), status, error))
         counts["new"] += 1
         if counts["new"] % COMMIT_EVERY == 0:

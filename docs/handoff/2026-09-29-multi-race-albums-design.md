@@ -104,3 +104,38 @@ implement-loop: slice 1 shipped 5939e35; remaining: [2, 3, 4, 5, 6, 7]
 
 **Touches**
 - New `src/photofinder/races.py` (registry API used by Slice 2 task 2 and Slice 3), `src/photofinder/cli.py` (`race add` subcommand, `resolve_collection`, `main()` order; `collection` help text), new `tests/test_races.py`. Shared surface: `data/races.json` format (§3.1).
+
+## Slice 2 · Task 2 — yipai catalog view, multi-album scan, originals per album
+
+**Decisions**
+- `yipai.CATALOG_SELECT` is the single SQL for both the `catalog` view (in `SCHEMA`) and scan's read-only fallback (`select … from (CATALOG_SELECT)` when `sqlite_master` has no `catalog`); one `mode=ro` connection per manifest, closed before image reads.
+- Scan uses the catalog for single-album collections too (keyed by text `source_id` = stem, no `int()`); album/album_key stay null and uids bare there.
+- Race = collection has `albums/` dir. Album key = 2nd path part of `albums/<key>/…` (≥3 parts). Images elsewhere in a race dir (race root, `albums/x.jpg`) are skipped with a warning and not inserted (so not counted).
+- Album title: registry lookup by key across all races (keys are globally unique); fallback to the key when unregistered or title is null, so the Album facet/filter still separates albums on a path-served race.
+- Platform = registered album's platform, else key prefix before first `-`. uid prefixed only when not null (never `yipai:None`).
+- Catalog `taken_at` used only when EXIF gives none; parsed strictly as `%Y-%m-%d %H:%M:%S`, `taken_ts` via the same naive-local `.timestamp()` as EXIF (shared `shot_time`); unparsable → both null.
+- Photographer filter: third disjunct `substr(uid, instr(uid, ':') + 1) in (…)`; a no-colon legacy uid compares whole.
+- `photo_meta` now emits `album_key` (needed by `rows_of`); `rows_of` groups metas by `album_key` → `albums/<key>/manifest.sqlite` for `yipai-*` keys, root manifest for null, nothing for other platforms (empty order_id/fname); lookup keyed `(album_key, photo_id)` so the same yipai id in two albums can't cross.
+- `is_yipai`: root manifest or any `albums/yipai-*/manifest.sqlite`. Fetcher already uses `row["order_id"]` per row — unchanged.
+- Facets need no change: photographers group by (uid, name), so a race lists prefixed uids; the UI sends `p.uid`, which hits the full-uid match.
+
+**Rejected**
+- Title null for unregistered albums: collapses every album into "no album" on a path-served race dir.
+- Creating the view at scan time: legacy manifests (subsets, live yipai) are opened `mode=ro`; Slice 3 migration owns creating it.
+- Keeping `load_manifest` for single-album and catalog only for races: two readers that can drift; the spec says scan reads only the catalog shape.
+- Looking up album titles via the race whose `race_dir` equals the collection: fails for path-served copies/subsets of a registered race.
+
+**Assumptions**
+- yipai photo files are named `<photo_id>.jpg` with no leading zeros; the text-key lookup differs from the old `int(stem)` only for stems like `0101`. Checked: all 68,488 files in the live 贡嘎 `photos/` match `^[1-9][0-9]*\.jpg` (directory listing only).
+- Only yipai manifests have `order_id`/`fname` in a `photos` table; `rows_of` selects by `yipai-` key prefix, not by registry platform.
+- A new-code yipai `Downloader` opening an existing manifest will add the view via `SCHEMA` (harmless, no data change).
+
+**Deferred**
+- Originals status for non-yipai photos still reads "failed: not in the gallery manifest" (empty fname) — Slice 7 changes it to `open on site`.
+- Catalog metadata changes after a photo is indexed aren't re-read (spec §7).
+- `originals.file_name`/`statuses`/`read_csv` key on `source_photo_id` alone: two albums in one race sharing a source id would share an originals file name and CSV status. Safe for yipai-only races (site-global ids); Slice 7 (non-yipai originals/status) should key by album too.
+- README/ROADMAP for race scan: Slice 3 task 3 owns docs.
+
+**Touches**
+- `src/photofinder/sources/yipai.py` (`CATALOG_SELECT`, `SCHEMA` view — shared manifest contract §4.2), `index/stages.py` (`load_catalog` replaces `load_manifest`, `ALBUMS`, `album_of`, `load_albums`, `shot_time`, `catalog_time`, scan), `search.py` (photographer filter), `originals.py` (`is_yipai`, `manifest_of`, `rows_of`), `web/app.py` (`photo_meta` adds `album_key` — public key in search/me/photo responses).
+- Tests: new `tests/test_race_scan.py`; `test_scan.py` (legacy-no-view, catalog-table), `test_search.py` (bare uid).

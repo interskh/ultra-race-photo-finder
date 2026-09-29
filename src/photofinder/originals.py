@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 
 from photofinder import config
-from photofinder.index.stages import MANIFEST_NAME
+from photofinder.index.stages import ALBUMS, MANIFEST_NAME
 from photofinder.sources import yipai
 
 LOOKUP_GAP = 6.0
@@ -60,7 +60,13 @@ def folder_key(name: str) -> str:
 
 
 def is_yipai(collection: Path) -> bool:
-    return (collection / MANIFEST_NAME).is_file()
+    return (collection / MANIFEST_NAME).is_file() or any((collection / ALBUMS).glob(f"yipai-*/{MANIFEST_NAME}"))
+
+
+def manifest_of(collection: Path, album_key: str | None) -> Path | None:
+    if album_key is None:
+        return collection / MANIFEST_NAME
+    return collection / ALBUMS / album_key / MANIFEST_NAME if album_key.startswith("yipai-") else None
 
 
 def profile_folder(collection: Path, profile: str) -> Path:
@@ -79,15 +85,21 @@ def yipai_id(meta: dict) -> int | None:
 
 
 def rows_of(collection: Path, metas: list[dict]) -> list[dict]:
-    ids = [i for i in map(yipai_id, metas) if i is not None]
+    by_album = {}
+    for meta in metas:
+        if (i := yipai_id(meta)) is not None:
+            by_album.setdefault(meta.get("album_key"), []).append(i)
     manifest = {}
-    if ids and is_yipai(collection):
-        uri = f"{(collection / MANIFEST_NAME).resolve().as_uri()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=10)) as m:
-            manifest = {pid: (order, fname) for pid, order, fname in m.execute(
+    for key, ids in by_album.items():
+        path = manifest_of(collection, key)
+        if path is None or not path.is_file():
+            continue
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as m:
+            manifest |= {(key, pid): (order, fname) for pid, order, fname in m.execute(
                 f"select photo_id, order_id, fname from photos where photo_id in ({','.join('?' * len(ids))})", ids)}
     return [{**meta, "preview": collection / meta["relpath"], "file": file_name(meta),
-             **dict(zip(("order_id", "fname"), manifest.get(yipai_id(meta), ("", ""))))} for meta in metas]
+             **dict(zip(("order_id", "fname"), manifest.get((meta.get("album_key"), yipai_id(meta)), ("", ""))))}
+            for meta in metas]
 
 
 def valid(path: Path) -> bool:

@@ -173,6 +173,39 @@ def test_manifest_rows_added_during_walk_are_joined(tmp_path, monkeypatch):
     assert got["photos/101.jpg"]["grp"] == "finish line"
 
 
+def test_legacy_manifest_without_catalog_view_scans_the_same(tmp_path):
+    with_view = make_collection(tmp_path / "a")
+    legacy = make_collection(tmp_path / "b")
+    m = sqlite3.connect(legacy / "manifest.sqlite")
+    m.execute("drop view catalog")
+    m.close()
+    keep = ("source_photo_id", "photographer_uid", "photographer", "grp", "album", "album_key", "taken_at")
+    got = []
+    for c in (with_view, legacy):
+        conn = db.connect(c)
+        scan(conn, c)
+        got.append({p: tuple(r[k] for k in keep) for p, r in rows(conn).items()})
+    assert got[0] == got[1] and got[0]["photos/105.jpg"] == ("105", "u2", "cam-b", "mountain", None, None, None)
+    names = sqlite3.connect(legacy / "manifest.sqlite").execute("select name from sqlite_master").fetchall()
+    assert ("catalog",) not in names
+
+
+def test_single_album_manifest_with_catalog_table_is_read_through_catalog(tmp_path):
+    c = tmp_path / "coll"
+    jpeg(c / "photos" / "abc.jpg")
+    m = sqlite3.connect(c / "manifest.sqlite")
+    m.execute("create table catalog(source_id text primary key, photographer_uid text, photographer text, "
+              "group_name text, taken_at text)")
+    m.execute("insert into catalog values ('abc', 's1', 'cam', 'g', '2026-09-25 08:30:00')")
+    m.commit()
+    m.close()
+    conn = db.connect(c)
+    scan(conn, c)
+    r = rows(conn)["photos/abc.jpg"]
+    assert (r["photographer_uid"], r["photographer"], r["grp"], r["album"], r["album_key"], r["taken_at"]) == \
+        ("s1", "cam", "g", None, None, "2026-09-25 08:30:00")
+
+
 def test_exif_rotated_photo_stores_upright_size(tmp_path):
     c = tmp_path / "coll"
     for orientation in (3, 6, 8):

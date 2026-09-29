@@ -23,13 +23,17 @@ RETRYABLE = {429, 500, 502, 503, 504}
 SIZE_KEY = "s1920"
 DEFAULT_DATA_ROOT = Path("/Volumes/Ext1TB/Projects/photo-finder/data")
 
-SCHEMA = """
+CATALOG_SELECT = """select cast(p.photo_id as text) as source_id, p.file, p.fname, p.uid as photographer_uid,
+  g.nickname as photographer, t.name as group_name, null as taken_at, p.width, p.height, p.status, p.error
+  from photos p left join photographers g on g.uid = p.uid left join tags t on t.tag_id = p.tag_id"""
+SCHEMA = f"""
 create table if not exists photos(
   photo_id integer primary key, order_id text, tag_id integer, uid text, fname text,
   width integer, height integer, size integer, create_time integer, path text,
   file text, status text not null default 'pending', error text);
 create table if not exists tags(tag_id integer primary key, order_id text, name text);
 create table if not exists photographers(uid text primary key, nickname text);
+create view if not exists catalog as {CATALOG_SELECT};
 """
 
 log = logging.getLogger("yipai")
