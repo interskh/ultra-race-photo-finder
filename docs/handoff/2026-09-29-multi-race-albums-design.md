@@ -29,3 +29,26 @@
 **Touches**
 - `src/photofinder/db.py` (photos schema + migration — shared surface), `search.py` (Filters, Result), `index/stages.py` (scan), `web/app.py` (SearchQuery.groups, facets `groups`, photo meta `grp`), `cli.py` (`--group`), `originals.py` (CSV COLUMNS `group`), README.md.
 - Tests: test_db, test_search, test_scan, test_web, test_originals.
+
+## Slice 1 · Task 2 — UI Group filter; photo API/viewer show group
+
+**Decisions**
+- Photo detail API renames `grp` → `group` in the endpoint only (`meta["group"] = meta.pop("grp")`); `photo_meta` keeps `grp`, so originals/CSV (`r.get("grp")`) and other callers are untouched. Response carries `group` only, not both.
+- UI: "Groups" checks list (`f-gr`, name `gr`, fed by `facets.groups`) placed right after Albums; wired into `filters()` (`groups`), active count, and the "filtered" sub-label. Clear already unchecks every checkbox in `#filter-form`, so no change there.
+- Empty facets: reused the shared `checks()` helper, which shows "None in this collection" — same as Albums; Album list kept visible on legacy collections (no new hide logic).
+- Viewer: `row('Group', d.group || '—')` after Album.
+
+**Rejected**
+- Renaming the key in `photo_meta`: would need changes in originals CSV and task-1 tests for no UI gain.
+- Returning both `grp` and `group`: duplicate field in a public response.
+- Hiding the Album dropdown when empty: new UI behaviour the spec doesn't ask for.
+
+**Assumptions**
+- Filters are not persisted (only profile id is in localStorage), so no persistence path to update — checked by grep.
+- `/api/search` group filtering is already covered by task 1's parametrized `test_filters_restrict_search` groups cases; no new test added.
+
+**Deferred**
+- Rendered browser check of the Groups list/viewer row (no server allowed this slice); JS verified by `node --check` on the extracted script plus the existing page-endpoint test.
+
+**Touches**
+- `src/photofinder/web/app.py` (GET /api/photos/{id} response key `group` — public API), `src/photofinder/web/static/index.html`, `tests/test_web.py`.

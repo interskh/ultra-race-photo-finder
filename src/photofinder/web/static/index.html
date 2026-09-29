@@ -274,6 +274,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
         <div class="checks" id="f-ph"></div>
         <label class="field" style="margin-top:12px">Albums</label>
         <div class="checks" id="f-al"></div>
+        <label class="field" style="margin-top:12px">Groups</label>
+        <div class="checks" id="f-gr"></div>
         <label class="field" for="f-bib" style="margin-top:12px">Bib contains</label>
         <input type="text" id="f-bib" placeholder="e.g. 20" autocomplete="off">
         <div class="row2" style="margin-top:12px">
@@ -527,17 +529,18 @@ function renderFacets() {
   };
   checks($('#f-ph'), 'ph', f.photographers.map(p => ({value: p.uid || p.name, label: p.name || p.uid, photos: p.photos})));
   checks($('#f-al'), 'al', f.albums.map(a => ({value: a.name, label: a.name, photos: a.photos})));
+  checks($('#f-gr'), 'gr', f.groups.map(g => ({value: g.name, label: g.name, photos: g.photos})));
 }
 
 function filters() {
   const checked = n => [...document.querySelectorAll(`input[name=${n}]:checked`)].map(i => i.value);
   const v = id => $('#' + id).value.trim() || null;
-  return {start: v('f-start'), end: v('f-end'), photographers: checked('ph'), albums: checked('al'), bib: v('f-bib')};
+  return {start: v('f-start'), end: v('f-end'), photographers: checked('ph'), albums: checked('al'), groups: checked('gr'), bib: v('f-bib')};
 }
 
 function countFilters() {
   const f = filters();
-  const n = [f.start, f.end, f.bib].filter(Boolean).length + (f.photographers.length ? 1 : 0) + (f.albums.length ? 1 : 0);
+  const n = [f.start, f.end, f.bib].filter(Boolean).length + (f.photographers.length ? 1 : 0) + (f.albums.length ? 1 : 0) + (f.groups.length ? 1 : 0);
   $('#f-count').textContent = n ? `· ${n} active` : '';
 }
 
@@ -592,7 +595,7 @@ function summary() {
   const sub = [`${fmt(S.results.length)}${S.total != null ? ' of ' + fmt(S.total) : ''} photos shown`];
   if (b.start_bib) sub.push('exact bib reads, in time order');
   if (b.mode === 'more') sub.push('marked photos hidden');
-  if (q.start || q.end || q.bib || q.photographers.length || q.albums.length) sub.push('filtered');
+  if (q.start || q.end || q.bib || q.photographers.length || q.albums.length || q.groups.length) sub.push('filtered');
   if (b.start_bib && S.descIgnored) sub.push('description not used with a bib search');
   if (S.timing != null) sub.push(`took ${took(S.timing)}`);
   $('#summary').innerHTML = '';
@@ -991,6 +994,7 @@ function renderModal() {
   row('Time', d.taken_at || 'unknown');
   row('Photographer', d.photographer || d.photographer_uid || 'unknown');
   row('Album', d.album || '—');
+  row('Group', d.group || '—');
   row('Source photo', d.source_photo_id || '—');
   row('Size', `${d.width} × ${d.height}`);
   const frame = $('#m-frame');

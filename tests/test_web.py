@@ -350,7 +350,7 @@ def test_photo_detail_lists_all_persons_with_bibs_labels_and_size(tmp_path):
     label(api, ids[1][1], "me")
     pid = photo_ids(conn)["1.jpg"]
     d = api.get(f"/api/photos/{pid}", params={"profile_id": ME}).json()
-    assert (d["photo_id"], d["width"], d["height"], d["taken_at"], d["photographer"], d["album"], d["grp"]) == \
+    assert (d["photo_id"], d["width"], d["height"], d["taken_at"], d["photographer"], d["album"], d["group"]) == \
         (pid, 200, 300, "2026-09-25 08:00:00", "阿光", "9.25 赛事", "终点")
     assert d["source_photo_id"] == "1"
     assert d["persons"] == [
