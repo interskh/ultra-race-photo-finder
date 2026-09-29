@@ -7,13 +7,14 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from photofinder import config, db, evaluate, models, search
+from photofinder import config, db, evaluate, models, races, search
 from photofinder.index import stages
 from photofinder.memory import FootprintExceeded
 
 log = logging.getLogger("photofinder")
 LOCK_NAME = "index.lock"
 SERVE_LOCK_NAME = "serve.lock"
+COLLECTION_HELP = "race slug (registered in data/races.json) or collection directory"
 
 
 def lock_index(collection: Path):
@@ -227,15 +228,36 @@ def cmd_serve(args):
         uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
 
 
+def cmd_race_add(args):
+    try:
+        race = races.add_race(args.slug, args.name)
+    except races.RaceError as e:
+        sys.exit(str(e))
+    print(f"registered race {race.slug} ({race.name}) in {races.registry_path()}")
+
+
+def resolve_collection(arg: Path) -> Path:
+    if arg.is_dir():
+        return arg
+    slug = str(arg)
+    if races.SLUG.fullmatch(slug) and races.load().race(slug):
+        d = races.race_dir(slug)
+        if not d.is_dir():
+            sys.exit(f"race {slug} has no directory {d} yet; add and download its albums first")
+        return d
+    known = ", ".join(r.slug for r in races.load().races) or "none registered"
+    sys.exit(f"{arg} is neither a directory nor a registered race (races: {known})")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="photofinder", description="Find your own photos in a race photo collection")
     sub = ap.add_subparsers(dest="command", required=True)
     p = sub.add_parser("index", help="scan, detect and embed a collection into <collection>/index.sqlite")
-    p.add_argument("collection", type=Path)
+    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--ocr", action="store_true", help="also read bib numbers with Apple Vision (slow, optional)")
     p.set_defaults(func=cmd_index)
     p = sub.add_parser("search", help="rank indexed photos by a query photo, person text and/or scene text")
-    p.add_argument("collection", type=Path)
+    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--photo", type=Path, help="query photo")
     p.add_argument("--text", help='person description, e.g. "orange vest black shorts"')
     p.add_argument("--scene", help='scene description, e.g. "mountain" or "雪山"')
@@ -253,21 +275,27 @@ def main(argv=None):
     p.add_argument("--out", type=Path, help="contact sheet JPEG (default data/exports/<collection>-search-<time>.jpg)")
     p.set_defaults(func=cmd_search)
     p = sub.add_parser("eval", help="recall of photo search for OCR'd bibs, using stored embeddings only")
-    p.add_argument("collection", type=Path)
+    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--bib", action="append", help="bib number used as ground truth (repeatable)")
     p.add_argument("--refs", type=int, default=20, help="max reference persons per bib (default 20)")
     p.add_argument("--out-dir", type=Path, help="contact sheet directory (default data/exports)")
     p.set_defaults(func=cmd_eval)
     p = sub.add_parser("serve", help="local web page for searching and labelling a collection")
-    p.add_argument("collection", type=Path)
+    p.add_argument("collection", type=Path, help=COLLECTION_HELP)
     p.add_argument("--port", type=int, default=8000, help="port on 127.0.0.1 (default 8000)")
     p.set_defaults(func=cmd_serve)
+    p = sub.add_parser("race", help="manage the race registry (data/races.json)")
+    rsub = p.add_subparsers(dest="race_command", required=True)
+    p = rsub.add_parser("add", help="register a race")
+    p.add_argument("slug", help="lowercase id used on the command line, e.g. 2026-gongga100")
+    p.add_argument("name", help='display name, e.g. "2026 贡嘎100"')
+    p.set_defaults(func=cmd_race_add)
     args = ap.parse_args(argv)
 
-    if not args.collection.is_dir():
-        sys.exit(f"collection {args.collection} is not a directory")
     config.require_mounted()
-    config.setup_model_env()
+    if hasattr(args, "collection"):
+        args.collection = resolve_collection(args.collection)
+        config.setup_model_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args.func(args)
 

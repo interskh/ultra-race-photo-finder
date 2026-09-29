@@ -74,3 +74,33 @@
 - `src/photofinder/web/app.py` (photo_meta keys — public API for search/me/photo), `src/photofinder/originals.py` (write_csv), `tests/test_web.py`, README.md, docs/ROADMAP.md.
 
 implement-loop: slice 1 shipped 5939e35; remaining: [2, 3, 4, 5, 6, 7]
+
+## Slice 2 · Task 1 — race registry, slug resolution, race add
+
+**Decisions**
+- `races.py` reads `config.DATA_ROOT` inside every function (no module alias/default arg), so tests' monkeypatch redirects it.
+- Missing `races.json` = empty registry; `save` writes `.races.json.<pid>.tmp` beside it then `os.replace`; tmp removed on failure. JSON is `ensure_ascii=False, indent=2`.
+- One `RaceError(ValueError)` for bad/duplicate slug, empty name, unknown race, unsupported URL, missing id, duplicate album key; CLI turns it into `sys.exit(str(e))`.
+- Slug and site_id checked with `fullmatch` (`$` alone accepts a trailing newline). site_id must be `[A-Za-z0-9_-]+` because the album key becomes a directory name.
+- Host match is `host == d or host.endswith("." + d)` (rejects `notxxpie.com`). pailixiang site_id keeps the `a` prefix (§4.4); xxpie reads `album_id` from any path.
+- `add_album(slug, url, title=None)`: title is an explicit optional arg, stored as-is; no network.
+- `main()`: `require_mounted()` first, then resolve `collection` (only when the subcommand has one), then `setup_model_env()`. Existing directory wins; else a registered slug → `race_dir(slug)`; else exit "X is neither a directory nor a registered race (races: …)".
+- Registered race whose dir doesn't exist → exit with a hint for every command, including `index` (no mkdir): `add_race` stays a pure JSON write; `race import`/`download` (Slices 3/4) create race dirs.
+- Exports per race needed no code: `default_out` (`resolve().name`), `profile_folder` (`.name`) and `lock_index` already give `exports/<slug>/…` and `races/<slug>/index.lock`; covered by a CLI search-by-slug test.
+
+**Rejected**
+- `album add` CLI now: the spec puts it in Slice 4 with title fetch; a title-less variant would be a surface Slice 4 redefines.
+- Creating `races/<slug>/` in `race add`: two writes (dir + JSON) and a half-state for no current user.
+- Letting a registered slug beat an existing same-named directory: breaks the legacy "path always works" contract.
+
+**Assumptions**
+- `data/races.json` is gitignored via `data/` (checked: `git check-ignore -v data/races.json` → `.gitignore:3`).
+- `config.require_mounted()` still checks the real DATA_ROOT (def-time default), as before this task; tests relied on that.
+- Only the CLI edits the registry and never concurrently, so no file lock around read-modify-write (spec §3.1: "edited only by the CLI").
+
+**Deferred**
+- Registry lock for concurrent `race add`/`album add`: safe while a single user runs them by hand; revisit if Slice 4's `album add` runs from scripts.
+- README/CLAUDE.md/ROADMAP mentions of `race add` and slugs: Slice 3 task 3 owns the docs update.
+
+**Touches**
+- New `src/photofinder/races.py` (registry API used by Slice 2 task 2 and Slice 3), `src/photofinder/cli.py` (`race add` subcommand, `resolve_collection`, `main()` order; `collection` help text), new `tests/test_races.py`. Shared surface: `data/races.json` format (§3.1).
