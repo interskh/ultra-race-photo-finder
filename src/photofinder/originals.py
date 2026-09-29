@@ -145,7 +145,8 @@ def valid(path: Path) -> bool:
 def read_csv(folder: Path) -> dict:
     try:
         with open(folder / CSV_NAME, newline="", encoding="utf-8-sig") as f:
-            return {(r["source_photo_id"], r["original_file_name"] or ""): r["status"] for r in csv.DictReader(f)}
+            return {(r["source_photo_id"], r["original_file_name"] or ""): r["status"] for r in csv.DictReader(f)
+                    if r["status"] != OPEN_ON_SITE}
     except (OSError, KeyError, csv.Error, UnicodeDecodeError):
         return {}
 

@@ -153,6 +153,15 @@ def test_old_status_belongs_to_the_row_with_the_same_id_and_file_name(tmp_path):
     assert originals.statuses(folder, [rows[0] | {"fname": "IMG_1.JPG"}]) == {1: None}
 
 
+def test_yipai_status_survives_a_later_non_yipai_row_with_the_same_id_and_file_name(tmp_path):
+    base = {"photographer": None, "taken_at": None, "album": None, "group": None, "preview": "p", "file": "f.jpg",
+            "source_photo_id": "101", "fname": "IMG_101.JPG", "site": None}
+    rows = [{**base, "photo_id": 1, "platform": "yipai"}, {**base, "photo_id": 2, "platform": "photoplus"}]
+    folder = tmp_path / "out"
+    originals.write_csv(folder, rows, {1: "failed: HTTP 503"})
+    assert originals.statuses(folder, rows) == {1: "failed: HTTP 503", 2: "open on site"}
+
+
 def test_open_on_site_status_ignores_stale_csv_and_files(tmp_path):
     r, conn, p = indexed_race()
     rows = originals.rows_of(r, list(web.photo_meta(conn, [p["albums/xxpie-abc/photos/late.jpg"]]).values()))

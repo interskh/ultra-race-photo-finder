@@ -756,3 +756,26 @@ implement-loop: slice 6 shipped 3d71e0f; remaining: [7]
 **Touches**
 - `src/photofinder/originals.py` (`downloadable`, `read_csv` key shape, `statuses`, `write_csv` `original_path`, `Fetcher.original`, `Job.run`, `Job.single`).
 - `tests/test_site_links.py` (2 new tests).
+
+## Slice 7 · Gate fix 2, real-site check, real-browser E2E and gate result (orchestrator)
+
+**Gate fix 2** (Codex recheck: the residual above is NOT accepted any more)
+- `read_csv` skips rows whose status is `open on site`. That status is always recomputed for non-yipai rows and never read back, so a yipai row can no longer inherit it, even when a non-yipai row has the same id and the same file name. Non-yipai rows never write another status (older CSVs wrote them with an empty file name, which the (id, file name) key already separates). Test `test_yipai_status_survives_a_later_non_yipai_row_with_the_same_id_and_file_name` fails with the guard removed (checked by mutant, file restored by sha256).
+
+**Real-site check (spec acceptance 6)** — headless Chrome (Python Playwright), about a dozen page loads over all four sites, one photo per platform chosen read-only from the live catalogs; screenshots `data/exports/screens/s7-site-*.png` (not committed; they show people).
+- xxpie: the `albumFilenameSearch` link shows exactly one photo, the same picture as the local preview.
+- yipai: the album page's 通过照片名搜索查找照片 box with the full file name (extension included) + Enter answers "您搜索 … 的照片有 1 张" and shows that photo, matching the local preview.
+- pailixiang: the album link opens the album. A photo's 照片信息 shows 文件名称 and 拍摄时间 equal to the catalog `fname`/`taken_at` of the same picture. The default 倒序 order is not shot-time order, hence the hint wording.
+- photoplus: the album link opens the album with sub-album tabs (= Group). In a group, the ⓘ icon under a photo shows its file name, equal to the catalog `fname`.
+
+**Real-browser E2E (spec acceptance 7)** — real `photofinder serve --port 8790` (no argument, picker) from the worktree `.venv` at 2633a49 + this fix's code path unchanged for the UI, `PHOTOFINDER_DATA_ROOT` = the Slice 6 scratch root (a copy of the 贡嘎 index incl. the 715 pailixiang photos; albums symlinked to the live files). No server was running before; it was stopped afterwards. Driver: Python Playwright, headless Chrome; every request to the four photo sites was intercepted and aborted. 15/15 checks passed, 0 page errors, no 500s or tracebacks in the server log:
+- My photos: every card (all yipai) has Open on site → yipai album URL, new tab, noopener.
+- Viewer, yipai photo: link, file name, hint, Download original shown; Copy put exactly the file name on the clipboard and the button read "Copied".
+- With the pailixiang album filter, "Find people like this" (stored embeddings, no model worker) gave pailixiang results; search cards have no link (by design). Viewer: pailixiang album link, file name, hint; Download original hidden.
+- Marked that photo, My photos: its card has the link and a neutral `open on site` tag; clicking the link opened a new tab to the album and did not open the viewer. `POST …/photos/<id>/original` → 409 `open on site: …`. Unmarked it again afterwards (scratch index back to its marks).
+- Screenshots `data/exports/screens/s7-e2e-01…05-*.png` (not committed; they show saved people's marks). UI verdict: the viewer block (On site / File name + Copy / Find it) reads clearly; on My photos cards the link shares the second line with photographer and bib and truncates long photographer names, acceptable.
+- Not exercised in the app: xxpie and photoplus photos. Chongli is not indexed (its `index` stopped again during detect on the memory guard). Their links are covered by `tests/test_site_links.py` and the real-site check above.
+
+**Gate**: full suite 533 + 1 skipped (6b8a61f), 535 + 1 (2633a49), 536 + 1 (this fix). Whole-run reviewer: APPROVE with 2 MINOR (CSV status keying; card-level file name → recorded decision); blocker-only recheck APPROVE. Codex: 1 MAJOR (cached original before the platform gate) + 1 MINOR (CSV keying), fixed in 2633a49; recheck RESOLVED / partially → fixed here.
+
+**Docs**: CLAUDE.md (sources list, `album add`, 贡嘎 location, `serve` forms and serve.lock text, test count 536 + 1 opt-in); ROADMAP (slice 7 done line, migration done, operational Chongli/四姑娘山 indexing).
