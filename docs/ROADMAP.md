@@ -1,6 +1,6 @@
 # Roadmap / status
 
-Last updated 2026-09-28.
+Last updated 2026-09-29.
 
 ## Done
 - yipai360 downloader: paced, resumable, single-instance, Retry-After aware (`src/photofinder/sources/yipai.py`, `scripts/download_yipai.sh`).
@@ -11,8 +11,8 @@ Last updated 2026-09-28.
 - Measured quality (race925, 36 bibs): photo R@50 .354, cross-photographer R@50 only .153 — clothing search is a candidate generator; the bib → mark → Find more loop does the rest. Details: `docs/handoff/2026-09-27-photo-finder-search-design.md`.
 
 ## In progress (operational)
-- FUGA 贡嘎100 (`data/yipai/83415673067642538672`, 68,488 photos) downloaded 2026-09-28 07:42 and fully indexed 2026-09-28 (190,980 people; scenes done). Bib OCR stopped at 60,096 of 190,980 people by choice — the user doesn't need it (platforms already offer bib search); finish with `photofinder index <collection> --ocr` if ever wanted.
-- 2026-09-28: fixed a Vision OCR leak (new VNRecognizeTextRequest per call → 22 GB footprint, 38 GB swap); OCR is now opt-in.
+- FUGA 贡嘎100 (`data/yipai/83415673067642538672`, 68,488 photos) downloaded 2026-09-28 07:42 and fully indexed 2026-09-28 (190,980 people; scenes done). Bib OCR finished 2026-09-29 for all 190,980 people (59,773 bib reads, 5,346 distinct): the last 130,884 (incl. ~40k left pending by the pre-fix Vision failures) took 2 h 9 min with the server off, footprint 470–940 MB, 0 Vision errors.
+- 2026-09-28: fixed a Vision OCR leak (new VNRecognizeTextRequest per call → 22 GB footprint, 38 GB swap, then Vision Code=11 failures); OCR is now opt-in. After a top-up download, rerun with `--ocr` so new people get bibs.
 - Top-up: rerun `scripts/download_yipai.sh 83415673067642538672` a day or two after the race, then `photofinder index` again (incremental).
 
 ## Next (ranked)
