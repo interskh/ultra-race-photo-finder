@@ -200,6 +200,7 @@ implement-loop: slice 2 shipped 64da651; remaining: [3, 4, 5, 6, 7]
 - Race `index.lock` is now taken before any move: after the collection/serve locks, `run` creates `races/<slug>/` (if absent) and locks its `index.lock`, then backs up and renames. Before, an indexer starting in the mkdir→rename window could create `races/<slug>/index.sqlite` and wedge every rerun as "ambiguous". Test `test_indexer_cannot_start_on_the_race_during_the_move` fails on the old ordering (checked by mutant).
 - `plan()` refuses when the collection dir or the resume album dir is a symlink (scan skips symlinked album dirs; a renamed link would register an unscannable album). Test `test_refuses_a_symlinked_collection`.
 - Deferred (parked by the orchestrator): `serve.lock` follows `PHOTOFINDER_DATA_ROOT`, so a tmp-root rehearsal does not see the live server's lock (Task 3 documents it); raw OperationalError/EXDEV tracebacks instead of friendly messages; one new backup per retry (disk use on repeated reruns). Caveat: do not run the import while an indexer runs on a `data/subsets/*` collection — its links are re-pointed underneath it and no subset lock is taken.
+- Follow-up: `backup()` first deletes this collection's leftover `<name>-index-*.sqlite.part` / `*.sqlite.part-journal` (from a backup killed mid-copy, up to ~800 MB each); finished `.sqlite` backups and other collections' files are never touched (`test_leftover_partial_backups_are_removed`).
 
 ## Slice 3 · Task 2 — download CLI and scripts
 

@@ -127,7 +127,10 @@ def backup(p: Plan) -> tuple[Path, dict]:
     src = next(d / INDEX for d in (current(p), p.race) if (d / INDEX).exists())
     folder = config.DATA_ROOT / "backups"
     folder.mkdir(parents=True, exist_ok=True)
-    stem = f"{p.source.name}-index-{time.strftime('%Y%m%d-%H%M%S')}"
+    for pattern in ("*.sqlite.part", "*.sqlite.part-journal"):
+        for stale in folder.glob(f"{p.source.name}-index-{pattern}"):
+            stale.unlink()
+    stem =f"{p.source.name}-index-{time.strftime('%Y%m%d-%H%M%S')}"
     dest, n = folder / f"{stem}.sqlite", 1
     while dest.exists():
         dest, n = folder / f"{stem}-{n}.sqlite", n + 1

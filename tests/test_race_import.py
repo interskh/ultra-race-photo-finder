@@ -333,6 +333,22 @@ def test_refuses_inconsistent_state(root, setup, msg):
     assert raw_tree(root) == before
 
 
+def test_leftover_partial_backups_are_removed(root):
+    src = make_collection(root)
+    backups = root / "backups"
+    backups.mkdir()
+    stale = [backups / f"{ORDER}-index-20260101-000000.sqlite.part",
+             backups / f"{ORDER}-index-20260101-000000.sqlite.part-journal"]
+    keep = [backups / f"{ORDER}-index-20260101-000000.sqlite", backups / "9999-index-20260101-000000.sqlite.part",
+            backups / "index-1001-20260101-000000.sqlite"]
+    for f in stale + keep:
+        f.write_bytes(b"x")
+    out = run(src)
+    assert not any(f.exists() for f in stale)
+    assert all(f.read_bytes() == b"x" for f in keep)
+    assert sorted(p.name for p in backups.iterdir()) == sorted([f.name for f in keep] + [Path(out["backup"]).name])
+
+
 def test_verify_failure_stops_before_registering(root):
     src = make_collection(root)
     (src / "photos" / "103.jpg").unlink()
