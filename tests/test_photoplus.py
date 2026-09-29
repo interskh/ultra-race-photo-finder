@@ -2,6 +2,7 @@ import hashlib
 import io
 import itertools
 import json
+import logging
 import sqlite3
 import threading
 from collections import Counter
@@ -53,6 +54,7 @@ class FakePP:
         self.bad_codes = 0
         self.listings = 0
         self.expire_first_listing = False
+        self.upload_on_expiry = None
         self.images = Counter()
         self._lock = threading.Lock()
 
@@ -65,6 +67,11 @@ class FakePP:
             with self._lock:
                 self.images[req.url.path] += 1
             if self.expire_first_listing and req.url.params["sign"] == "L1":
+                with self._lock:
+                    if self.upload_on_expiry is not None:
+                        for ps in [*(ps for _, _, ps in self.albums), self.photos]:
+                            ps.insert(0, self.upload_on_expiry)
+                        self.upload_on_expiry = None
                 return httpx.Response(403)
             return httpx.Response(200, content=PREVIEW)
         q = dict(req.url.params)
@@ -173,7 +180,7 @@ def test_sub_albums_page_by_200_then_the_list_fills_the_gap():
     assert site.paths() == [("/album/albums", None, None), ("/album/one", "1347353", "1"),
                             ("/album/one", "1347353", "2"), ("/album/one", "1347353", "3"),
                             ("/album/one", "1347354", "1")] + [("/pic/list", None, str(p)) for p in range(1, 6)]
-    assert [len(rows) for rows in pages] == [200, 200, 50, 2, 0, 0, 0, 0, 1]
+    assert [len(rows) for rows in pages] == [200, 200, 50, 2, 100, 100, 100, 100, 53]
     g = groups(pages)
     assert len(g) == 453 and total == 453
     assert (g[sid(0)], g[sid(449)], g[sid(1001)], g[sid(2000)]) == ("A", "A", "B", None)
@@ -182,15 +189,15 @@ def test_sub_albums_page_by_200_then_the_list_fills_the_gap():
 def test_a_photo_in_two_sub_albums_keeps_the_first_group():
     site = FakePP([("A", pics(1, 2)), ("B", pics(2, 3))])
     pages, _ = walk(adapter(site))
-    assert [[r.source_id for r in rows] for rows in pages] == [[sid(1), sid(2)], [sid(3)], []]
-    assert groups(pages) == {sid(1): "A", sid(2): "A", sid(3): "B"}
+    assert [[(r.source_id, r.group_name) for r in rows] for rows in pages] == [
+        [(sid(1), "A"), (sid(2), "A")], [(sid(2), "A"), (sid(3), "B")], [(sid(1), "A"), (sid(2), "A"), (sid(3), "B")]]
 
 
-def test_list_phase_emits_only_unseen_photos_without_group():
+def test_list_phase_rows_carry_the_first_group_or_none():
     site = FakePP([("A", pics(1, 2))], photos=pics(9, 1, 8, 2))
     pages, total = walk(adapter(site))
     assert [[(r.source_id, r.group_name) for r in rows] for rows in pages] == [
-        [(sid(1), "A"), (sid(2), "A")], [(sid(9), None), (sid(8), None)]]
+        [(sid(1), "A"), (sid(2), "A")], [(sid(9), None), (sid(1), "A"), (sid(8), None), (sid(2), "A")]]
     assert total == 4
 
 
@@ -199,6 +206,22 @@ def test_list_phase_stops_once_every_photo_is_seen():
     site.pics_total = lambda page: 150
     walk(adapter(site))
     assert [p for p in site.paths() if p[0] == "/pic/list"] == [("/pic/list", None, "1")]
+
+
+def test_more_photos_than_pics_total_pages_the_list_to_a_short_page(caplog, tmp_path):
+    caplog.set_level(logging.WARNING, logger="download")
+    site = FakePP([("A", pics(*range(150)))], photos=pics(*range(250)))
+    site.pics_total = lambda page: 100
+    pages, total = walk(adapter(site))
+    assert [p[2] for p in site.paths() if p[0] == "/pic/list"] == ["1", "2", "3"]
+    assert len(groups(pages)) == 250 and total == 100
+    assert [r.getMessage() for r in caplog.records if "pics_total" in r.getMessage()] == [
+        "photoplus: seen 150 distinct photos vs pics_total 100; paging /pic/list to a short page"]
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None)
+    try:
+        assert d.run() == {"done": 250}
+    finally:
+        d.close()
 
 
 def test_list_pages_follow_pics_total_not_page_total():
@@ -246,7 +269,7 @@ def test_relist_keeps_the_first_group():
     site = FakePP([("A", pics(1, 2)), ("B", pics(2, 3))])
     a = adapter(site)
     a.list_page(None)
-    assert [(r.source_id, r.group_name) for r in a.list_page(("album", 1, 1))[0]] == [(sid(3), "B")]
+    assert [(r.source_id, r.group_name) for r in a.list_page(("album", 1, 1))[0]] == [(sid(2), "A"), (sid(3), "B")]
     assert [(r.source_id, r.group_name) for r in a.list_page(None)[0]] == [(sid(1), "A"), (sid(2), "A")]
     assert site.paths().count(("/album/albums", None, None)) == 1
 
@@ -287,7 +310,7 @@ def test_unsafe_or_missing_ids_are_skipped_and_leave_the_total_honest():
     bad = [dict(photo(1), id="../evil"), no_id]
     site = FakePP([("A", [*bad, photo(2)])], photos=[*bad, photo(2)])
     pages, total = walk(adapter(site))
-    assert [r.source_id for rows in pages for r in rows] == [sid(2)]
+    assert [[r.source_id for r in rows] for rows in pages] == [[sid(2)], [sid(2)]]
     assert total == 1
 
 
@@ -316,6 +339,21 @@ def test_expired_urls_are_relisted_and_keep_their_group(tmp_path):
         d.close()
     m = sqlite3.connect(tmp_path / "manifest.sqlite")
     assert dict(m.execute("select source_id, group_name from catalog")) == {sid(1): "A", sid(2): "A", sid(3): "B"}
+
+
+def test_a_photo_shifted_to_the_next_page_before_the_relist_is_still_fetched(tmp_path):
+    site = FakePP([("A", pics(*range(250)))])
+    site.expire_first_listing = True
+    site.upload_on_expiry = photo(9999)
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None)
+    try:
+        assert d.run() == {"done": 251}
+    finally:
+        d.close()
+    m = sqlite3.connect(tmp_path / "manifest.sqlite")
+    assert m.execute("select status, group_name, error from catalog where source_id=?", (sid(199),)).fetchone() == (
+        "done", "A", None)
+    assert site.images[f"/plus/immediate/{ACTIVITY}/199.jpg"] == 2
 
 
 def test_downloader_reports_photos_missing_from_the_listing(tmp_path):

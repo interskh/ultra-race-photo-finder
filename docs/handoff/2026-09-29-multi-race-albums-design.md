@@ -473,6 +473,7 @@ implement-loop: slice 4 shipped 2f43047; remaining: [5, 6, 7]
 **Assumptions**
 - Live probe (15 GETs, ≥2.5 s apart). 89243825: 8 sub-albums with Σpic_num 2156 = pics_total. Two sub-albums fully listed (放松跑 223, ACG大本营 146) share no ids. So there the sub-albums look disjoint and complete, and the list phase costs 1 request. 39352660: 16 sub-albums, Σpic_num **3590 vs pics_total 6115**, so ~41% of photos are in no sub-album and get group null. The list phase walks all 62 pages there.
 - `/pic/list` with `key=""`: p1 (100) / p2 (100) / p22 (56 = 2156−2100) disjoint, p23 empty. `pics_total` is present and stable on every page, including the empty one. Only page 1 has `key`.
+- The early stop (seen+skipped ≥ pics_total) assumes that every id in a sub-album is also counted in `pics_total`. If a sub-album holds hidden photos, the list phase could stop early and the gap would not show as `missing`. That is unlikely given 89243825's exact Σ match. `/album/albums` is assumed to return a list (true on both activities probed). A dict would raise on the first `list_page`.
 - `/album/one` shape: `result.{pageTotal, album, pic_total, pics}`. Row fields match `/pic/list` plus `album_pic_id`.
 - `big_img` downloaded 200 with no headers at all (1600×1067 JPEG), so no Referer is needed for images. How long the signature stays valid is unmeasured; the 403 re-list covers it.
 - `/live/detail` has `anti_crawler_level` (value in `photoplus_detail.json`). What it controls is unknown. Watch the first real run for code -1 or 403 bursts.
@@ -485,3 +486,31 @@ implement-loop: slice 4 shipped 2f43047; remaining: [5, 6, 7]
 **Touches**
 - New: `src/photofinder/sources/photoplus.py`, `tests/test_photoplus.py`, `tests/fixtures/photoplus_{detail,albums,list,album_one}.json`. Probe copies in `docs/handoff/2026-09-29-platform-probes/photoplus_*.json` (also `albums_39352660`, `list_p2`, `list_p23`, `album_one_p3`; signed query strings stripped).
 - `src/photofinder/cli.py` (`ADAPTERS["photoplus"]`, import), `tests/test_download.py` (skip test drops photoplus from `cli.ADAPTERS`), README.md (title fetch and download lines).
+
+
+## Slice 5 · Whole-run gate fix
+
+**Decisions**
+- photoplus first group: `group_of[id]` (the first group) replaces `first_seen[id]` (the first cursor). Every safe listed row is emitted, carrying `group_of.setdefault(id, group)`. The upsert never sees a second group for an id within a run, so the first-group rule holds. A photo that 403'd and then shifted to the next page before the re-list is fetched from the later listing (Codex MAJOR 1). `rows()` lost its dead `cursor` arg.
+- Cost of re-emitted rows (checked in base.py): `_todo` → `is_done` (sqlite select + `jpeg_file_ok`). `download()` also checks `jpeg_file_ok(dest)` before any request. So a re-emitted **done** row costs an upsert and a file-header check, with no HTTP. A re-emitted **failed/pending** row gets a fresh download attempt, which is the intended repair. `test_downloader_fetches_every_photo_once…` still sees every image fetched exactly once across 2 runs.
+- photoplus stop rule (seen = `len(group_of) + len(skipped)`): total unknown → page while full. seen == total → stop. seen > total → warn once ("seen N distinct photos vs pics_total T") and page while full, not bounded by `ceil(total/100)`. seen < total → `page < ceil(total/100)` as before. The returned total is still `pics_total - skipped`, so an undercount never produces a false `missing`.
+- The `==` branch comes before `>`, so an `==`→`>=` mutant stays live (it was caught).
+- xxpie: a 403 re-list test (fresh `l=2` URL → done, each image fetched twice) and a breaker test (persistent 403, `concurrency=1`, `max_consecutive_failures=2` → Blocked). The fake tags URLs only when `expire_first_listing` is set, so the fixture-URL assertion is unchanged.
+
+**Rejected**
+- Keeping the per-cursor filter and adding a special case for shifted ids: the one-group-per-id map already guarantees the rule, and the special case adds state.
+- (Orchestrator) Subtracting skipped invalid-id rows from pics_total in the stop rule, i.e. changing the Slice 4 treatment. It was gate-approved in Slice 4; skipped rows already count toward `seen`.
+- (Orchestrator) Having xxpie clear the token only on specific codes: the body shape of a non-zero code is unverified (Task 1 assumption). One wasted registration on a non-auth error is cheap, and a stale token is worse.
+- Stopping at `ceil(total/100)` even when seen > total: a total that undercounts what was already seen can't bound the listing.
+
+**Assumptions**
+- When seen > pics_total, `/pic/list` still ends with a short (<100) page, as probed (p22 = 56, p23 empty). If the site returned full pages forever, the base same-cursor guard would not trip, because the cursor advances. Check: the first real run on an album that logs the warning.
+- Re-emitting reconcile rows makes photoplus upserts rewrite metadata (fname/photographer/taken_at) from `/pic/list`, which may differ from `/album/one`. The fixtures show the same fields. Check: diff one id's row across the two endpoints.
+
+**Deferred**
+- The Task 2 note "raw None cursor mutant survives" no longer applies: `first_seen` is gone.
+
+**Touches**
+- `src/photofinder/sources/photoplus.py` (`group_of`, `warned`, `rows()` signature, stop rule).
+- `tests/test_photoplus.py`: FakePP `upload_on_expiry`. Updated shape assertions. New tests: shift, over-total.
+- `tests/test_xxpie.py`: FakeXx `listings`/`expire_first_listing`/`image_status`, 2 new tests.

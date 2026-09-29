@@ -14,7 +14,7 @@ from photofinder import cli, config, db, races
 from photofinder.index.stages import scan
 from photofinder.sources import xxpie
 from photofinder.sources.base import AlbumDownloader
-from photofinder.sources.common import RetriesExhausted
+from photofinder.sources.common import Blocked, RetriesExhausted
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LISTING = json.loads((FIXTURES / "xxpie_list.json").read_text(encoding="utf-8"))
@@ -47,12 +47,19 @@ class FakeXx:
         self.register_code = 0
         self.register_status = 200
         self.photo_count = None
+        self.listings = 0
+        self.expire_first_listing = False
+        self.image_status = 200
         self._lock = threading.Lock()
 
     def __call__(self, req):
         if req.url.host == "imagex.xxpie.com":
             with self._lock:
                 self.images[req.url.path] += 1
+            if self.expire_first_listing and req.url.params["l"] == "1":
+                return httpx.Response(403)
+            if self.image_status != 200:
+                return httpx.Response(self.image_status)
             return httpx.Response(200, content=PREVIEW)
         path = req.url.path.rsplit("/", 1)[1]
         if path == "registerVisitorUser":
@@ -76,8 +83,12 @@ class FakeXx:
             return httpx.Response(200, json={**INFO, "result": result if count == "absent" else
                                              {**result, "photo_count": count}})
         page, size = int(q["page_no"]), int(q["page_size"])
-        return httpx.Response(200, json={"code": 0, "result": {
-            "count": 0, "photos": self.photos[(page - 1) * size:page * size], "layout": None}})
+        photos = self.photos[(page - 1) * size:page * size]
+        if self.expire_first_listing:
+            self.listings += 1
+            photos = [dict(p, url_large1920=str(httpx.URL(p["url_large1920"]).copy_add_param("l", self.listings)))
+                      for p in photos]
+        return httpx.Response(200, json={"code": 0, "result": {"count": 0, "photos": photos, "layout": None}})
 
     def lists(self):
         return [(q, tok) for p, q, tok in self.calls if p == "queryAlbumItemsPgByDefaultSort"]
@@ -251,6 +262,33 @@ def test_downloader_reports_photos_missing_from_the_listing(tmp_path):
         assert d.run() == {"done": 70, "missing": 5}
     finally:
         d.close()
+
+
+def test_expired_urls_are_relisted_and_fetched_with_fresh_urls(tmp_path):
+    site = FakeXx()
+    site.expire_first_listing = True
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None)
+    try:
+        assert d.run() == {"done": 3}
+    finally:
+        d.close()
+    assert [q["page_no"] for q, _ in site.lists()] == ["1", "1"]
+    assert set(site.images.values()) == {2}
+
+
+def test_images_that_keep_failing_trip_the_breaker(tmp_path):
+    site = FakeXx()
+    site.image_status = 403
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, concurrency=1, max_consecutive_failures=2,
+                        sleep=lambda s: None)
+    try:
+        with pytest.raises(Blocked):
+            d.run()
+    finally:
+        d.close()
+    assert [q["page_no"] for q, _ in site.lists()] == ["1", "1"]
+    assert sqlite3.connect(tmp_path / "manifest.sqlite").execute(
+        "select count(*) from catalog where status='done'").fetchone() == (0,)
 
 
 def test_skipped_rows_leave_no_missing_gap(tmp_path):
