@@ -52,3 +52,23 @@
 
 **Touches**
 - `src/photofinder/web/app.py` (GET /api/photos/{id} response key `group` — public API), `src/photofinder/web/static/index.html`, `tests/test_web.py`.
+
+## Slice 1 · Whole-run gate fix — `group` key consistent across web API
+
+**Decisions**
+- `photo_meta` now keys the `grp` column as `group`, so /api/search results, /api/me photos and /api/photos/{id} all emit `group`; the detail handler's pop is gone.
+- `originals.write_csv` reads `r["group"]` (no `.get`): every row comes from `rows_of(photo_meta(...))`.
+- Tests: new `test_search_results_carry_group`; /api/me test asserts `group` per photo.
+- Docs: README filter step and ROADMAP filters list name group. Project CLAUDE.md test count not edited by the doer (agent-requested CLAUDE.md edits are out of bounds for it); the orchestrator/user should set it to 268 passing + 1 opt-in.
+
+**Rejected**
+- Keeping `grp` in photo_meta and renaming per endpoint: three places to keep in sync, which is how search/me were missed.
+
+**Assumptions**
+- No external client depends on the `grp` key (it existed only between task 1 and this fix).
+
+**Deferred**
+- Operational: the old-code `index --ocr` on the live 贡嘎 collection must finish before any new-code process opens that index. An old-code scan run after migration would write tags into `album` with `grp` null, and the migration (guarded on the `grp` column's absence) never re-runs to fix them.
+
+**Touches**
+- `src/photofinder/web/app.py` (photo_meta keys — public API for search/me/photo), `src/photofinder/originals.py` (write_csv), `tests/test_web.py`, README.md, docs/ROADMAP.md.

@@ -110,7 +110,7 @@ def photo_meta(conn, photo_ids) -> dict:
     photo_ids = list(photo_ids)
     rows = conn.execute("select id, source_photo_id, taken_at, photographer, photographer_uid, album, grp, width, "
                         f"height, relpath from photos where id in ({marks(photo_ids)})", photo_ids)
-    keys = ("photo_id", "source_photo_id", "taken_at", "photographer", "photographer_uid", "album", "grp", "width",
+    keys = ("photo_id", "source_photo_id", "taken_at", "photographer", "photographer_uid", "album", "group", "width",
             "height", "relpath")
     return {r[0]: dict(zip(keys, r)) for r in rows}
 
@@ -577,7 +577,6 @@ def create_app(collection: Path, fetcher: originals.Fetcher | None = None, idle_
                                 (photo_id,)).fetchall()
             ids = [r[0] for r in rows]
             bibs, labels = bibs_of(conn, ids), labels_of(conn, ids, profile_id)
-        meta["group"] = meta.pop("grp")
         return {**meta, "persons": [{"person_id": r[0], "box": list(r[1:]), "bibs": bibs.get(r[0], []),
                                      "label": labels.get(r[0])} for r in rows]}
 

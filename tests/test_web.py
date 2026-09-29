@@ -296,6 +296,12 @@ def test_filters_restrict_search(tmp_path, extra, expected):
     assert sorted(ranked_photos(res)) == expected
 
 
+def test_search_results_carry_group(tmp_path):
+    c, _, ids = filter_index(tmp_path)
+    res = client(c).post("/api/search", json={"profile_id": ME, "persons": [ids[1][0]], "groups": ["终点"]})
+    assert {r["relpath"]: r["group"] for r in res.json()["results"]} == {"1.jpg": "终点", "3.jpg": "终点"}
+
+
 @pytest.mark.parametrize("field, value", [("start", "2026-09-25"), ("end", "25/09/2026 10:00")])
 def test_bad_time_is_400_naming_field(tmp_path, field, value):
     c, _, ids = filter_index(tmp_path)
@@ -412,6 +418,7 @@ def test_my_photos_and_export(tmp_path, monkeypatch):
         [("1.jpg", [ids[1][0], ids[1][1]]), ("4.jpg", [ids[4][0]])]
     assert mine["photos"][0]["persons"][1]["box"] == [60, 0, 110, 100]
     assert [p["original"] for p in mine["photos"]] == [None, None]
+    assert [p["group"] for p in mine["photos"]] == ["终点", None]
     body = api.post("/api/export", json={"profile_id": ME}).json()
     out = tmp_path / "data" / "exports" / "coll" / "Me" / "photos.csv"
     assert body == {"path": str(out), "count": 2}
