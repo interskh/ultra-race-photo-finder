@@ -102,7 +102,22 @@
 - Sorting by gap before offset: offset is the measured primary signal (±1 > ±2); gap only breaks ties.
 
 **Assumptions**
-- 30 s holds across platforms/photographers (measured on race925); check with the eval nearby table on another race.
+- 30 s holds across platforms/photographers (gap rates measured on 2026-gongga100, yipai); check with the eval nearby table on another race.
 
 **Touches**
 - `src/photofinder/nearby.py` (`MAX_GAP`, filter, sort), `tests/test_nearby.py` (new max-gap test; sort expectation in `..._from_its_nearest_anchor` updated to the new order), `src/photofinder/web/static/index.html` (`openModal`, `renderNear`, `renderModal`, `summary`, CSS), `README.md`, `docs/ROADMAP.md`, `CLAUDE.md` (test count). Scratchpad jsdom harness: 43 checks; new r2 checks for fixes 1, 2 (bib order) and 4 failed pre-fix; the Find-more-on-top check is a regression guard (passed before too).
+
+## Whole-run gate + E2E (orchestrator)
+
+**Gate**: fresh reviewer approve after 2 fix rounds; Codex NO-SHIP → closed in round 1/2 → SHIP on 708c4c0. Rejected Codex finding: drop a neighbour photo with one Not-me and one unlabelled person (kept: /search also drops persons, not photos). Full suite 566 passed, 1 skipped.
+
+**Real-browser E2E** (playwright, worktree server `serve data/subsets/race925 --port 8771`, user's server stopped for the run and restarted on master afterwards; 0 console errors). Screenshots: `data/exports/screens/nearby-0{1..7}-*.png`.
+- Bib 8039: 17 bib hits first, "Next to bib 8039 …" below with 25 cards, every badge ≤ 18 s after the 30 s cap (before the cap: 31 cards incl. "1 min before"/"2 min after" — the reason for the cap and the bib-below order).
+- Viewer on a bib hit: strip ±3 with gap labels and `bib` anchor; `.` walks to +8 s with the best match pre-selected ("likely same runner"); `M` marks it and the strip re-anchors on it ("marked").
+- Find more (1 mark): 4 nearby cards above the ranking with `8 s before`/`2 s after` badges + anchor crop; stepper ±3 → 6 cards, toggle off hides, on restores, back to ±2; 0 duplicate photos across section + grid.
+- Nearby card opened: no strip (not confirmed); pre-selected row 8 of 10 scrolled into view.
+- Test mark removed afterwards (race925 Me count back to 0).
+
+**Verified only by the scratchpad jsdom harness (mocked API, not in the repo)**: `,` key, Prev/Next while walking the roll, both Not-me bib guard paths (result + badge), unmark-then-walk race, stale /nearby response after toggle, Load more + `exclude_photos` + refresh race.
+
+**Eval on real data** (`uv run photofinder eval data/subsets/race925 --bib 8039 --bib 8020 --bib 8010 --bib 8027`, mean over 4 bibs; precision = share of ±span neighbours of the query photo that read the query bib): ±1 0.47, ±2 0.40, ±3 0.34 (per bib up to 0.73 at ±1). R@50 gain over the 0.3:0.7 ranking: +0.000 / +0.000 / +0.002 — from a single query photo, its burst neighbours are already in the clothing top-50. The section's value is surfacing those shots first and in one place (and next to every marked photo, not only the query), not new recall at 50.
