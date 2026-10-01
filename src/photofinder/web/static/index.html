@@ -342,7 +342,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
       <div class="summary" id="summary"><div class="title">Find your photos</div><div class="sub">Pick a start point on the left.</div></div>
       <div class="busy-msg" id="busy" hidden><span class="spin"></span><span id="busy-text"></span><span class="model-load" id="busy-model" hidden></span></div>
       <div class="bulk-wrap" id="bulk-wrap" hidden>
-        <button class="btn big" id="bulk" type="button" disabled>Not me: the other <span id="bulk-n">0</span></button>
+        <button class="btn big" id="bulk" type="button" disabled>Not me: the other <span id="bulk-n">0</span><span id="bulk-sfx"></span></button>
       </div>
       <div class="more-wrap" id="more-wrap">
         <button class="btn primary big" id="more" data-run disabled>Find more like my marked ones <span id="more-n"></span></button>
@@ -410,7 +410,7 @@ const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
   profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0, races: [], loading: null, stale: null,
-  gen: 0, failed: false, got: 0, hiddenN: 0, bulk: null, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
+  gen: 0, failed: false, got: 0, hiddenN: 0, bulk: null, bepoch: 0, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
 const RACE_KEY = 'photofinder.race';
 const NEAR_KEY = 'photofinder.nearby';
 const STRIP_SPAN = 3;
@@ -550,7 +550,8 @@ function renderCounts() {
 
 function otherIds() {
   const ids = new Set();
-  const cards = [...(S.results || []), ...($('#near').hidden || !S.nearOn ? [] : S.near || [])];
+  const near = $('#near').hidden || !S.nearOn ? [] : S.near || [];
+  const cards = S.base && S.base.start_bib ? near : [...(S.results || []), ...near];
   for (const r of cards) {
     const pid = r.person_id;
     if (pid != null && (S.labels[pid] ?? null) === null && !S.mine.has(r.photo_id) && !S.pending.has(pid)) ids.add(pid);
@@ -562,17 +563,21 @@ function renderBulk() {
   const wrap = $('#bulk-wrap'), btn = $('#bulk');
   wrap.hidden = !S.query || !S.base;
   const n = wrap.hidden || S.view !== 'search' ? 0 : otherIds().length;
+  const bib = !!(S.base && S.base.start_bib);
   $('#bulk-n').textContent = fmt(n);
+  $('#bulk-sfx').textContent = bib ? ' nearby' : '';
   btn.disabled = !n || S.busy > 0 || S.view !== 'search' || !entered() || !!S.loading;
   btn.title = S.view !== 'search' ? 'Go back to the search results to use this'
     : S.busy > 0 ? 'Wait for the current search to finish'
-    : !n ? `Every runner on this page is already marked, or is in a photo marked ${S.name}`
+    : !n ? `Every ${bib ? 'nearby shot' : 'runner on this page'} is already marked, or is in a photo marked ${S.name}`
+    : bib ? `Marks the ${n} unmarked runner${n === 1 ? '' : 's'} in the nearby shots Not ${S.name}; the exact bib reads are never touched. Their photos stop appearing in Find more. You can undo it right after.`
     : `Marks the ${n} unmarked runner${n === 1 ? '' : 's'} on this page Not ${S.name}. Their photos stop appearing in Find more; other searches still show them, dimmed. You can undo it right after.`;
 }
 
 function retireBulk() {
   document.querySelectorAll('#banners [data-bulk]').forEach(el => el.remove());
   S.bulk = null;
+  ++S.bepoch;
 }
 
 function bulkBanner(msg, undo) {
@@ -584,32 +589,42 @@ function bulkBanner(msg, undo) {
   return b;
 }
 
+async function syncCounts() {
+  const profile = S.profile, gen = S.gen;
+  try {
+    const p = (await api(`/api/r/${S.race}/profiles`)).profiles.find(x => x.id === profile);
+    if (p && S.profile === profile && S.gen === gen && S.facets) { S.facets.labels = {me: p.me, not_me: p.not_me}; renderCounts(); }
+  } catch (e) { }
+}
+
 async function markOthers() {
   const ids = otherIds();
   if (!ids.length || S.busy > 0) return;
   retireBulk();
-  const profile = S.profile, gen = S.gen;
+  const profile = S.profile, gen = S.gen, epoch = S.bepoch, bib = !!S.base.start_bib;
   setBusy('Marking the others…');
   try {
     const r = await post(`/api/r/${S.race}/labels/batch`, {profile_id: profile, person_ids: ids});
     if (S.profile !== profile || S.gen !== gen) return;
-    for (const pid of r.changed) { S.labels[pid] = 'not_me'; paint(pid); }
+    if (S.bepoch !== epoch) { syncCounts(); return; }
+    for (const pid of r.changed) if ((S.labels[pid] ?? null) === null && !S.pending.has(pid)) { S.labels[pid] = 'not_me'; paint(pid); }
     if (S.facets) S.facets.labels.not_me += r.changed.length;
     renderCounts();
     const skipped = r.skipped.length ? ` (${r.skipped.length} left as they were)` : '';
     if (!r.changed.length) { banner(`Nothing to mark${skipped}.`, 'warn'); return; }
-    S.bulk = {profile, gen, changed: r.changed, el: bulkBanner(`Marked ${r.changed.length} Not ${S.name}${skipped}. Their photos won't come back in Find more.`, true)};
+    S.bulk = {profile, gen, epoch, batch: r.batch, changed: r.changed, el: bulkBanner(`Marked ${r.changed.length}${bib ? ' nearby' : ''} Not ${S.name}${skipped}. Their photos won't come back in Find more.`, true)};
   } catch (e) { fail(e); } finally { setBusy(null); }
 }
 
 async function undoBulk() {
   const bulk = S.bulk;
-  if (!bulk || S.busy > 0 || bulk.profile !== S.profile || bulk.gen !== S.gen) return;
+  if (!bulk || S.busy > 0 || bulk.profile !== S.profile || bulk.gen !== S.gen || bulk.epoch !== S.bepoch) return;
   setBusy('Undoing…');
   try {
-    const r = await post(`/api/r/${S.race}/labels/batch/undo`, {profile_id: bulk.profile, person_ids: bulk.changed});
-    if (S.profile !== bulk.profile || S.gen !== bulk.gen || S.bulk !== bulk) return;
-    for (const pid of r.removed) { delete S.labels[pid]; paint(pid); }
+    const r = await post(`/api/r/${S.race}/labels/batch/undo`, {profile_id: bulk.profile, person_ids: bulk.changed, batch: bulk.batch});
+    if (S.profile !== bulk.profile || S.gen !== bulk.gen) return;
+    if (S.bulk !== bulk || bulk.epoch !== S.bepoch) { syncCounts(); return; }
+    for (const pid of r.removed) if (S.labels[pid] === 'not_me' && !S.pending.has(pid)) { delete S.labels[pid]; paint(pid); }
     if (S.facets) S.facets.labels.not_me -= r.removed.length;
     renderCounts();
     bulk.el.remove();
@@ -1089,7 +1104,7 @@ function cropThumb(src, box, w, hgt, W = 56, H = 96) {
 }
 
 function showView(v) {
-  if (v !== S.view) { $('#banners').innerHTML = ''; S.bulk = null; }
+  if (v !== S.view) { $('#banners').innerHTML = ''; retireBulk(); }
   S.view = v;
   $('#view-search').hidden = v !== 'search';
   $('#view-me').hidden = v !== 'me';
@@ -1640,6 +1655,7 @@ function clearRace(slug) {
   ++S.gen;
   ++S.seq;
   ++S.pseq;
+  retireBulk();
   S.failed = false;
   clearTimeout(S.pollT);
   S.pollT = null;

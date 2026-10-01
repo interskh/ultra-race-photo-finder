@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing
@@ -87,6 +88,10 @@ class LabelBody(BaseModel):
 class BatchBody(BaseModel):
     profile_id: Id
     person_ids: list[Id]
+
+
+class UndoBody(BatchBody):
+    batch: str
 
 
 class ProfileBody(BaseModel):
@@ -762,19 +767,20 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
                     skipped.append({"person_id": p, "reason": "photo has a me person"})
                 else:
                     changed.append(p)
+            stamp = datetime.now().isoformat(sep=" ", timespec="microseconds")
             conn.executemany("insert into labels(profile_id, person_id, label, created_at, hidden) "
-                             "values (?, ?, 'not_me', ?, 1)", [(body.profile_id, p, now()) for p in changed])
-        return {"profile_id": body.profile_id, "changed": changed, "skipped": skipped}
+                             "values (?, ?, 'not_me', ?, 1)", [(body.profile_id, p, stamp) for p in changed])
+        return {"profile_id": body.profile_id, "batch": stamp, "changed": changed, "skipped": skipped}
 
     @app.post(RACE + "/labels/batch/undo")
-    def unhide_not_me(st: Race, body: BatchBody):
+    def unhide_not_me(st: Race, body: UndoBody):
         ids = list(dict.fromkeys(body.person_ids))
         with connect(st) as conn, conn:
             conn.execute("begin immediate")
             profile_name(conn, body.profile_id)
             still = [p for p, in conn.execute(f"select person_id from labels where profile_id = ? and label = 'not_me' "
-                                              f"and hidden = 1 and person_id in ({marks(ids)})",
-                                              [body.profile_id, *ids])]
+                                              f"and hidden = 1 and created_at = ? and person_id in ({marks(ids)})",
+                                              [body.profile_id, body.batch, *ids])]
             conn.executemany("delete from labels where profile_id = ? and person_id = ?",
                              [(body.profile_id, p) for p in still])
         return {"profile_id": body.profile_id, "removed": still,

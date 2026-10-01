@@ -9,8 +9,9 @@ from test_search import A, B, C, X, Y, Z, make_index
 from test_web import ME, client, label, more_index, no_real_models, ranked_photos  # noqa: F401
 
 
-def batch(api, ids, profile=ME, undo=False):
-    res = api.post("/api/labels/batch" + ("/undo" if undo else ""), json={"profile_id": profile, "person_ids": ids})
+def batch(api, ids, profile=ME, undo=None):
+    body = {"profile_id": profile, "person_ids": ids, **({"batch": undo} if undo is not None else {})}
+    res = api.post("/api/labels/batch" + ("/undo" if undo is not None else ""), json=body)
     assert res.status_code == 200, res.text
     return res.json()
 
@@ -47,11 +48,12 @@ def test_batch_with_unknown_person_or_profile_is_rejected_and_writes_nothing(tmp
     c, _, ids = more_index(tmp_path)
     api = client(c)
     for url in ("/api/labels/batch", "/api/labels/batch/undo"):
-        res = api.post(url, json={"profile_id": ME, "person_ids": [ids[4][0], 9999]})
+        res = api.post(url, json={"profile_id": ME, "person_ids": [ids[4][0], 9999], "batch": "x"})
         assert (res.status_code == 404) == (url.endswith("batch")) and rows(c) == []
-        assert api.post(url, json={"profile_id": 99, "person_ids": [ids[4][0]]}).status_code == 404
+        assert api.post(url, json={"profile_id": 99, "person_ids": [ids[4][0]], "batch": "x"}).status_code == 404
     assert rows(c) == []
-    assert batch(api, []) == {"profile_id": ME, "changed": [], "skipped": []}
+    empty = batch(api, [])
+    assert empty["changed"] == [] and empty["skipped"] == [] and empty["batch"]
 
 
 def test_batch_is_per_profile(tmp_path):
@@ -146,11 +148,12 @@ def test_undo_removes_only_rows_that_are_still_the_batch(tmp_path):
     c, _, ids = more_index(tmp_path)
     api = client(c)
     label(api, ids[1][0], "me")
-    changed = batch(api, [ids[2][0], ids[2][1], ids[3][0], ids[4][0]])["changed"]
+    done = batch(api, [ids[2][0], ids[2][1], ids[3][0], ids[4][0]])
+    changed = done["changed"]
     label(api, ids[2][1], "me")
     label(api, ids[3][0], "not_me")
     label(api, ids[4][0], None)
-    body = batch(api, changed, undo=True)
+    body = batch(api, changed, undo=done["batch"])
     assert body == {"profile_id": ME, "removed": [ids[2][0]], "kept": [ids[2][1], ids[3][0], ids[4][0]]}
     assert rows(c) == [(ids[1][0], "me", 0), (ids[2][1], "me", 0), (ids[3][0], "not_me", 0)]
     assert more(api)["hidden"] == 0
@@ -163,7 +166,7 @@ def test_undo_restores_find_more_exactly(tmp_path):
     before = more(api)
     done = batch(api, [ids[2][0], ids[3][0], ids[4][0]])
     assert more(api)["results"] == []
-    batch(api, done["changed"], undo=True)
+    batch(api, done["changed"], undo=done["batch"])
     assert more(api)["results"] == before["results"] and more(api)["hidden"] == 0
     assert rows(c) == [(ids[1][0], "me", 0)]
 
@@ -260,3 +263,23 @@ def test_hidden_count_ignores_photos_that_are_me_photos_or_outside_the_filters(t
     assert more(api, groups=["C"])["hidden"] == 0
     label(api, ids[2][1], "me")
     assert more(api)["hidden"] == 1
+
+
+def test_undo_of_an_older_batch_leaves_a_newer_batch_on_the_same_person(tmp_path):
+    c, _, ids = more_index(tmp_path)
+    api = client(c)
+    label(api, ids[1][0], "me")
+    a = batch(api, [ids[2][0], ids[3][0]])
+    label(api, ids[2][0], None)
+    b = batch(api, [ids[2][0]])
+    assert a["batch"] != b["batch"]
+    body = batch(api, a["changed"], undo=a["batch"])
+    assert body["removed"] == [ids[3][0]] and body["kept"] == [ids[2][0]]
+    assert rows(c) == [(ids[1][0], "me", 0), (ids[2][0], "not_me", 1)]
+    assert batch(api, b["changed"], undo=b["batch"])["removed"] == [ids[2][0]]
+
+
+def test_undo_requires_the_batch_token(tmp_path):
+    c, _, ids = more_index(tmp_path)
+    api = client(c)
+    assert api.post("/api/labels/batch/undo", json={"profile_id": ME, "person_ids": []}).status_code == 400

@@ -544,10 +544,12 @@ def test_page_has_the_bulk_not_me_button_with_undo_and_hides_only_in_find_more(t
     script = re.search(r"<script>(.*)</script>", page, re.S).group(1)
     assert 'id="bulk"' in page and "Not me: the other" in page
     assert re.search(r"labels/batch`, \{profile_id: profile, person_ids: ids\}", script)
-    assert re.search(r"labels/batch/undo`, \{profile_id: bulk\.profile, person_ids: bulk\.changed\}", script)
+    assert re.search(r"labels/batch/undo`, \{profile_id: bulk\.profile, person_ids: bulk\.changed, batch: bulk\.batch\}", script)
     assert "hide_hidden: S.base.mode === 'more'" in script
     other = re.search(r"function otherIds\(\) \{(.*?)\n\}", script, re.S).group(1)
     assert "S.mine.has(r.photo_id)" in other and "new Set()" in other
+    assert "S.base.start_bib ? near" in other
+    assert "S.bepoch !== epoch" in script and "bulk.epoch !== S.bepoch" in script
     assert "S.profile !== profile || S.gen !== gen" in re.search(r"async function markOthers\(\) \{(.*?)\n\}", script, re.S).group(1)
 
 
