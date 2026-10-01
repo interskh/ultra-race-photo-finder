@@ -1,6 +1,6 @@
 # Roadmap / status
 
-Last updated 2026-09-30.
+Last updated 2026-10-01.
 
 ## Done
 - yipai360 downloader: paced, resumable, single-instance, Retry-After aware (`src/photofinder/sources/yipai.py`, `scripts/download_yipai.sh`).
@@ -13,6 +13,7 @@ Last updated 2026-09-30.
 - Races and albums, slice 6: race picker — one `photofinder serve` for every race (pick any indexed race, one loaded at a time, `/api/r/<race>/…`), last race and per-race person remembered in the browser, reload banner on a tab left on the old race.
 - Races and albums, slice 7: Open on site — the photo viewer and My photos link every photo to its site (xxpie: the photo itself; yipai: the album, find it with the file-name search; pailixiang/photoplus: the album, find it by group, shot time and the file name shown with a Copy button); CSV `site_url`; photos from non-yipai albums show `open on site` and are skipped by Download originals. Links checked on the real sites for one photo per platform.
 - Nearby shots (2026-09-30, `nearby.py`, `docs/handoff/2026-09-30-nearby-shots.md`): same-photographer shots next to confirmed photos (marked Me or exact bib hits) — "Next to your marked photos" section on Find more (above the ranking) / bib results (below the bib hits) (±1–5, default 2, at most 30 s from the anchor — `nearby.MAX_GAP`; same-bib rate by gap ≤2 s 73%, ≤5 s 26%, ≤10 s 10%, ≤30 s 3%, >30 s ~2%; excluded from the ranked list via `exclude_photos`) and a ±3 filmstrip in the viewer (`,` / `.` step, marking re-anchors). Measured on bib reads (lower bounds): same photographer ±1 shot 63% share a bib read with the anchor, ±2 43%, ±3 30% (2026-gongga100, any shared bib). `eval` nearby table on race925 (4 bibs, share of query-photo neighbours reading the query bib): ±1 0.47, ±2 0.40, ±3 0.34; R@50 gain ≈0, because a query's burst neighbours are already in the clothing top-50 — the value is surfacing them first, next to every marked photo (`uv run photofinder eval <race> --bib <bib> [--bib …]`).
+- Bulk "Not me: the other N" (2026-10-01, `docs/handoff/2026-10-01-bulk-not-me.md`): one click marks every other unmarked runner on the results page Not me (`POST /labels/batch`, undoable once via `/labels/batch/undo`) and hides those photos from later Find more (`labels.hidden`, `hide_hidden` on `/nearby`, `hidden` count in the Find more summary); other searches still show them dimmed. Measured on race925 (20 bibs): person-level Not me let 68 dismissed photos back on the next Find more vs 0 with photo hiding; true photos found on page 2 unchanged (33 vs 33).
 - Measured quality (race925, 36 bibs): photo R@50 .354, cross-photographer R@50 only .153 — clothing search is a candidate generator; the bib → mark → Find more loop does the rest. Details: `docs/handoff/2026-09-27-photo-finder-search-design.md`.
 
 ## In progress (operational)

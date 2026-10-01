@@ -535,7 +535,20 @@ def test_page_is_served_and_calls_only_real_endpoints(tmp_path):
     script = re.search(r"<script>(.*)</script>", res.text, re.S).group(1)
     used = {re.sub(r"\$\{[^}]*\}", "{}", p) for p in re.findall(r"/api/[^\s'\"`?]*", script)}
     routes = {re.sub(r"\{[^}]+\}", "{}", r.path) for r in api.routes if r.path.startswith("/api/")}
-    assert used == routes - {"/api/r/{}/labels/batch", "/api/r/{}/labels/batch/undo"}
+    assert used == routes
+
+
+def test_page_has_the_bulk_not_me_button_with_undo_and_hides_only_in_find_more(tmp_path):
+    c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+    page = TestClient(web.create_app(c)).get("/").text
+    script = re.search(r"<script>(.*)</script>", page, re.S).group(1)
+    assert 'id="bulk"' in page and "Not me: the other" in page
+    assert re.search(r"labels/batch`, \{profile_id: profile, person_ids: ids\}", script)
+    assert re.search(r"labels/batch/undo`, \{profile_id: bulk\.profile, person_ids: bulk\.changed\}", script)
+    assert "hide_hidden: S.base.mode === 'more'" in script
+    other = re.search(r"function otherIds\(\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "S.mine.has(r.photo_id)" in other and "new Set()" in other
+    assert "S.profile !== profile || S.gen !== gen" in re.search(r"async function markOthers\(\) \{(.*?)\n\}", script, re.S).group(1)
 
 
 def test_page_sends_nearby_ids_to_search_and_steps_the_roll_with_comma_and_period(tmp_path):

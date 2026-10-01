@@ -31,3 +31,29 @@
 **Touches**
 - `src/photofinder/db.py` (LABELS, MIGRATE_HIDDEN, no_hidden, migrate), `src/photofinder/nearby.py` (`collect` signature + labels query now 4-tuples), `src/photofinder/web/app.py` (BatchBody, NearbyQuery.hide_hidden, prepare/ranked, two routes, set_label), `tests/{test_bulk_not_me (new),test_db,test_race_import,test_web}.py`.
 - Public API: `POST /api/r/{slug}/labels/batch`, `.../labels/batch/undo`, `hidden` on Find more responses, `hide_hidden` on `/nearby`. Schema: `labels.hidden`.
+
+## T2 — UI (button, batch + Undo, Find more hidden count) and docs
+
+**Decisions**
+- Button `#bulk` ("Not me: the other N") in the sticky bar left of Find more; hidden until a search exists, disabled with an explanatory title when N=0, busy, or not the search view. Title says the hide effect is Find-more-only.
+- N = distinct person ids of cards in `S.results` + visible nearby section with no label, photo not in `S.mine`, not mid-label (`S.pending`). `renderBulk()` runs from `syncControls`/`renderCounts` and `setLabel`'s finally (pending is cleared only there; without it N lagged one click).
+- Batch click uses `setBusy` (dims grids, disables controls), guards on profile+`S.gen` after the await, paints via `paint()`, bumps `S.facets.labels.not_me`; cards stay put. Skipped ids untouched; count mentioned only if non-zero.
+- Undo state `S.bulk {profile, gen, changed, el}`; banner buttons carry `data-run` so they disable while busy. `retireBulk()` (removes every `[data-bulk]` banner incl. the "Undid" note) runs on new batch, `search(false)`, `switchProfile`; `clearRace` and `showView` change reset it with the banners.
+- `hide_hidden: S.base.mode === 'more'` lives in `nearBody()`, so it covers the section refetch (stepper/toggle) too; bib page sends false. `S.hiddenN` from non-append Find more responses, shown as "N hidden (Not me: the other)".
+
+**Rejected**
+- Hiding/removing the cards on success: spec says paint in place; next Find more excludes them.
+- Keyboard binding: no natural conflict-free key.
+- Disabling when no Me mark yet: spec lists only N=0/busy/view; Undo covers a misclick.
+
+**Assumptions**
+- Photo "has a Me person" = `S.mine` (loaded with the profile, kept in sync by `setLabel`); the server re-checks and skips otherwise.
+- `S.pending` entries are single-label requests in flight; excluding them from N is safe.
+
+**Deferred**
+- Real-browser E2E (orchestrator). Modal strip not re-evaluated after a batch (batch only adds Not me on unlabelled persons; strip anchors need a Me mark).
+- Undo identity issue from T1 remains (UI only offers the latest batch).
+
+**Touches**
+- `src/photofinder/web/static/index.html` (CSS `.bulk-wrap`, `#bulk-wrap`, state `hiddenN`/`bulk`, search/summary/nearBody/setLabel/switchProfile/clearRace/showView), `tests/test_web.py` (route test back to `used == routes`, new page test), `README.md`, `docs/ROADMAP.md`, `CLAUDE.md` (584 passed).
+- Smoke harness: scratchpad `smoke_bulk.js` (25 checks; 7 FAIL/ERR lines on the pre-change page; mutants 6/6 caught).

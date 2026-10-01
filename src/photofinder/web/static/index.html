@@ -105,6 +105,7 @@ main { overflow-y: auto; position: relative; }
 .summary { min-width: 0; flex: 1; }
 .summary .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary .sub { color: var(--muted); font-size: 12px; }
+.bulk-wrap { text-align: right; }
 .more-wrap { text-align: right; }
 .more-wrap .hint { margin: 2px 0 0; }
 .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; overflow: hidden; }
@@ -340,6 +341,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     <div class="bar">
       <div class="summary" id="summary"><div class="title">Find your photos</div><div class="sub">Pick a start point on the left.</div></div>
       <div class="busy-msg" id="busy" hidden><span class="spin"></span><span id="busy-text"></span><span class="model-load" id="busy-model" hidden></span></div>
+      <div class="bulk-wrap" id="bulk-wrap" hidden>
+        <button class="btn big" id="bulk" type="button" disabled>Not me: the other <span id="bulk-n">0</span></button>
+      </div>
       <div class="more-wrap" id="more-wrap">
         <button class="btn primary big" id="more" data-run disabled>Find more like my marked ones <span id="more-n"></span></button>
         <p class="hint" id="more-hint">Mark at least one photo as Me to enable.</p>
@@ -406,7 +410,7 @@ const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
   profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0, races: [], loading: null, stale: null,
-  gen: 0, failed: false, got: 0, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
+  gen: 0, failed: false, got: 0, hiddenN: 0, bulk: null, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
 const RACE_KEY = 'photofinder.race';
 const NEAR_KEY = 'photofinder.nearby';
 const STRIP_SPAN = 3;
@@ -493,6 +497,7 @@ function syncControls() {
   ['prof', 'prof-new', 'prof-rename', 'prof-delete', 'tab-me', 'export'].forEach(id => $('#' + id).disabled = none);
   if (none) $('#orig-start').disabled = true;
   $('#race').disabled = !!S.loading || !S.races.length;
+  renderBulk();
 }
 
 const MODEL_LABELS = {encode_text: 'text search', detect_and_embed: 'person detection'};
@@ -540,6 +545,78 @@ function renderCounts() {
   $('#more').title = `Hides photos already marked ${S.name} and people marked Not ${S.name}.`;
   $('#more-hint').textContent = n ? 'Changed clothes? Mark one photo of each look.' : `Mark at least one photo as ${S.name} to enable.`;
   $('#orig-start').disabled = !S.mePhotos || (S.job && S.job.state === 'running');
+  renderBulk();
+}
+
+function otherIds() {
+  const ids = new Set();
+  const cards = [...(S.results || []), ...($('#near').hidden || !S.nearOn ? [] : S.near || [])];
+  for (const r of cards) {
+    const pid = r.person_id;
+    if (pid != null && (S.labels[pid] ?? null) === null && !S.mine.has(r.photo_id) && !S.pending.has(pid)) ids.add(pid);
+  }
+  return [...ids];
+}
+
+function renderBulk() {
+  const wrap = $('#bulk-wrap'), btn = $('#bulk');
+  wrap.hidden = !S.query || !S.base;
+  const n = wrap.hidden || S.view !== 'search' ? 0 : otherIds().length;
+  $('#bulk-n').textContent = fmt(n);
+  btn.disabled = !n || S.busy > 0 || S.view !== 'search' || !entered() || !!S.loading;
+  btn.title = S.view !== 'search' ? 'Go back to the search results to use this'
+    : S.busy > 0 ? 'Wait for the current search to finish'
+    : !n ? `Every runner on this page is already marked, or is in a photo marked ${S.name}`
+    : `Marks the ${n} unmarked runner${n === 1 ? '' : 's'} on this page Not ${S.name}. Their photos stop appearing in Find more; other searches still show them, dimmed. You can undo it right after.`;
+}
+
+function retireBulk() {
+  document.querySelectorAll('#banners [data-bulk]').forEach(el => el.remove());
+  S.bulk = null;
+}
+
+function bulkBanner(msg, undo) {
+  const b = h('div', {class: 'banner info', role: 'status'}, h('p', {}, msg),
+    undo ? h('button', {class: 'btn', type: 'button', 'data-run': true, onclick: undoBulk}, 'Undo') : null,
+    h('button', {class: 'btn', type: 'button', onclick: () => { b.remove(); if (S.bulk && S.bulk.el === b) S.bulk = null; }}, 'Dismiss'));
+  b.dataset.bulk = '1';
+  $('#banners').append(b);
+  return b;
+}
+
+async function markOthers() {
+  const ids = otherIds();
+  if (!ids.length || S.busy > 0) return;
+  retireBulk();
+  const profile = S.profile, gen = S.gen;
+  setBusy('Marking the others…');
+  try {
+    const r = await post(`/api/r/${S.race}/labels/batch`, {profile_id: profile, person_ids: ids});
+    if (S.profile !== profile || S.gen !== gen) return;
+    for (const pid of r.changed) { S.labels[pid] = 'not_me'; paint(pid); }
+    if (S.facets) S.facets.labels.not_me += r.changed.length;
+    renderCounts();
+    const skipped = r.skipped.length ? ` (${r.skipped.length} left as they were)` : '';
+    if (!r.changed.length) { banner(`Nothing to mark${skipped}.`, 'warn'); return; }
+    S.bulk = {profile, gen, changed: r.changed, el: bulkBanner(`Marked ${r.changed.length} Not ${S.name}${skipped}. Their photos won't come back in Find more.`, true)};
+  } catch (e) { fail(e); } finally { setBusy(null); }
+}
+
+async function undoBulk() {
+  const bulk = S.bulk;
+  if (!bulk || S.busy > 0 || bulk.profile !== S.profile || bulk.gen !== S.gen) return;
+  setBusy('Undoing…');
+  try {
+    const r = await post(`/api/r/${S.race}/labels/batch/undo`, {profile_id: bulk.profile, person_ids: bulk.changed});
+    if (S.profile !== bulk.profile || S.gen !== bulk.gen || S.bulk !== bulk) return;
+    for (const pid of r.removed) { delete S.labels[pid]; paint(pid); }
+    if (S.facets) S.facets.labels.not_me -= r.removed.length;
+    renderCounts();
+    bulk.el.remove();
+    S.bulk = null;
+    const kept = r.kept.length ? `, ${r.kept.length} kept because you changed ${r.kept.length === 1 ? 'it' : 'them'}` : '';
+    bulkBanner(`Undid ${r.removed.length} Not ${S.name}${kept}.`, false);
+  } catch (e) { fail(e); } finally { setBusy(null); }
 }
 
 const profileKey = () => `photofinder.profile.${S.race}`;
@@ -580,6 +657,7 @@ async function switchProfile(id) {
     return;
   }
   ++S.seq;
+  retireBulk();
   S.results = [];
   S.near = null;
   $('#grid').innerHTML = '';
@@ -717,6 +795,7 @@ function summary() {
   if (S.near && S.near.length && !$('#near').hidden) sub.push(`${fmt(S.near.length)} nearby shot${S.near.length === 1 ? '' : 's'} ${b.start_bib ? 'below' : 'above'}`);
   if (b.start_bib) sub.push('exact bib reads, in time order');
   if (b.mode === 'more') sub.push('marked photos hidden');
+  if (b.mode === 'more' && S.hiddenN > 0) sub.push(`${fmt(S.hiddenN)} hidden (Not me: the other)`);
   if (q.start || q.end || q.bib || q.photographers.length || q.albums.length || q.groups.length) sub.push('filtered');
   if (b.start_bib && S.descIgnored) sub.push('description not used with a bib search');
   if (S.timing != null) sub.push(`took ${took(S.timing)}`);
@@ -729,7 +808,7 @@ const nearApplies = b => !!(b && (b.start_bib || b.mode === 'more'));
 function nearBody() {
   const q = S.query;
   return {profile_id: S.profile, span: S.nearSpan, anchors_bib: q.start_bib || null, start: q.start, end: q.end,
-    photographers: q.photographers, albums: q.albums, groups: q.groups, bib: q.bib};
+    photographers: q.photographers, albums: q.albums, groups: q.groups, bib: q.bib, hide_hidden: S.base.mode === 'more'};
 }
 
 function takeNear(r) {
@@ -741,6 +820,7 @@ function takeNear(r) {
 async function search(append) {
   const seq = ++S.seq;
   S.appending = append;
+  if (!append) { retireBulk(); S.hiddenN = 0; }
   setBusy('Searching…');
   try {
     let nearP = null;
@@ -773,6 +853,7 @@ async function search(append) {
     if (append) S.results.push(...got);
     else S.results = got;
     S.total = r.total ?? null;
+    if (!append) S.hiddenN = r.hidden ?? 0;
     S.timing = ms / 1000;
     S.done = S.total != null ? S.got >= S.total : r.results.length < q.top;
     renderResults(append ? got : null);
@@ -904,7 +985,7 @@ async function setLabel(pid, want, photoId) {
     S.mePhotos = S.mine.size;
     renderCounts();
     modalLabelled(photoId, r.label);
-  } catch (e) { fail(e); } finally { pending.delete(pid); }
+  } catch (e) { fail(e); } finally { pending.delete(pid); renderBulk(); }
 }
 
 function broken(e) {
@@ -1008,7 +1089,7 @@ function cropThumb(src, box, w, hgt, W = 56, H = 96) {
 }
 
 function showView(v) {
-  if (v !== S.view) $('#banners').innerHTML = '';
+  if (v !== S.view) { $('#banners').innerHTML = ''; S.bulk = null; }
   S.view = v;
   $('#view-search').hidden = v !== 'search';
   $('#view-me').hidden = v !== 'me';
@@ -1565,7 +1646,7 @@ function clearRace(slug) {
   closeModal();
   Object.assign(S, {race: slug, facets: null, base: null, query: null, start: null, results: [], total: null, timing: null, done: true,
     labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), me: [], upload: null, details: new Map(), profile: null,
-    profiles: [], name: 'Me', job: null, highlight: null, descIgnored: false, near: null});
+    profiles: [], name: 'Me', job: null, highlight: null, descIgnored: false, near: null, hiddenN: 0, bulk: null});
   for (const id of ['bib', 'q-text', 'q-scene', 'f-start', 'f-end', 'f-bib', 'file']) $('#' + id).value = '';
   $('#f-start').placeholder = $('#f-end').placeholder = 'YYYY-MM-DD HH:MM';
   $('#q-scene').placeholder = 'e.g. finish arch, 雪山';
@@ -1661,6 +1742,7 @@ function wire() {
     countFilters();
   });
   ['f-start', 'f-end', 'f-bib'].forEach(id => $('#' + id).addEventListener('input', countFilters));
+  $('#bulk').addEventListener('click', markOthers);
   $('#more').addEventListener('click', () => run({mode: 'more', label: 'your marked photos (Find more)'}));
   $('#load-more').addEventListener('click', () => search(true));
   $('#near-on').addEventListener('change', e => { S.nearOn = e.target.checked; refreshNear(); });
