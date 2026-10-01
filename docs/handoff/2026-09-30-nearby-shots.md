@@ -13,7 +13,7 @@
 - Skip rule: a neighbour with no eligible person is dropped if it has a not_me person or a bib filter is set; otherwise kept with `person_id: null` (no person detected / not embedded). Bib filter keeps only persons matching it, so zero-person photos drop under a bib filter.
 - Dedupe key per neighbour photo: (|offset|, |gap|, anchor photo id), smallest wins. Sort: |offset|, taken_ts, photo id.
 - Cards carry the same keys as `/search` results (`rank`/`score`/`matched_via` null, `box` null when no person) plus `offset, gap_s, same_second, similarity` (+ `anchor_photo_id, anchor_person_id` on /nearby; anchor_person_id falls back to the anchor's first reference when the neighbour has no person).
-- **For T2 — dedupe with /search: new `SearchQuery.exclude_photos`.** It is unioned into the exclude set but NOT into the rank base, so similarity ranks stay 1.. and Load more stays right. Fetch `/nearby` once per query, pass its photo ids as `exclude_photos` on every `/search` page (first page and Load more, alongside `seen`). Not applied to `start_bib` searches: those results are exact bib hits = anchors, which `/nearby` already excludes, so they cannot overlap.
+- **For T2 — dedupe with /search: new `SearchQuery.exclude_photos`.** It is unioned into the exclude set but NOT into the rank base, so similarity ranks stay 1.. and Load more stays right. Fetch `/nearby` once per query, pass its photo ids as `exclude_photos` on every `/search` page (first page and Load more, alongside `seen`). Not applied to `start_bib` searches: `/nearby` with `anchors_bib` excludes every photo with a person whose bib == anchors_bib (corrected in Gate fixes: a bib person marked Not me is not an anchor, but its photo is still a bib result, so the two could overlap before).
 - **For T2 — `tests/test_web.py::test_page_is_served_and_calls_only_real_endpoints`** now allows exactly the two new routes to be unused by the page; T2 must shrink that set back to `used == routes`.
 - Eval: per bib, anchors = all bib photos; precision is per (anchor, neighbour ≤ span) pair; gain = R@50 of the default 0.3:0.7 ranking vs R@50 of (top-50 ∪ neighbours of the query photo). Printed as "lower bounds" because bib reads are the only truth.
 
@@ -70,3 +70,21 @@
 **Touches**
 - `src/photofinder/web/static/index.html` (CSS, `#near` section, `#m-strip`, `.m-main` wrapper, search/openModal/closeModal/onKey/setLabel/card).
 - `tests/test_web.py` (route test back to `used == routes`; new page test), `README.md`, `docs/ROADMAP.md`, `CLAUDE.md` (layout line, 564 passed).
+
+## Gate fixes (round 1)
+
+**Decisions**
+- `/nearby` with `anchors_bib` hides every photo that has a person with that exact bib, labelled or not (`nearby.collect` `hidden`): those are the bib results, so the section can't repeat them. Regression: `test_nearby_never_lists_a_bib_result_photo_even_when_its_bib_person_is_not_me`.
+- Once-only on the page, client side too: every `/search` page drops photos currently in the nearby section; `refreshNear` drops photos already ranked. Rank numbers may skip (accepted). Bib paging now counts raw rows (`S.got`) so a dropped row doesn't shift `offset` or `done`.
+- A `/nearby` response is used only if `S.nseq` is unchanged and the toggle is still on (a toggle/stepper change bumps `S.nseq`).
+- Bib-start result whose person is Not me (current `S.labels`) is not confirmed: no strip.
+- Losing the anchor's last Me re-evaluates the anchor wherever you are: re-anchor on the current photo if it has a Me person, else hide. Works when the label response lands after you walked away.
+- Strip renders only once it has neighbours (or an inline error): no strip and no image shrink for photos with `reason` (no time/photographer), single-shot rolls, or while the first fetch loads.
+- Badge always shows the gap (`2 min before`), never `next shot`.
+
+**Rejected**
+- Hiding a neighbour photo that has one Not me person and another unlabelled one (coordinator: /search drops persons, not photos).
+- Showing "Loading shots…" in the strip on first open: it shrank the image for photos that end up with no strip.
+
+**Touches**
+- `src/photofinder/nearby.py` (`collect`), `tests/test_nearby.py`, `src/photofinder/web/static/index.html` (`search`, `renderStrip`, `modalLabelled`, `openModal`, `nearText`). Scratchpad jsdom harness: 38 checks; 6 new ones (fixes 2–7) failed before the fix.

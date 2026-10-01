@@ -83,9 +83,11 @@ def collect(conn: sqlite3.Connection, persons: search.Persons, profile_id: int, 
     for p, label, photo in labels:
         if label == "me":
             refs.setdefault(photo, []).append(p)
+    hidden = set()
     if bib:
         for p, photo in conn.execute("select p.id, p.photo_id from bibs b join persons p on p.id = b.person_id "
                                      "where b.text = ? order by p.id", (bib,)):
+            hidden.add(photo)
             if p not in not_me:
                 refs.setdefault(photo, []).append(p)
     anchors = {a: rows_of(persons, dict.fromkeys(ps)) for a, ps in refs.items()}
@@ -95,7 +97,7 @@ def collect(conn: sqlite3.Connection, persons: search.Persons, profile_id: int, 
     for a, shots in neighbours.items():
         for photo, offset, gap, ts in shots:
             key = (abs(offset), abs(gap), a)
-            if photo not in anchors and (photo not in near or key < near[photo][0]):
+            if photo not in anchors and photo not in hidden and (photo not in near or key < near[photo][0]):
                 near[photo] = (key, a, offset, gap, ts)
     ids = list(near)
     where, args = search.filter_where(dataclasses.replace(filters, bib=None))

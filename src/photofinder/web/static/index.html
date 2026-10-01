@@ -405,7 +405,7 @@ const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
   profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0, races: [], loading: null, stale: null,
-  gen: 0, failed: false, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
+  gen: 0, failed: false, got: 0, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
 const RACE_KEY = 'photofinder.race';
 const NEAR_KEY = 'photofinder.nearby';
 const STRIP_SPAN = 3;
@@ -743,8 +743,9 @@ async function search(append) {
   setBusy('Searching…');
   try {
     let nearP = null;
+    const nseq = append ? S.nseq : ++S.nseq;
+    const fresh = nr => nr && nseq === S.nseq && S.nearOn;
     if (!append) {
-      ++S.nseq;
       S.near = null;
       if (nearApplies(S.base) && S.nearOn) nearP = post(`/api/r/${S.race}/nearby`, nearBody()).then(r => r, e => { if (seq === S.seq) fail(e); return null; });
     }
@@ -752,25 +753,28 @@ async function search(append) {
     if (nearP && !bib) {
       const nr = await nearP;
       if (seq !== S.seq) return;
-      if (nr) S.near = takeNear(nr);
+      if (fresh(nr)) S.near = takeNear(nr);
     }
-    const q = bib ? {...S.query, profile_id: S.profile, offset: append ? S.results.length : 0}
+    const q = bib ? {...S.query, profile_id: S.profile, offset: append ? S.got : 0}
       : {...S.query, profile_id: S.profile, offset: 0, seen: append ? S.results.map(r => r.photo_id) : [],
         exclude_photos: S.near ? S.near.map(x => x.photo_id) : []};
     const t0 = performance.now();
     const r = await post(`/api/r/${S.race}/search`, q);
     const nr = nearP && bib ? await nearP : null;
     if (seq !== S.seq) return;
-    if (nr) S.near = takeNear(nr);
+    if (fresh(nr)) S.near = takeNear(nr);
     const ms = performance.now() - t0;
     for (const w of r.warnings || []) banner(w, 'warn');
     for (const x of r.results) S.labels[x.person_id] = x.label;
-    if (append) S.results.push(...r.results);
-    else S.results = r.results;
+    const inNear = new Set((S.near || []).map(x => x.photo_id));
+    const got = r.results.filter(x => !inNear.has(x.photo_id));
+    S.got = (append ? S.got : 0) + r.results.length;
+    if (append) S.results.push(...got);
+    else S.results = got;
     S.total = r.total ?? null;
     S.timing = ms / 1000;
-    S.done = S.total != null ? S.results.length >= S.total : r.results.length < q.top;
-    renderResults(append ? r.results : null);
+    S.done = S.total != null ? S.got >= S.total : r.results.length < q.top;
+    renderResults(append ? got : null);
   } catch (e) {
     if (seq === S.seq) fail(e);
   } finally {
@@ -844,9 +848,7 @@ async function refreshNear() {
 
 function nearText(r) {
   if (r.same_second) return 'same sec';
-  const g = Math.abs(r.gap_s);
-  if (g >= 60 && Math.abs(r.offset) === 1) return r.offset > 0 ? 'next shot' : 'shot before';
-  return `${dur(g)} ${r.gap_s > 0 ? 'after' : 'before'}`;
+  return `${dur(Math.abs(r.gap_s))} ${r.gap_s > 0 ? 'after' : 'before'}`;
 }
 
 const dur = g => g < 60 ? `${g} s` : g < 3600 ? `${Math.round(g / 60)} min` : `${(g / 3600).toFixed(1)} h`;
@@ -1201,7 +1203,7 @@ async function openModal(list, i, shot = null, bib) {
   if (!shot) {
     ++S.sseq;
     S.strip = null;
-    if (bib === undefined) bib = list === S.results && S.base && S.base.start_bib ? r.person_id : null;
+    if (bib === undefined) bib = list === S.results && S.base && S.base.start_bib && S.labels[r.person_id] !== 'not_me' ? r.person_id : null;
     if (S.mine.has(r.photo_id) || bib != null) loadStrip(r.photo_id, S.mine.has(r.photo_id) ? null : bib);
     else renderStrip();
   } else markCur();
@@ -1253,15 +1255,16 @@ async function loadStrip(photo, person) {
 
 function renderStrip() {
   const st = S.strip, box = $('#m-strip');
-  $('#modal').classList.toggle('has-strip', !!st);
-  box.hidden = !st;
+  const on = !!st && (st.error || (st.cells && !st.reason && st.cells.length > 1));
+  $('#modal').classList.toggle('has-strip', !!on);
+  box.hidden = !on;
   box.innerHTML = '';
-  if (!st) return;
+  if (!on) return;
   const kind = st.person != null && !S.mine.has(st.anchor) ? 'bib' : 'marked';
   box.append(h('div', {class: 'st-head'}, h('b', {}, 'Same photographer · before / after'),
     h('span', {class: 'hint'}, st.note || `Around the ${kind} photo (yellow). Click a shot or press , / . to step; M marks the cyan runner.`)));
-  if (!st.cells || st.reason || st.cells.length < 2) {
-    box.append(h('p', {class: 'hint st-note'}, st.error || st.reason || (st.cells ? 'No other shots by this photographer.' : 'Loading shots…')));
+  if (st.error) {
+    box.append(h('p', {class: 'hint st-note'}, st.error));
     return;
   }
   const ol = h('ol', {});
@@ -1325,11 +1328,11 @@ function modalLabelled(photoId, label) {
   const here = !!(m && m.r && m.r.photo_id === photoId);
   if (here && label === 'me') { loadStrip(photoId, null); return; }
   if (!st) return;
-  if (here) {
-    if (st.anchor === photoId && !S.mine.has(photoId) && (st.person == null || S.labels[st.person] === 'not_me')) {
-      ++S.sseq;
-      S.strip = null;
-    }
+  if (st.anchor === photoId && !S.mine.has(photoId) && (st.person == null || S.labels[st.person] === 'not_me')) {
+    const cur = m && m.r ? m.r.photo_id : null;
+    if (cur != null && cur !== photoId && S.mine.has(cur)) { loadStrip(cur, null); return; }
+    ++S.sseq;
+    S.strip = null;
   }
   renderStrip();
 }

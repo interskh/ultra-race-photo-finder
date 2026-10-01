@@ -170,6 +170,17 @@ def test_nearby_bib_anchors_use_the_bib_person_as_reference(tmp_path):
     assert body["results"] == [] and "ocr_bibs" in body["warnings"][0]
 
 
+def test_nearby_never_lists_a_bib_result_photo_even_when_its_bib_person_is_not_me(tmp_path):
+    c, conn, ids, photo = roll_index(tmp_path)
+    conn.execute("insert into bibs(person_id, text, conf) values (?, '2001', 0.7)", (ids[9][0],))
+    conn.commit()
+    api = client(c)
+    label(api, ids[9][0], "not_me")
+    bib_hits = {r["photo_id"] for r in api.post("/api/search", json={"profile_id": ME, "start_bib": "2001"}).json()["results"]}
+    assert bib_hits == {photo[8], photo[9]}
+    assert not bib_hits & {r["photo_id"] for r in near(api, anchors_bib="2001")["results"]}
+
+
 def test_nearby_applies_search_filters(tmp_path):
     c, _, ids, photo = roll_index(tmp_path)
     api = client(c)
