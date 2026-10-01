@@ -39,6 +39,8 @@ class PP:
         self.images = {}
         self.api = lambda req: None
         self.on_image = lambda pid: None
+        self.body = jpeg
+        self.declare = False
 
     def __call__(self, req):
         if req.url.path == "/pic/list":
@@ -50,14 +52,17 @@ class PP:
             if forced is not None:
                 return forced
             return httpx.Response(200, json={"code": 1, "result": {"pics_total": len(self.entries), "pics_array": [
-                {"id": i, "relate_time": tm, "watermark_origin_img": f"//img.test/o/{i}.jpg?sign=1"}
+                {"id": i, "relate_time": tm, "watermark_origin_img": f"//img.test/o/{i}{self.size(i)}.jpg?sign=1"}
                 for i, tm in self.entries[(n - 1) * c: n * c]]}})
         assert req.url.host == "img.test" and req.headers["referer"] == photoplus.API + "/"
-        pid = int(req.url.path.rsplit("/", 1)[1][:-4])
+        pid = int(req.url.path.rsplit("/", 1)[1][:-4].split(":")[0])
         self.fetched.append(pid)
         self.on_image(pid)
         replies = self.images.get(pid)
-        return replies.pop(0) if replies else httpx.Response(200, content=jpeg(pid))
+        return replies.pop(0) if replies else httpx.Response(200, content=self.body(pid))
+
+    def size(self, pid):
+        return f":{len(self.body(pid))}" if self.declare else ""
 
     def pages(self):
         return [n for _, n in self.listings]
@@ -264,10 +269,10 @@ def test_downloadable_and_file_names_per_platform():
     assert originals.file_name(meta, "photoplus") == "20260925-080000_cam_photoplus-101.jpg"
 
 
-def locator_for(entries, **kw):
+def locator_for(entries, gap=photoplus.PAGE_GAP, **kw):
     t = FakeTime()
     g = PP(t, entries)
-    return photoplus.Locator(httpx.Client(transport=httpx.MockTransport(g)), pause=t.sleep, clock=t.clock, gap=0,
+    return photoplus.Locator(httpx.Client(transport=httpx.MockTransport(g)), pause=t.sleep, clock=t.clock, gap=gap,
                              **kw), g
 
 
@@ -304,3 +309,65 @@ def test_missing_pics_total_is_an_error_not_a_silent_miss(monkeypatch):
         {"id": 1, "relate_time": when(1)}]}})
     with pytest.raises(photoplus.NotFound, match="did not report the album size"):
         loc.locate(ACT, when(1), "1")
+
+
+def shaped(pid):
+    return b"\xff\xd8" + f"photo {pid}".encode() + b"x" * 3000 + b"\xff\xd9" + b"t" * 500
+
+
+def test_real_shaped_original_with_trailing_data_downloads_and_reruns_without_requests(tmp_path, monkeypatch):
+    c, conn, t, g, api = setup(tmp_path, monkeypatch, [pos(2)])
+    g.body, g.declare = shaped, True
+    status = run(api)
+    assert status["counts"]["downloaded"] == 1 and g.fetched == [198]
+    assert (out_dir(tmp_path) / names(tmp_path)[0]).read_bytes() == shaped(198)
+    g.listings.clear(), g.fetched.clear()
+    status = run(api)
+    assert status["counts"]["skipped"] == 1 and (g.listings, g.fetched) == ([], [])
+    photo = conn.execute("select id from photos").fetchone()[0]
+    assert api.post(f"/api/photos/{photo}/original", json={"profile_id": ME}).content == shaped(198)
+    assert (g.listings, g.fetched) == ([], [])
+
+
+def test_size_mismatch_against_the_declared_length_is_retried_then_fails(tmp_path, monkeypatch):
+    c, conn, t, g, api = setup(tmp_path, monkeypatch, [pos(2)], tries=3)
+    g.declare = True
+    g.images = {198: [httpx.Response(200, content=shaped(198)[:-100])] * 2}
+    status = run(api)
+    assert status["counts"]["downloaded"] == 1 and g.fetched == [198] * 3
+    g.listings.clear(), g.fetched.clear()
+    (out_dir(tmp_path) / names(tmp_path)[0]).unlink()
+    g.images = {198: [httpx.Response(200, content=shaped(198)[:-100])] * 3}
+    status = run(api)
+    assert status["counts"]["failed"] == 1 and status["errors"] == ["198 IMG_198.JPG: failed: truncated download"]
+    assert names(tmp_path) == []
+
+
+def test_budget_counts_every_http_attempt_not_just_pages(monkeypatch):
+    monkeypatch.setattr(photoplus, "LIST_PAGE", PAGE)
+    loc, g = locator_for(album(12), budget=3)
+    g.api = lambda req: httpx.Response(500)
+    with pytest.raises(photoplus.BudgetExceeded):
+        loc.locate(ACT, when(2), "1")
+    assert len(g.listings) == 3
+
+
+def test_retry_sleeps_are_never_shorter_than_the_listing_gap(monkeypatch):
+    monkeypatch.setattr(photoplus, "LIST_PAGE", PAGE)
+    monkeypatch.setattr("photofinder.sources.common.backoff_seconds", lambda attempt: 1.0)
+    loc, g = locator_for(album(12), budget=4)
+    g.api = lambda req: httpx.Response(500)
+    with pytest.raises(photoplus.BudgetExceeded):
+        loc.locate(ACT, when(2), "1")
+    times = [when_ for when_, _ in g.listings]
+    assert len(times) == 4 and all(b - a >= photoplus.PAGE_GAP for a, b in zip(times, times[1:]))
+
+
+def test_fresh_retry_gets_its_own_budget(monkeypatch):
+    monkeypatch.setattr(photoplus, "LIST_PAGE", PAGE)
+    entries = album(12)
+    loc, g = locator_for(entries, budget=2)
+    loc.page(ACT, 3, [0, 0])
+    shot = dict(entries)[1007]
+    entries.insert(0, (1013, "2026-09-25 10:00:00"))
+    assert loc.locate(ACT, shot, "1007").endswith("/o/1007.jpg?sign=1")

@@ -46,3 +46,13 @@
 
 ## Touches
 - src/photofinder/web/static/index.html (2 lines), README.md, docs/ROADMAP.md, CLAUDE.md.
+
+## Gate fixes
+- Real photoplus bodies are complete but carry trailing data after the last FFD9, so `looks_like_jpeg` rejected all of them. Photoplus now uses `photoplus_complete`: FFD8, >1024 bytes, and length == the `:<bytes>.jpg` size declared in the URL path when present; a mismatch is retried as "truncated download". yipai check unchanged (`Fetcher.download(complete=, truncated=)`).
+- `valid(dest, platform)`: photoplus rows accept FFD8 + >1024 bytes (files are written atomically), so reruns and single downloads skip existing files.
+- Tests: real-shaped body (FFD9 mid-file + 500 trailing bytes) downloads, reruns/single with zero requests; size mismatch retried then `failed: truncated download`. Mutations 3/3 caught (default check, skip check, size comparison).
+- README originals paragraph: yipai360 6 s lookup vs photoplus 2.5 s listing, `…_photoplus-<id>.jpg`, refusal after relist is `failed: …`, "tens of seconds" instead of ~30 s. Touches: originals.py, README.md, tests/test_photoplus_originals.py.
+- Codex round: CSV statuses are keyed (source id, file name, `site_url`); an old CSV without a `site_url` column still matches on (id, name) only. Collision test restored for yipai+photoplus.
+- Budget now counts every HTTP attempt (incremented in the `fetch_json` `fresh` callback, so retries spend it); retry sleeps are `max(backoff, gap)` through `Fetcher.pause`.
+- The fresh retry after a cache-assisted NotFound has its own budget: worst case is 2x `MAX_PAGE_REQUESTS` (48) HTTP attempts per lookup.
+- Tests fail without each fix (4/4 reverts caught): attempt-counted budget, retry gap, own fresh budget, CSV collision.

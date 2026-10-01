@@ -12,6 +12,7 @@ import unicodedata
 import zipfile
 from contextlib import closing, contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -151,15 +152,23 @@ def downloadable(row: dict) -> bool:
     return row["platform"] in (None, *ORIGINAL_PLATFORMS)
 
 
-def valid(path: Path) -> bool:
-    return path.is_file() and yipai.looks_like_jpeg(path.read_bytes())
+def photoplus_complete(data: bytes, url: str = "") -> bool:
+    declared = re.search(r":(\d+)\.jpg$", urlsplit(url).path)
+    return len(data) > 1024 and data[:2] == b"\xff\xd8" and (not declared or len(data) == int(declared[1]))
+
+
+def valid(path: Path, platform: str | None = None) -> bool:
+    if not path.is_file():
+        return False
+    data = path.read_bytes()
+    return photoplus_complete(data) if platform == "photoplus" else yipai.looks_like_jpeg(data)
 
 
 def read_csv(folder: Path) -> dict:
     try:
         with open(folder / CSV_NAME, newline="", encoding="utf-8-sig") as f:
-            return {(r["source_photo_id"], r["original_file_name"] or ""): r["status"] for r in csv.DictReader(f)
-                    if r["status"] != OPEN_ON_SITE}
+            return {(r["source_photo_id"], r["original_file_name"] or "", r.get("site_url")): r["status"]
+                    for r in csv.DictReader(f) if r["status"] != OPEN_ON_SITE}
     except (OSError, KeyError, csv.Error, UnicodeDecodeError):
         return {}
 
@@ -173,7 +182,8 @@ def statuses(folder: Path, rows: list[dict]) -> dict:
         elif (folder / ORIGINALS / r["file"]).is_file():
             out[r["photo_id"]] = DOWNLOADED
         else:
-            s = old.get((r["source_photo_id"] or "", r["fname"] or ""))
+            key = r["source_photo_id"] or "", r["fname"] or ""
+            s = old.get((*key, r["site"]["url"] if r["site"] else "")) or old.get((*key, None))
             out[r["photo_id"]] = s if s and s != DOWNLOADED else None
     return out
 
@@ -262,24 +272,26 @@ class Fetcher:
         return self.download([img["primary"] + img["path"] + img["sign"], img["failover"] + img["path"] + img["sign"]],
                              yipai.HEADERS)
 
-    def download(self, urls: list[str], headers: dict) -> bytes:
+    def download(self, urls: list[str], headers: dict, complete=None, truncated="truncated JPEG") -> bytes:
+        complete = complete or (lambda data, url: yipai.looks_like_jpeg(data))
         self.pause(random.uniform(*self.img_delay))
         error = None
         for attempt in range(self.tries):
             wait = yipai.backoff_seconds(attempt)
             try:
-                r = self.client.get(urls[attempt % len(urls)], headers=headers)
+                url = urls[attempt % len(urls)]
+                r = self.client.get(url, headers=headers)
             except httpx.HTTPError as e:
                 error = repr(e)
             else:
                 if r.status_code == 403:
                     raise Forbidden("HTTP 403")
                 if r.status_code == 200:
-                    if yipai.looks_like_jpeg(r.content):
+                    if complete(r.content, url):
                         return r.content
                     if r.content[:2] != b"\xff\xd8":
                         raise BuyOnSite("not a JPEG")
-                    error = "truncated JPEG"
+                    error = truncated
                 elif r.status_code in yipai.RETRYABLE:
                     error = f"HTTP {r.status_code}"
                     wait = max(wait, yipai.retry_after(r))
@@ -298,7 +310,7 @@ class Fetcher:
             if not url:
                 raise BuyOnSite("no original URL")
             try:
-                return self.download([url], photoplus.HEADERS)
+                return self.download([url], photoplus.HEADERS, photoplus_complete, "truncated download")
             except Forbidden:
                 if relisted:
                     raise Failed("photoplus refused the download link again after relisting (HTTP 403)")
@@ -378,7 +390,7 @@ class Job:
                 self.fetcher.pause(0)
                 self.update(current=row["fname"] or row["relpath"])
                 dest = folder / ORIGINALS / row["file"]
-                if downloadable(row) and valid(dest):
+                if downloadable(row) and valid(dest, row['platform']):
                     key, result = "skipped", DOWNLOADED
                 else:
                     result = self.fetcher.original(row, dest)
@@ -409,7 +421,7 @@ class Job:
 
     def single(self, row: dict, folder: Path, rows: list[dict]) -> tuple[str, Path]:
         dest = folder / ORIGINALS / row["file"]
-        result = DOWNLOADED if downloadable(row) and valid(dest) else self.fetcher.original(row, dest)
+        result = DOWNLOADED if downloadable(row) and valid(dest, row['platform']) else self.fetcher.original(row, dest)
         if any(r["photo_id"] == row["photo_id"] for r in rows):
             write_csv(folder, rows, {row["photo_id"]: result})
         return result, dest

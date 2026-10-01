@@ -171,3 +171,16 @@ def test_open_on_site_status_ignores_stale_csv_and_files(tmp_path):
     (folder / "photos.csv").write_text("source_photo_id,status\nlate,failed: not in the gallery manifest\n",
                                        encoding="utf-8-sig")
     assert originals.statuses(folder, rows) == {rows[0]["photo_id"]: "open on site"}
+
+
+def test_yipai_and_photoplus_rows_with_the_same_id_and_file_name_keep_separate_statuses(tmp_path):
+    base = {"photographer": None, "taken_at": None, "album": None, "group": None, "preview": "p", "file": "f.jpg",
+            "source_photo_id": "101", "fname": "IMG_101.JPG"}
+    rows = [{**base, "photo_id": 1, "platform": "yipai", "file": "a.jpg",
+             "site": {"url": "https://www.yipai360.com/photolivepc/?orderId=1"}},
+            {**base, "photo_id": 2, "platform": "photoplus", "file": "b.jpg",
+             "site": {"url": "https://live.photoplus.cn/live/9?accessFrom=live#/live"}}]
+    folder = tmp_path / "out"
+    originals.write_csv(folder, rows, {1: "failed: HTTP 503", 2: "failed: not found in the photoplus album"})
+    assert originals.statuses(folder, rows) == {1: "failed: HTTP 503",
+                                                2: "failed: not found in the photoplus album"}

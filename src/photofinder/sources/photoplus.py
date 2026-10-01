@@ -159,14 +159,20 @@ class Locator:
             return hit[1], hit[2]
         if spent[0] >= self.budget:
             raise BudgetExceeded("photoplus listing request limit reached while locating the photo; try again later")
-        spent[0] += 1
         if self.last is not None:
             self.pause(self.last + self.gap - self.clock())
         params = {"activityNo": activity, "key": "", "isNew": False, "count": LIST_PAGE, "page": n, "size": 2000,
                   "ppSign": ""}
+
+        def attempt():
+            if spent[0] >= self.budget:
+                raise BudgetExceeded("photoplus listing request limit reached while locating the photo; "
+                                     "try again later")
+            spent[0] += 1
+            return {"params": sign(params, int(time.time() * 1000)), "headers": HEADERS}
         try:
-            result = fetch_json(self.client, "GET", f"{API}/pic/list", check=ok, tries=self.tries, sleep=self.pause,
-                                fresh=lambda: {"params": sign(params, int(time.time() * 1000)), "headers": HEADERS})
+            result = fetch_json(self.client, "GET", f"{API}/pic/list", check=ok, tries=self.tries,
+                                sleep=lambda wait: self.pause(max(wait, self.gap)), fresh=attempt)
         finally:
             self.last = self.clock()
         pics = (result or {}).get("pics_array") or []
@@ -189,8 +195,7 @@ class Locator:
                 raise
         for key in [k for k in self.pages if k[0] == activity]:
             del self.pages[key]
-        spent[1] = 0
-        return self.search(activity, shot, source_id, spent)
+        return self.search(activity, shot, source_id, [0, 0])
 
     def search(self, activity, shot, source_id, spent) -> str:
         _, total = self.page(activity, 1, spent)
