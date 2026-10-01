@@ -47,3 +47,10 @@
 
 ## Touches
 - src/photofinder/web/static/index.html, README.md, docs/ROADMAP.md, CLAUDE.md.
+
+## Gate fixes (whole-run round 1)
+- A (contract change, orchestrator-approved): the early stop is gone. After `Unavailable` from P, every later row of P gets `failed: <P> API unavailable: ...` with no request, other platforms continue, job ends `error`, done == total, final `errors` entry is the outage message. `Job.attempt(row, dest, down)` lost its `rest` arg; `Job.run` no longer catches `Unavailable`. Tests updated to this contract: `test_originals.py::test_api_failure_stops_job_with_error` (done == total == 2, both CSV rows `failed: yipai360 API unavailable...`, counts failed 2) and `test_photoplus_originals.py::test_api_blocked_names_photoplus...` (done == total). The `len(down) > 1` special case and its test were removed.
+- B: down-platform rows still pass the rerun skip check first (valid file -> `skipped`/downloaded); an invalid existing file is unlinked before the row is marked failed (so the final CSV rewrite cannot report it downloaded).
+- C: exhausting `MAX_LOOKUP_PAGES` full pages -> `failed: lookup limit reached after 5 pages of results for <fname>` (pailixiang + xxpie); a short page without a match stays `not found in the <platform> album`. The old pailixiang test expecting not-found was fixed.
+- D: README originals paragraph scoped to yipai360 EXIF; photoplus/xxpie keep EXIF, pailixiang copy has none.
+- Tests: order-independent outage (4 orders), two platforms down, skip-valid/drop-invalid after outage, limit message for both platforms. Mutations 5/5 caught (unlink, skip order, early raise, 2x limit message).

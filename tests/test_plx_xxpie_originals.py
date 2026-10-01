@@ -204,11 +204,11 @@ def test_pailixiang_not_found_fails_the_row_and_the_job_continues(tmp_path, monk
     assert w.ids() == ["2"]
 
 
-def test_pailixiang_full_pages_without_a_match_stop_after_the_bound(tmp_path, monkeypatch):
+def test_pailixiang_full_pages_without_a_match_stop_at_the_limit(tmp_path, monkeypatch):
     c, conn, t, w, api = setup(tmp_path, monkeypatch, [plx(9, "DSC_1.JPG")])
     w.items = [{"ID": str(100 + i), "Name": "DSC_1.JPG"} for i in range(40)]
     status = run(api)
-    assert status["errors"] == ["9 DSC_1.JPG: failed: not found in the pailixiang album"]
+    assert status["errors"] == ["9 DSC_1.JPG: failed: lookup limit reached after 5 pages of results for DSC_1.JPG"]
     assert len(searches(w)) == pailixiang.MAX_LOOKUP_PAGES
 
 
@@ -341,12 +341,56 @@ def test_outage_of_one_platform_fails_its_rows_without_requests_and_other_platfo
     assert sorted(r["status"].split(":")[0] for r in rows) == ["downloaded", "downloaded", "failed", "failed"]
 
 
-def test_outage_of_the_last_platform_ends_the_job_as_before(tmp_path, monkeypatch):
-    c, conn, t, w, api = setup(tmp_path, monkeypatch, [xxp(3), plx(1), plx(2)])
+YPE = (YP, "101", "IMG_101.JPG", SHOT)
+
+
+@pytest.mark.parametrize("order", [
+    [xxp(3), plx(1), plx(2)], [plx(1), YPE, plx(2)], [YPE, plx(1), plx(2)], [plx(1), plx(2), YPE]])
+def test_outage_marks_every_row_of_the_platform_whatever_the_order(tmp_path, monkeypatch, order):
+    c, conn, t, w, api = setup(tmp_path, monkeypatch, order)
     w.forced["plx"] = lambda req: httpx.Response(401)
     status = run(api)
-    assert status["state"] == "error" and status["done"] == 1 and len(w.plx) == 1
+    ok = sum(e[0] != PLX for e in order)
+    assert status["state"] == "error" and status["done"] == status["total"] == len(order)
+    assert status["counts"]["failed"] == 2 and status["counts"]["downloaded"] == ok and len(w.plx) == 1
+    rows = list(csv.DictReader(io.StringIO((out_dir(tmp_path).parent / "photos.csv").read_text("utf-8-sig"))))
+    failed = [r for r in rows if r["status"].startswith("failed: pailixiang API unavailable")]
+    assert len(failed) == 2 and sum(r["status"] == "downloaded" for r in rows) == ok
     assert status["errors"][-1].startswith("pailixiang API unavailable")
+
+
+def test_two_down_platforms_fail_all_their_rows(tmp_path, monkeypatch):
+    c, conn, t, w, api = setup(tmp_path, monkeypatch, [plx(1), YPE, plx(2), xxp(3)])
+    w.forced["plx"] = lambda req: httpx.Response(401)
+    w.gallery.api = lambda req: httpx.Response(401)
+    status = run(api)
+    assert status["state"] == "error" and status["done"] == 4 and status["counts"]["failed"] == 3
+    assert w.ids() == ["3"] and len(w.plx) == 1 and len(w.gallery.lookups) == 1
+
+
+def test_rows_of_a_down_platform_still_skip_valid_files_and_drop_invalid_ones(tmp_path, monkeypatch):
+    c, conn, t, w, api = setup(tmp_path, monkeypatch, [plx(1), plx(2), plx(3)])
+    assert run(api)["counts"]["downloaded"] == 3
+    files = {n.split("pailixiang-")[1][:1]: out_dir(tmp_path) / n for n in names(tmp_path)}
+    files["1"].unlink()
+    before = len(w.plx)
+    files["2"].write_bytes(b"corrupt")
+    w.forced["plx"] = lambda req: httpx.Response(401)
+    status = run(api)
+    assert status["counts"]["skipped"] == 1 and status["counts"]["failed"] == 2 and status["done"] == 3
+    assert files["3"].is_file() and not files["2"].exists() and len(w.plx) == before + 1
+    rows = {r["source_photo_id"]: r["status"] for r in csv.DictReader(
+        io.StringIO((out_dir(tmp_path).parent / "photos.csv").read_text("utf-8-sig")))}
+    assert rows["3"] == "downloaded" and rows["1"].startswith("failed: ") and rows["2"].startswith("failed: ")
+
+
+@pytest.mark.parametrize("make", [plx, xxp])
+def test_search_limit_is_reported_as_a_limit_not_as_not_found(tmp_path, monkeypatch, make):
+    entry = make(9, "SAME.JPG")
+    c, conn, t, w, api = setup(tmp_path, monkeypatch, [entry])
+    w.items = [{"ID": str(100 + i), "Name": "SAME.JPG"} for i in range(40)]
+    w.photos = [{"album_ossobject_id": str(100 + i), "file_name": "SAME.JPG"} for i in range(40)]
+    assert run(api)["errors"] == ["9 SAME.JPG: failed: lookup limit reached after 5 pages of results for SAME.JPG"]
 
 
 def test_viewer_download_for_both_platforms_and_csv_zip(tmp_path, monkeypatch):
@@ -398,15 +442,3 @@ def test_xxpie_registers_at_most_twice_per_lookup_when_every_answer_is_an_error(
     status = run(api)
     assert status["state"] == "error" and len(w.registrations) == 2
     assert status["errors"][-1].startswith("xxpie API unavailable")
-
-
-def test_every_row_of_a_down_platform_is_failed_even_when_the_job_stops_early(tmp_path, monkeypatch):
-    c, conn, t, w, api = setup(tmp_path, monkeypatch, [plx(1), (YP, "101", "IMG_101.JPG", SHOT), plx(2)])
-    w.forced["plx"] = lambda req: httpx.Response(401)
-    w.gallery.api = lambda req: httpx.Response(401)
-    status = run(api)
-    assert status["state"] == "error" and w.ids() == [] and len(w.plx) == 1
-    rows = list(csv.DictReader(io.StringIO((out_dir(tmp_path).parent / "photos.csv").read_text("utf-8-sig"))))
-    assert all(r["status"].startswith("failed: ") and "API unavailable" in r["status"] for r in rows)
-    assert any("yipai360 API unavailable" in e for e in status["errors"])
-    assert any("pailixiang API unavailable" in e for e in status["errors"])

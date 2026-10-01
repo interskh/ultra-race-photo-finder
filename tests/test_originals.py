@@ -244,10 +244,11 @@ def test_api_failure_stops_job_with_error(tmp_path, monkeypatch):
         ("A1.JPG", "2026-09-25 08:01:00", "cam"), ("A2.JPG", "2026-09-25 08:02:00", "cam")])
     g.api = lambda req: httpx.Response(401)
     status = run(api)
-    assert status["state"] == "error" and status["done"] == 0
+    assert status["state"] == "error" and status["done"] == status["total"] == 2
+    assert status["counts"]["failed"] == 2
     assert "yipai360 API unavailable" in status["errors"][-1]
     assert len(g.lookups) == 1 and g.fetched == []
-    assert [r[8] for r in read_csv(tmp_path)[1:]] == ["", ""]
+    assert all(r[8].startswith("failed: yipai360 API unavailable") for r in read_csv(tmp_path)[1:])
 
 
 def test_lookups_stay_under_the_sites_rate_limit():

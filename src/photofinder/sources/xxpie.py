@@ -148,5 +148,5 @@ class Locator(Paced):
                 if str(p.get("album_ossobject_id")) == source_id:
                     return p.get("url_origin") or ""
             if len(photos) < PAGE:
-                break
-        raise NotFound("not found in the xxpie album")
+                raise NotFound("not found in the xxpie album")
+        raise NotFound(f"lookup limit reached after {MAX_LOOKUP_PAGES} pages of results for {fname}")

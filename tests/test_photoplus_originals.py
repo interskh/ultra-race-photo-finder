@@ -188,7 +188,7 @@ def test_api_blocked_names_photoplus_for_the_job_and_the_single_download(tmp_pat
     c, conn, t, g, api = setup(tmp_path, monkeypatch, [pos(2), pos(4)])
     g.api = lambda req: httpx.Response(401)
     status = run(api)
-    assert status["state"] == "error" and status["done"] == 0
+    assert status["state"] == "error" and status["done"] == status["total"] == 2
     assert status["errors"][-1].startswith("photoplus API unavailable") and g.fetched == []
     photo = conn.execute("select id from photos where relpath = '1.jpg'").fetchone()[0]
     res = api.post(f"/api/photos/{photo}/original", json={"profile_id": ME})

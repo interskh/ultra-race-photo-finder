@@ -408,16 +408,15 @@ class Job:
             if self.state["state"] == "running":
                 self.fetcher.stop.set()
 
-    def attempt(self, row: dict, dest: Path, rest: list[dict], down: dict) -> str:
+    def attempt(self, row: dict, dest: Path, down: dict) -> str:
         platform = row["platform"]
         if platform in down:
+            dest.unlink(missing_ok=True)
             return f"failed: {down[platform]}"
         try:
             return self.fetcher.original(row, dest)
         except Unavailable as e:
             down[platform] = str(e)
-            if all(r["platform"] in down for r in rest):
-                raise
             return f"failed: {e}"
 
     def run(self, folder: Path, rows: list[dict]):
@@ -431,7 +430,7 @@ class Job:
                 if downloadable(row) and valid(dest, row['platform']):
                     key, result = "skipped", DOWNLOADED
                 else:
-                    result = self.attempt(row, dest, rows[i + 1:], down)
+                    result = self.attempt(row, dest, down)
                     key = "downloaded" if result == DOWNLOADED else result.split(":")[0].replace(" ", "_")
                     write_csv(folder, rows, {row["photo_id"]: result})
                 with self.lock:
@@ -441,11 +440,6 @@ class Job:
                         self.state["errors"].append(f"{row['source_photo_id']} {row['fname']}: {result}")
         except Cancelled:
             state = "cancelled"
-        except Unavailable:
-            state, error = "error", "; ".join(down.values())
-            if len(down) > 1:
-                write_csv(folder, rows, {r["photo_id"]: f"failed: {down[r['platform']]}"
-                                         for r in rows[i:] if r["platform"] in down})
         except Exception as e:
             log.exception("originals job failed")
             state, error = "error", f"{type(e).__name__}: {e}"

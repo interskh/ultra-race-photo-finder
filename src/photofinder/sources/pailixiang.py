@@ -133,5 +133,5 @@ class Locator(Paced):
                     size = p.get("FileSize1")
                     return p.get("DownloadImageUrl") or "", size if type(size) is int else None
             if len(data) < PAGE:
-                break
-        raise NotFound("not found in the pailixiang album")
+                raise NotFound("not found in the pailixiang album")
+        raise NotFound(f"lookup limit reached after {MAX_LOOKUP_PAGES} pages of results for {fname}")
