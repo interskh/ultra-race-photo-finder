@@ -88,9 +88,11 @@ What works best (measured in the handoff log): clothing alone is weak when many 
 
    Originals are exactly what the site's own 下载 button gives: full resolution with EXIF, but for FUGA galleries with the organizer's branding band along the bottom (the signed URL applies it). An unbranded source was not probed.
 
+**Nearby shots.** Photographers shoot bursts, so the shot just before or after a confirmed photo of you often shows you too (same photographer ±1 shot 63%, ±2 43%, ±3 30% on 2026-gongga100, measured as a shared bib read — a lower bound). Find more lists **Next to your marked photos** above the ranked results, bib searches list it below the exact bib hits: the unmarked shots within ±N that were taken at most 30 s from the confirmed photo (same runner by gap: ≤2 s 73%, ≤5 s 26%, ≤10 s 10%, >30 s ~2%; default N 2, **Include nearby shots** toggle and ±1–5 stepper, remembered in the browser), each badged with its gap (`2 s after`, `same sec`); click the badge to see the photo it sits next to. In the viewer, a photo you marked (or a bib hit opened from a bib search) shows a **Same photographer · before / after** strip of ±3 shots; click a shot or press `,` / `.` to step through the roll, the likely same runner is pre-selected, so `M` marks it. Marking a shot re-centres the strip on it.
+
 **Several people.** `Searching for: [Me ▾]` in the top bar switches between saved people; **+ New person** adds one (e.g. a friend), **Rename** / **Delete** act on the active one (delete removes only that person's marks; the last person can't be deleted). Each person has their own marks, Find more, My photos, CSV and originals folder. The browser remembers the active person.
 
-**Keyboard.** On a focused result card (Tab to it) or in the photo viewer: `M` = this is <name>, `N` = not <name> (press again to clear), `←` / `→` previous / next, `Esc` closes the viewer. Shortcuts are off while typing in a text box.
+**Keyboard.** On a focused result card (Tab to it) or in the photo viewer: `M` = this is <name>, `N` = not <name> (press again to clear), `←` / `→` previous / next result, `,` / `.` previous / next shot in the photographer's roll (viewer strip), `Esc` closes the viewer. Shortcuts are off while typing in a text box.
 
 **Upgrading an existing index.** The first time this version opens an index made by an older version it moves the old Me / Not me marks into the person "Me" (one-way). A server still running the older code on that index can no longer save marks — restart it on the new code.
 

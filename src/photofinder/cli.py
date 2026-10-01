@@ -217,6 +217,15 @@ def print_rows(title, rows):
               + f" {r.refs:>5} {r.xrefs:>5} {r.photos:>4}")
 
 
+def print_near(title, rows):
+    print(f"{title}: nearby shots of the query photo (same photographer, +-span); bib reads are the only truth, "
+          "so precision and gain are lower bounds")
+    print(f"  {'span':>4} {'prec':>6} {'pairs':>6} {'R@50':>6} {'+near':>6} {'gain':>6} {'refs':>5}")
+    for r in rows:
+        print(f"  {r.span:>4} {r.precision:>6.3f} {r.pairs:>6} {r.r50:>6.3f} {r.near50:>6.3f} "
+              f"{r.near50 - r.r50:>+6.3f} {r.refs:>5}")
+
+
 def cmd_eval(args):
     if not (args.collection / db.INDEX_NAME).is_file():
         sys.exit(f"no index in {args.collection}; run `photofinder index {args.collection}` first")
@@ -236,7 +245,7 @@ def cmd_eval(args):
             print("no --bib given")
         weights = evaluate.configs()
         default = {k: search.WEIGHTS[k] for k in ("osnet", "siglip")}
-        per_bib, missing = [], False
+        per_bib, near, missing = [], [], False
         for bib in bibs:
             truth = evaluate.ground_truth(conn, bib, persons, args.refs)
             if len(truth.photos) < evaluate.MIN_PHOTOS or not truth.refs:
@@ -247,11 +256,14 @@ def cmd_eval(args):
             rows = evaluate.evaluate_bib(persons, truth, weights)
             per_bib.append(rows)
             print_rows(f"bib {bib}", rows)
+            near.append(evaluate.nearby_bib(conn, persons, truth, default))
+            print_near(f"bib {bib}", near[-1])
             out = default_out(args.collection, f"eval-{bib}", args.out_dir)
             evaluate.sheet(conn, args.collection, persons, truth, default, out)
             print(f"contact sheet: {out}")
         if len(per_bib) > 1:
             print_rows(f"mean over {len(per_bib)} bibs", evaluate.mean_over_bibs(per_bib))
+            print_near(f"mean over {len(near)} bibs", evaluate.mean_near(near))
         if missing or not bibs:
             print_frequent(conn)
 

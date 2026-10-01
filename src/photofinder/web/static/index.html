@@ -210,6 +210,44 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .pp .bibs { color: var(--muted); font-size: 12px; }
 .pp .row { display: flex; gap: var(--s1); margin-top: 6px; flex-wrap: wrap; }
 .pp .lb { flex: none; max-width: 120px; padding: 0 var(--s2); height: 26px; }
+.legend .k-likely, .pp .likely-tag { color: var(--sel); }
+.pp .nm-line .likely-tag { font-weight: 500; margin-left: var(--s1); }
+.via.near { white-space: nowrap; }
+.shot .cropbox img.whole { max-width: 100%; max-height: 100%; object-fit: contain; }
+.acts .none { flex: 1; margin: 0; align-self: center; text-align: center; }
+.near { margin-bottom: var(--s4); padding-bottom: var(--s4); border-bottom: 1px solid var(--line); }
+.near.below { margin: var(--s4) 0 0; padding: var(--s4) 0 0; border-bottom: 0; border-top: 1px solid var(--line); }
+.near-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4); margin-bottom: var(--s3); }
+.near-head h2 { margin: 0; }
+.near-head .hint { margin: 0; flex: 1 1 200px; min-width: 0; }
+.near-ctl { display: inline-flex; align-items: center; gap: var(--s1); color: var(--muted); font-size: 12px; }
+.near-ctl .val { min-width: 28px; text-align: center; color: var(--text); font-variant-numeric: tabular-nums; }
+.near-ctl .btn.small { width: 26px; padding: 0; }
+.near .empty-hint { margin: 0; }
+.ranked-h { margin: 0 0 var(--s3); }
+.m-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.m-main .stage { min-height: 0; }
+.modal.has-strip .stage .frame img { max-height: calc(100vh - 48px - var(--strip)); }
+.modal { --strip: 144px; }
+.strip { flex: none; height: var(--strip); display: flex; flex-direction: column; gap: 6px; padding: var(--s2) var(--s3); border-top: 1px solid var(--line); background: var(--panel); }
+.strip .st-head { display: flex; align-items: baseline; gap: var(--s3); font-size: 12px; white-space: nowrap; overflow: hidden; }
+.strip .st-head b { color: var(--text); font-weight: 600; }
+.strip .st-head .hint { margin: 0; overflow: hidden; text-overflow: ellipsis; }
+.strip .hint.st-note { margin: 0; }
+.strip ol { display: flex; gap: var(--s2); margin: 0; padding: 0 0 2px; list-style: none; overflow-x: auto; justify-content: safe center; flex: 1; min-height: 0; }
+.cell { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 2px; border: 1px solid transparent;
+  border-radius: 4px; background: none; cursor: pointer; color: var(--muted); font-size: 11px; line-height: 14px; font-variant-numeric: tabular-nums; }
+.cell:hover { color: var(--text); background: var(--raised); }
+.cell img, .cell .noimg { display: block; height: 68px; width: auto; max-width: 112px; border: 2px solid var(--line2); border-radius: 3px; background: #000; }
+.cell .noimg { width: 68px; }
+.cell.lab-me img { border-color: var(--me); } .cell.lab-nm img { border-color: var(--nm); }
+.cell.lab-nm img { opacity: .55; }
+.cell.none img { border-style: dashed; opacity: .55; }
+.cell .nop { position: absolute; left: 2px; right: 2px; top: 26px; text-align: center; font-size: 10px; color: var(--text); text-shadow: 0 0 3px #000; pointer-events: none; }
+.cell.anchor .gap { color: var(--pick); font-weight: 600; }
+.cell.cur { border-color: var(--sel); background: var(--raised); color: var(--text); }
+.cell.cur img { border-color: var(--sel); }
+.cell.cur.lab-me img { border-color: var(--me); }
 </style>
 </head>
 <body>
@@ -311,6 +349,21 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     <div class="banners" id="stale" hidden></div>
     <div class="banners" id="banners" aria-live="polite"></div>
     <section class="content" id="view-search">
+      <div class="near" id="near" hidden>
+        <div class="near-head">
+          <h2 id="near-title"></h2>
+          <p class="hint" id="near-sub"></p>
+          <label class="near-ctl"><input type="checkbox" id="near-on" data-run> Include nearby shots</label>
+          <span class="near-ctl" title="How many shots before and after each marked photo, in the same photographer’s roll">
+            <button class="btn small" type="button" id="near-minus" aria-label="Fewer shots">−</button>
+            <span class="val" id="near-span"></span>
+            <button class="btn small" type="button" id="near-plus" aria-label="More shots">+</button> shots
+          </span>
+        </div>
+        <div class="grid" id="near-grid"></div>
+        <p class="hint empty-hint" id="near-empty" hidden></p>
+      </div>
+      <h2 class="ranked-h" id="ranked-h" hidden></h2>
       <div class="grid" id="grid"></div>
       <div id="empty"></div>
       <div class="tail" id="tail" hidden><button class="btn" id="load-more" data-run>Load more</button></div>
@@ -332,12 +385,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   </main>
 </div>
 <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-label="Photo">
-  <div class="stage" id="stage"><div class="frame" id="m-frame"></div></div>
+  <div class="m-main">
+    <div class="stage" id="stage"><div class="frame" id="m-frame"></div></div>
+    <div class="strip" id="m-strip" hidden></div>
+  </div>
   <div class="m-side">
     <div class="m-head">
       <span class="pos" id="m-pos"></span>
-      <button class="btn small" id="m-prev">Prev</button>
-      <button class="btn small" id="m-next">Next</button>
+      <button class="btn small" id="m-prev" title="Previous result · key ←">Prev</button>
+      <button class="btn small" id="m-next" title="Next result · key →">Next</button>
       <button class="btn small" id="m-close">Close</button>
     </div>
     <dl class="m-meta" id="m-meta"></dl>
@@ -350,8 +406,10 @@ const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
   profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0, races: [], loading: null, stale: null,
-  gen: 0, failed: false};
+  gen: 0, failed: false, got: 0, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
 const RACE_KEY = 'photofinder.race';
+const NEAR_KEY = 'photofinder.nearby';
+const STRIP_SPAN = 3;
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -421,12 +479,17 @@ function setBusy(msg) {
   $('#busy').hidden = $('#progress').hidden = !on;
   if (on) watchModels(); else $('#busy-model').hidden = true;
   $('#grid').classList.toggle('dim', on && !S.appending);
+  $('#near-grid').classList.toggle('dim', on && !S.appending);
   syncControls();
 }
 
 function syncControls() {
   const none = !entered() || !!S.loading;
   document.querySelectorAll('[data-run]').forEach(b => b.disabled = none || S.busy > 0 || (b.id === 'more' && !meCount()));
+  $('#near-on').checked = S.nearOn;
+  $('#near-span').textContent = `±${S.nearSpan}`;
+  $('#near-minus').disabled = none || S.busy > 0 || !S.nearOn || S.nearSpan <= 1;
+  $('#near-plus').disabled = none || S.busy > 0 || !S.nearOn || S.nearSpan >= 5;
   ['prof', 'prof-new', 'prof-rename', 'prof-delete', 'tab-me', 'export'].forEach(id => $('#' + id).disabled = none);
   if (none) $('#orig-start').disabled = true;
   $('#race').disabled = !!S.loading || !S.races.length;
@@ -518,9 +581,11 @@ async function switchProfile(id) {
   }
   ++S.seq;
   S.results = [];
+  S.near = null;
   $('#grid').innerHTML = '';
   $('#empty').innerHTML = '';
   $('#tail').hidden = true;
+  $('#near').hidden = $('#ranked-h').hidden = true;
   if (S.query && !(S.base.mode === 'more' && !meCount())) search(false);
   else {
     S.base = S.query = S.start = null;
@@ -649,6 +714,7 @@ function summary() {
   }
   if (parts.length) title += (isStart(b) ? ' + ' : ': ') + parts.join(' + ');
   const sub = [`${fmt(S.results.length)}${S.total != null ? ' of ' + fmt(S.total) : ''} photos shown`];
+  if (S.near && S.near.length && !$('#near').hidden) sub.push(`${fmt(S.near.length)} nearby shot${S.near.length === 1 ? '' : 's'} ${b.start_bib ? 'below' : 'above'}`);
   if (b.start_bib) sub.push('exact bib reads, in time order');
   if (b.mode === 'more') sub.push('marked photos hidden');
   if (q.start || q.end || q.bib || q.photographers.length || q.albums.length || q.groups.length) sub.push('filtered');
@@ -658,25 +724,58 @@ function summary() {
   $('#summary').append(h('div', {class: 'title', title}, title), h('div', {class: 'sub'}, sub.join(' · ')));
 }
 
+const nearApplies = b => !!(b && (b.start_bib || b.mode === 'more'));
+
+function nearBody() {
+  const q = S.query;
+  return {profile_id: S.profile, span: S.nearSpan, anchors_bib: q.start_bib || null, start: q.start, end: q.end,
+    photographers: q.photographers, albums: q.albums, groups: q.groups, bib: q.bib};
+}
+
+function takeNear(r) {
+  for (const w of r.warnings || []) banner(w, 'warn');
+  for (const x of r.results) if (x.person_id != null) S.labels[x.person_id] = x.label;
+  return r.results;
+}
+
 async function search(append) {
-  const q = S.query.start_bib ? {...S.query, profile_id: S.profile, offset: append ? S.results.length : 0}
-    : {...S.query, profile_id: S.profile, offset: 0, seen: append ? S.results.map(r => r.photo_id) : []};
   const seq = ++S.seq;
   S.appending = append;
   setBusy('Searching…');
   try {
+    let nearP = null;
+    const nseq = append ? S.nseq : ++S.nseq;
+    const fresh = nr => nr && nseq === S.nseq && S.nearOn;
+    if (!append) {
+      S.near = null;
+      if (nearApplies(S.base) && S.nearOn) nearP = post(`/api/r/${S.race}/nearby`, nearBody()).then(r => r, e => { if (seq === S.seq) fail(e); return null; });
+    }
+    const bib = !!S.query.start_bib;
+    if (nearP && !bib) {
+      const nr = await nearP;
+      if (seq !== S.seq) return;
+      if (fresh(nr)) S.near = takeNear(nr);
+    }
+    const q = bib ? {...S.query, profile_id: S.profile, offset: append ? S.got : 0}
+      : {...S.query, profile_id: S.profile, offset: 0, seen: append ? S.results.map(r => r.photo_id) : [],
+        exclude_photos: S.near ? S.near.map(x => x.photo_id) : []};
     const t0 = performance.now();
     const r = await post(`/api/r/${S.race}/search`, q);
+    const nr = nearP && bib ? await nearP : null;
     if (seq !== S.seq) return;
+    if (fresh(nr)) S.near = takeNear(nr);
     const ms = performance.now() - t0;
     for (const w of r.warnings || []) banner(w, 'warn');
     for (const x of r.results) S.labels[x.person_id] = x.label;
-    if (append) S.results.push(...r.results);
-    else S.results = r.results;
+    const inNear = new Set((S.near || []).map(x => x.photo_id));
+    const got = r.results.filter(x => !inNear.has(x.photo_id));
+    S.got = (append ? S.got : 0) + r.results.length;
+    if (append) S.results.push(...got);
+    else S.results = got;
     S.total = r.total ?? null;
     S.timing = ms / 1000;
-    S.done = S.total != null ? S.results.length >= S.total : r.results.length < q.top;
-    renderResults(append ? r.results : null);
+    S.done = S.total != null ? S.got >= S.total : r.results.length < q.top;
+    renderResults(append ? got : null);
   } catch (e) {
     if (seq === S.seq) fail(e);
   } finally {
@@ -688,7 +787,7 @@ async function search(append) {
 function renderResults(added) {
   const grid = $('#grid');
   const list = S.results;
-  if (!added) grid.innerHTML = '';
+  if (!added) { grid.innerHTML = ''; renderNear(); }
   const start = added ? list.length - added.length : 0;
   for (let i = start; i < list.length; i++) grid.append(card(list[i], i, list));
   $('#tail').hidden = S.done || !list.length;
@@ -705,6 +804,63 @@ function renderResults(added) {
     empty.append(h('div', {class: 'empty'}, h('h3', {}, 'No photos found'), ...tips.map(t => h('p', {}, t))));
   }
   if (S.view === 'search') summary();
+}
+
+function renderNear() {
+  const b = S.base;
+  const show = nearApplies(b) && (meCount() > 0 || !!(b.start_bib && S.results.length));
+  $('#near').hidden = $('#ranked-h').hidden = !show;
+  const near = $('#near');
+  near.classList.toggle('below', !!(b && b.start_bib));
+  if (b && b.start_bib) $('#tail').after(near); else $('#ranked-h').before(near);
+  const grid = $('#near-grid');
+  grid.innerHTML = '';
+  if (!show) return;
+  const items = S.nearOn && S.near ? S.near : [];
+  const anchors = b.start_bib ? (meCount() ? `bib ${b.start_bib} and your marked photos` : `your bib ${b.start_bib} photos`) : 'your marked photos';
+  $('#near-title').textContent = `Next to ${anchors}` + (S.nearOn && S.near ? ` (${fmt(items.length)})` : '');
+  $('#near-sub').textContent = 'Same photographer, shots just before or after: bursts often catch you twice.';
+  $('#ranked-h').textContent = b.start_bib ? `Bib ${b.start_bib} read exactly` : 'More like your marked photos';
+  items.forEach((r, i) => grid.append(card(r, i, items)));
+  grid.hidden = !items.length;
+  const hint = $('#near-empty');
+  hint.textContent = !S.nearOn ? 'Off: shots next to your marked photos are not listed here.'
+    : !S.near ? 'Nearby shots could not be loaded.'
+    : `No unmarked shots next to ${anchors}.`;
+  hint.hidden = !!items.length;
+  syncControls();
+}
+
+async function refreshNear() {
+  try { localStorage.setItem(NEAR_KEY, JSON.stringify({on: S.nearOn, span: S.nearSpan})); } catch (e) { }
+  syncControls();
+  if (!S.query || !nearApplies(S.base)) return;
+  const seq = S.seq, nseq = ++S.nseq;
+  if (!S.nearOn) { S.near = null; renderNear(); summary(); return; }
+  setBusy('Finding nearby shots…');
+  try {
+    const r = await post(`/api/r/${S.race}/nearby`, nearBody());
+    if (seq !== S.seq || nseq !== S.nseq) return;
+    const shown = new Set(S.results.map(x => x.photo_id));
+    S.near = takeNear(r).filter(x => !shown.has(x.photo_id));
+    renderNear();
+    if (S.view === 'search') summary();
+  } catch (e) {
+    if (seq === S.seq && nseq === S.nseq) fail(e);
+  } finally { setBusy(null); }
+}
+
+function nearText(r) {
+  if (r.same_second) return 'same sec';
+  return `${dur(Math.abs(r.gap_s))} ${r.gap_s > 0 ? 'after' : 'before'}`;
+}
+
+const dur = g => g < 60 ? `${g} s` : g < 3600 ? `${Math.round(g / 60)} min` : `${(g / 3600).toFixed(1)} h`;
+const gapText = c => c.same_second ? 'same sec' : `${c.gap_s < 0 ? '−' : '+'}${dur(Math.abs(c.gap_s))}`;
+
+function openAnchor(r) {
+  if (S.mine.has(r.anchor_photo_id)) { showMatched(r.anchor_person_id); return; }
+  openModal([{photo_id: r.anchor_photo_id, person_id: r.anchor_person_id}], 0, null, r.anchor_person_id);
 }
 
 function labelButtons(pid, photoId) {
@@ -747,6 +903,7 @@ async function setLabel(pid, want, photoId) {
     if (mine.size) S.mine.set(photoId, mine); else S.mine.delete(photoId);
     S.mePhotos = S.mine.size;
     renderCounts();
+    modalLabelled(photoId, r.label);
   } catch (e) { fail(e); } finally { pending.delete(pid); }
 }
 
@@ -764,11 +921,18 @@ function card(r, i, list) {
   const el = h('article', {class: 'card', tabindex: 0, 'data-pid': pid, 'aria-label': `Photo ${r.source_photo_id || r.photo_id}, ${t}`,
       onclick: open, onkeydown: e => { if (e.key === 'Enter' && e.target === el) open(); }},
     h('div', {class: 'shot'},
-      h('div', {class: 'cropbox'}, h('img', {class: 'crop', src: `/api/r/${S.race}/persons/${pid}/crop`, alt: '', loading: 'lazy', onerror: broken})),
-      h('img', {class: 'thumb', src: `/api/r/${S.race}/photos/${r.photo_id}/image?max=320`, alt: 'Whole photo', loading: 'lazy', onerror: e => e.target.remove()}),
+      pid == null
+        ? h('div', {class: 'cropbox'}, h('img', {class: 'whole', src: `/api/r/${S.race}/photos/${r.photo_id}/image?max=320`, alt: 'Whole photo', loading: 'lazy', onerror: broken}))
+        : [h('div', {class: 'cropbox'}, h('img', {class: 'crop', src: `/api/r/${S.race}/persons/${pid}/crop`, alt: '', loading: 'lazy', onerror: broken})),
+          h('img', {class: 'thumb', src: `/api/r/${S.race}/photos/${r.photo_id}/image?max=320`, alt: 'Whole photo', loading: 'lazy', onerror: e => e.target.remove()})],
       r.matched_via != null ? h('button', {class: 'via', type: 'button', title: `Matched via this photo you marked ${S.name}; click to show it in My photos`,
         onclick: e => { e.stopPropagation(); showMatched(r.matched_via); }},
-        h('img', {src: `/api/r/${S.race}/persons/${r.matched_via}/crop`, alt: '', loading: 'lazy', onerror: e => e.target.remove()}), 'matched via') : null),
+        h('img', {src: `/api/r/${S.race}/persons/${r.matched_via}/crop`, alt: '', loading: 'lazy', onerror: e => e.target.remove()}), 'matched via') : null,
+      r.anchor_photo_id != null ? h('button', {class: 'via near', type: 'button',
+        title: `Same photographer, ${r.same_second ? 'same second as' : `${Math.abs(r.offset)} shot${Math.abs(r.offset) === 1 ? '' : 's'} ${r.offset > 0 ? 'after' : 'before'}`} this ` +
+          (S.mine.has(r.anchor_photo_id) ? `photo you marked ${S.name}; click to show it in My photos` : 'bib photo; click to open it'),
+        onclick: e => { e.stopPropagation(); openAnchor(r); }},
+        h('img', {src: `/api/r/${S.race}/persons/${r.anchor_person_id}/crop`, alt: '', loading: 'lazy', onerror: e => e.target.remove()}), nearText(r)) : null),
     h('div', {class: 'meta'},
       h('div', {class: 'l1'}, r.rank ? h('span', {class: 'rank', title: tip}, `#${r.rank}`) : null, h('span', {class: 't'}, t),
         h('span', {class: 'flag', hidden: true})),
@@ -777,8 +941,8 @@ function card(r, i, list) {
           title: r.site.exact ? 'Open this photo on its site' : `Open the album on its site; find file ${r.site.find_by || '(unknown)'} there`,
           onclick: e => e.stopPropagation()}, 'Open on site') : null,
         r.original ? origTag(r.original) : null)),
-    h('div', {class: 'acts'}, labelButtons(pid, r.photo_id)));
-  queueMicrotask(() => paint(pid));
+    h('div', {class: 'acts'}, pid == null ? h('p', {class: 'hint none'}, 'No runner to mark in this shot') : labelButtons(pid, r.photo_id)));
+  if (pid != null) queueMicrotask(() => paint(pid));
   return el;
 }
 
@@ -999,8 +1163,8 @@ async function cancelOriginals() {
 async function downloadOriginal() {
   const m = S.modal;
   if (!m || !m.list) return;
-  const i = m.i, r = m.list[i];
-  const say = t => { if (S.modal === m && m.i === i) $('#m-orig-msg').textContent = t; };
+  const r = m.r;
+  const say = t => { if (S.modal === m) $('#m-orig-msg').textContent = t; };
   const gen = S.gen;
   $('#m-orig').disabled = true;
   say('Fetching the original from the site…');
@@ -1035,13 +1199,22 @@ async function downloadOriginal() {
   }
 }
 
-async function openModal(list, i) {
-  const r = list[i];
+async function openModal(list, i, shot = null, bib) {
+  const r = shot || list[i];
   const first = !S.modal;
-  S.modal = {list, i, sel: r.person_id, hit: r.person_id};
+  const likely = r.offset ? r.person_id : null;
+  const m = S.modal = {list, i, r, shot: !!shot, sel: r.person_id, hit: shot || likely != null ? null : r.person_id, likely};
+  if (!shot) {
+    ++S.sseq;
+    S.strip = null;
+    if (bib === undefined) bib = list === S.results && S.base && S.base.start_bib ? r.person_id : null;
+    if (bib != null && S.labels[bib] === 'not_me') bib = null;
+    if (S.mine.has(r.photo_id) || bib != null) loadStrip(r.photo_id, S.mine.has(r.photo_id) ? null : bib);
+    else renderStrip();
+  } else markCur();
   $('#modal').hidden = false;
   $('#modal').setAttribute('aria-label', `Photo ${r.source_photo_id || r.photo_id}, ${i + 1} of ${list.length}`);
-  $('#m-pos').textContent = `${i + 1} of ${list.length}`;
+  $('#m-pos').textContent = `${i + 1} of ${list.length}` + (shot ? (r.anchor ? ' · strip anchor' : ' · nearby shot') : '');
   $('#m-prev').hidden = $('#m-next').hidden = false;
   $('#m-prev').disabled = i === 0;
   $('#m-next').disabled = i === list.length - 1;
@@ -1059,10 +1232,114 @@ async function openModal(list, i) {
   try {
     if (!d) { d = await api(`/api/r/${S.race}/photos/${r.photo_id}?profile_id=${profile}`); cache.set(r.photo_id, d); }
   } catch (e) { fail(e); return; }
-  if (S.gen !== gen || S.profile !== profile || !S.modal || S.modal.list !== list || S.modal.i !== i) return;
+  if (S.gen !== gen || S.profile !== profile || S.modal !== m) return;
   for (const p of d.persons) if (!(p.person_id in S.labels)) S.labels[p.person_id] = p.label;
-  S.modal.d = d;
+  m.d = d;
   renderModal();
+}
+
+async function loadStrip(photo, person) {
+  const seq = ++S.sseq, profile = S.profile;
+  S.strip = {anchor: photo, person, cells: S.strip ? S.strip.cells : null, note: null};
+  renderStrip();
+  let r;
+  try {
+    r = await api(`/api/r/${S.race}/photos/${photo}/neighbors?profile_id=${profile}&span=${STRIP_SPAN}` + (person != null ? `&person_id=${person}` : ''));
+  } catch (e) {
+    if (seq === S.sseq && !e.dropped) { S.strip.cells = null; S.strip.error = e.message; renderStrip(); }
+    return false;
+  }
+  if (seq !== S.sseq || S.profile !== profile) return false;
+  for (const c of r.neighbors) if (c.person_id != null && !(c.person_id in S.labels)) S.labels[c.person_id] = c.label;
+  const mid = {...r.anchor, offset: 0, gap_s: 0, same_second: false, person_id: person ?? r.reference[0] ?? null, anchor: true};
+  S.strip.cells = [...r.neighbors.filter(c => c.offset < 0), mid, ...r.neighbors.filter(c => c.offset > 0)];
+  S.strip.reason = r.reason;
+  renderStrip();
+  return true;
+}
+
+function renderStrip() {
+  const st = S.strip, box = $('#m-strip');
+  const on = !!st && (st.error || (st.cells && !st.reason && st.cells.length > 1));
+  $('#modal').classList.toggle('has-strip', !!on);
+  box.hidden = !on;
+  box.innerHTML = '';
+  if (!on) return;
+  const kind = st.person != null && !S.mine.has(st.anchor) ? 'bib' : 'marked';
+  box.append(h('div', {class: 'st-head'}, h('b', {}, 'Same photographer · before / after'),
+    h('span', {class: 'hint'}, st.note || `Around the ${kind} photo (yellow). Click a shot or press , / . to step; M marks the cyan runner.`)));
+  if (st.error) {
+    box.append(h('p', {class: 'hint st-note'}, st.error));
+    return;
+  }
+  const ol = h('ol', {});
+  for (const c of st.cells) {
+    const lab = S.mine.has(c.photo_id) ? 'me' : c.person_id != null ? S.labels[c.person_id] : null;
+    const none = !c.anchor && c.person_id == null;
+    const n = Math.abs(c.offset);
+    const title = (c.anchor ? `The ${kind} photo` : c.same_second ? `Same second as the ${kind} photo (order within one second is unreliable)`
+      : `${n} shot${n === 1 ? '' : 's'} ${c.offset < 0 ? 'before' : 'after'} the ${kind} photo, ${dur(Math.abs(c.gap_s))} ${c.gap_s < 0 ? 'earlier' : 'later'}`) +
+      ` · ${hms(c.taken_at)}` + (lab === 'me' ? ` · marked ${S.name}` : lab === 'not_me' ? ` · marked Not ${S.name}` : '') + (none ? ' · no runner to mark' : '');
+    ol.append(h('li', {}, h('button', {class: `cell${c.anchor ? ' anchor' : ''}${lab === 'me' ? ' lab-me' : lab === 'not_me' ? ' lab-nm' : ''}${none ? ' none' : ''}`,
+      type: 'button', title, 'aria-label': title, 'data-photo': c.photo_id, onclick: () => walkTo(c)},
+      h('img', {src: `/api/r/${S.race}/photos/${c.photo_id}/image?max=320`, alt: '', loading: 'lazy', onerror: e => e.target.replaceWith(h('span', {class: 'noimg'}))}),
+      none ? h('span', {class: 'nop'}, 'no runner') : null,
+      h('span', {class: 'gap'}, c.anchor ? kind : gapText(c)))));
+  }
+  box.append(ol);
+  markCur();
+}
+
+function markCur() {
+  const cur = S.modal && S.modal.r ? S.modal.r.photo_id : null;
+  document.querySelectorAll('#m-strip .cell').forEach(b => {
+    const at = Number(b.dataset.photo) === cur;
+    b.classList.toggle('cur', at);
+    if (at) { b.setAttribute('aria-current', 'true'); b.scrollIntoView({block: 'nearest', inline: 'center'}); }
+    else b.removeAttribute('aria-current');
+  });
+}
+
+function walkTo(c) {
+  const m = S.modal, st = S.strip;
+  if (!m || !m.list || m.r.photo_id === c.photo_id) return;
+  if (st && st.note) { st.note = null; renderStrip(); }
+  openModal(m.list, m.i, c);
+}
+
+async function shotStep(d) {
+  const m = S.modal, st = S.strip;
+  if (!m || !m.r || !st || !st.cells) return;
+  const cur = m.r.photo_id;
+  let cells = st.cells, i = cells.findIndex(c => c.photo_id === cur);
+  if (i < 0) return;
+  if (i + d < 0 || i + d >= cells.length) {
+    const end = 'No more shots by this photographer that way.';
+    if (st.anchor === cur || !S.mine.has(cur)) {
+      st.note = st.anchor === cur ? end : `End of the strip. Mark this runner ${S.name} (M) to keep walking from here.`;
+      renderStrip();
+      return;
+    }
+    if (!await loadStrip(cur, null) || S.modal !== m) return;
+    cells = S.strip.cells;
+    i = cells.findIndex(c => c.photo_id === cur);
+    if (i < 0 || i + d < 0 || i + d >= cells.length) { S.strip.note = end; renderStrip(); return; }
+  }
+  walkTo(cells[i + d]);
+}
+
+function modalLabelled(photoId, label) {
+  const m = S.modal, st = S.strip;
+  const here = !!(m && m.r && m.r.photo_id === photoId);
+  if (here && label === 'me') { loadStrip(photoId, null); return; }
+  if (!st) return;
+  if (st.anchor === photoId && !S.mine.has(photoId) && (st.person == null || S.labels[st.person] === 'not_me')) {
+    const cur = m && m.r ? m.r.photo_id : null;
+    if (cur != null && cur !== photoId && S.mine.has(cur)) { loadStrip(cur, null); return; }
+    ++S.sseq;
+    S.strip = null;
+  }
+  renderStrip();
 }
 
 function renderModal() {
@@ -1093,24 +1370,29 @@ function renderModal() {
   list.innerHTML = '';
   list.append(h('h2', {}, `${d.persons.length} ${d.persons.length === 1 ? 'person' : 'people'} in this photo`));
   if (!d.persons.length) list.append(h('p', {class: 'hint'}, 'No person was detected in this photo.'));
-  else list.append(legend('why this photo was returned (matched)'));
+  else if (m.likely != null) list.append(h('p', {class: 'hint legend'}, h('b', {class: 'k-likely'}, 'Cyan'),
+    `: likely the same runner as in the marked photo (closest clothing in this shot). Press M if it is ${S.name}.`));
+  else list.append(m.shot ? h('p', {class: 'hint legend'}, h('b', {class: 'k-sel'}, 'Cyan'), ': the person you selected.') : legend('why this photo was returned (matched)'));
   list.scrollTop = 0;
   const runner = `the selected runner (${hms(d.taken_at)}, ${who(d)})`;
   d.persons.forEach((p, n) => {
     const pid = p.person_id;
     const bib = bibText(p.bibs);
-    frame.append(boxEl(p.box, d.width, d.height, {pid, label: `${n + 1}${bib ? ' · ' + bib : ''}`, hit: pid === m.hit, sel: pid === m.sel,
+    frame.append(boxEl(p.box, d.width, d.height, {pid, label: `${n + 1}${bib ? ' · ' + bib : ''}${pid === m.likely ? ' · likely same runner' : ''}`, hit: pid === m.hit, sel: pid === m.sel,
       title: `Person ${n + 1}`, onclick: () => selectPerson(pid)}));
     list.append(ppRow(pid, pid === m.sel,
       h('img', {src: `/api/r/${S.race}/persons/${pid}/crop`, alt: '', loading: 'lazy', onclick: () => selectPerson(pid), onerror: broken}),
       h('div', {},
-        h('div', {class: 'nm-line'}, `Person ${n + 1}`, pid === m.hit ? h('span', {class: 'hit-tag'}, 'matched') : null, h('span', {class: 'sel-tag'}, 'selected')),
+        h('div', {class: 'nm-line'}, `Person ${n + 1}`, pid === m.hit ? h('span', {class: 'hit-tag'}, 'matched') : null,
+          pid === m.likely ? h('span', {class: 'likely-tag'}, 'likely same runner') : h('span', {class: 'sel-tag'}, 'selected')),
         h('div', {class: 'bibs'}, p.bibs.length ? 'Bib ' + p.bibs.map(b => `${b.text} (${Math.round(b.conf * 100)}%)`).join(', ') : 'No bib read'),
         h('div', {class: 'row'}, labelButtons(pid, d.photo_id),
           h('button', {class: 'btn small', type: 'button', 'data-run': true, disabled: S.busy > 0,
             onclick: () => { closeModal(); run({persons: [pid], label: runner}); }}, 'Find people like this')))));
     paint(pid);
   });
+  const pre = m.sel != null ? $(`#m-list [data-pp="${m.sel}"]`) : null;
+  if (pre) pre.scrollIntoView({block: 'nearest'});
 }
 
 function copyText(text, el, btn) {
@@ -1146,6 +1428,9 @@ function openUpload() {
   const on = upBox();
   const key = on != null && on !== 'whole' ? `u${on}` : null;
   S.modal = {upload: u, sel: key, hit: key};
+  ++S.sseq;
+  S.strip = null;
+  renderStrip();
   $('#modal').hidden = false;
   $('#modal').setAttribute('aria-label', 'Choose yourself in your uploaded photo');
   $('#m-pos').textContent = 'Your uploaded photo';
@@ -1199,11 +1484,14 @@ function closeModal() {
   const m = S.modal;
   if (!m) return;
   S.modal = null;
+  ++S.sseq;
+  S.strip = null;
+  renderStrip();
   $('#modal').hidden = true;
   $('#m-frame').innerHTML = '';
   if (m.upload) { $('#up-open').focus(); return; }
   const pid = m.list[m.i].person_id;
-  const grid = S.view === 'me' ? '#me-grid' : '#grid';
+  const grid = S.view === 'me' ? '#me-grid' : '#view-search';
   const card = $(`${grid} .card[data-pid="${pid}"]`);
   if (card) { card.focus({preventScroll: true}); card.scrollIntoView({block: 'nearest'}); }
 }
@@ -1277,15 +1565,15 @@ function clearRace(slug) {
   closeModal();
   Object.assign(S, {race: slug, facets: null, base: null, query: null, start: null, results: [], total: null, timing: null, done: true,
     labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), me: [], upload: null, details: new Map(), profile: null,
-    profiles: [], name: 'Me', job: null, highlight: null, descIgnored: false});
+    profiles: [], name: 'Me', job: null, highlight: null, descIgnored: false, near: null});
   for (const id of ['bib', 'q-text', 'q-scene', 'f-start', 'f-end', 'f-bib', 'file']) $('#' + id).value = '';
   $('#f-start').placeholder = $('#f-end').placeholder = 'YYYY-MM-DD HH:MM';
   $('#q-scene').placeholder = 'e.g. finish arch, 雪山';
   $('#f-range').textContent = '';
-  for (const id of ['f-ph', 'f-al', 'f-gr', 'grid', 'empty', 'me-grid', 'me-empty', 'up-frame', 'banners', 'prof']) $('#' + id).innerHTML = '';
+  for (const id of ['f-ph', 'f-al', 'f-gr', 'grid', 'near-grid', 'empty', 'me-grid', 'me-empty', 'up-frame', 'banners', 'prof']) $('#' + id).innerHTML = '';
   countFilters();
   renderStart();
-  $('#up').hidden = $('#tail').hidden = $('#job').hidden = $('#zip').hidden = $('#orig-start').hidden = true;
+  $('#up').hidden = $('#tail').hidden = $('#near').hidden = $('#ranked-h').hidden = $('#job').hidden = $('#zip').hidden = $('#orig-start').hidden = true;
   $('#c-me').textContent = $('#c-nm').textContent = $('#c-me2').textContent = $('#more-n').textContent = '';
   $('.nm-me').textContent = 'Me';
   $('.nm-not').textContent = 'Not me';
@@ -1375,6 +1663,9 @@ function wire() {
   ['f-start', 'f-end', 'f-bib'].forEach(id => $('#' + id).addEventListener('input', countFilters));
   $('#more').addEventListener('click', () => run({mode: 'more', label: 'your marked photos (Find more)'}));
   $('#load-more').addEventListener('click', () => search(true));
+  $('#near-on').addEventListener('change', e => { S.nearOn = e.target.checked; refreshNear(); });
+  $('#near-minus').addEventListener('click', () => { S.nearSpan = Math.max(1, S.nearSpan - 1); refreshNear(); });
+  $('#near-plus').addEventListener('click', () => { S.nearSpan = Math.min(5, S.nearSpan + 1); refreshNear(); });
   $('#tab-search').addEventListener('click', () => showView('search'));
   $('#tab-me').addEventListener('click', () => showView('me'));
   $('#export').addEventListener('click', exportList);
@@ -1402,6 +1693,7 @@ function onKey(e) {
     if (k === 'Escape') closeModal();
     else if (k === 'ArrowLeft') { e.preventDefault(); step(-1); }
     else if (k === 'ArrowRight') { e.preventDefault(); step(1); }
+    else if (k === ',' || k === '.') { e.preventDefault(); shotStep(k === ',' ? -1 : 1); }
     else if (want && m.list && m.d && typeof m.sel === 'number') setLabel(m.sel, want, m.d.photo_id);
     return;
   }
@@ -1409,8 +1701,9 @@ function onKey(e) {
   if (!c) return;
   const cards = [...c.parentElement.children];
   const i = cards.indexOf(c);
-  const r = (c.parentElement.id === 'me-grid' ? S.me : S.results)[i];
-  if (want && r) setLabel(r.person_id, want, r.photo_id);
+  const id = c.parentElement.id;
+  const r = (id === 'me-grid' ? S.me : id === 'near-grid' ? S.near || [] : S.results)[i];
+  if (want && r && r.person_id != null) setLabel(r.person_id, want, r.photo_id);
   else if (k === 'ArrowLeft' || k === 'ArrowRight') {
     e.preventDefault();
     const next = cards[i + (k === 'ArrowLeft' ? -1 : 1)];
@@ -1419,6 +1712,10 @@ function onKey(e) {
 }
 
 async function init() {
+  try {
+    const p = JSON.parse(localStorage.getItem(NEAR_KEY) || 'null');
+    if (p) { S.nearOn = p.on !== false; S.nearSpan = Math.min(5, Math.max(1, Math.round(Number(p.span)) || 2)); }
+  } catch (e) { }
   wire();
   syncControls();
   try { S.races = await api('/api/races'); } catch (e) {
