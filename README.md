@@ -1,118 +1,97 @@
-# photofinder
+# ultra-race-photo-finder
 
-Find your own photos among thousands of race photos — by clothing, bib number, time, photographer, or scene ("雪山", "finish arch"). Local only; runs on an Apple Silicon Mac. All photos, indexes and model weights live on `/Volumes/Ext1TB`.
+[中文说明](README.zh-CN.md)
 
-Design: `docs/superpowers/specs/2026-09-27-photo-finder-search-design.md` · build log and measured results: `docs/handoff/2026-09-27-photo-finder-search-design.md` · races and albums: `docs/superpowers/specs/2026-09-29-multi-race-albums-design.md`.
+Find your own photos among tens of thousands of race photos, even when your face is covered or the photo was taken at night. Search by clothing, bib number, time, photographer or scene ("雪山", "finish arch"), mark the hits as you, and let it find more. Built for the photo-live galleries that Chinese trail and ultra races use: 一拍即传 (yipai360), 拍立享 (pailixiang), 享像派 (xxpie) and PhotoPlus (谱时). Everything runs locally on a Mac. No accounts, no cloud.
 
-## Races
+The CLI and Python package are called `photofinder`.
 
-A race groups one or more source albums and has one index, so one search spans all its albums. Races are registered in `data/races.json`:
+## How it works
 
-```
-uv run photofinder race add <slug> "<name>"      # e.g. 2026-gongga100 "2026 贡嘎100"; registers a race with no albums yet
-```
+1. **Download** a race's public gallery previews, paced so the sites aren't hammered.
+2. **Index** them locally: person detection (YOLO), clothing re-ID (OSNet) and image/text embeddings (SigLIP2), plus optional bib OCR (Apple Vision).
+3. **Search** in the browser. Start from your bib, a photo of yourself, or a description. Mark results ✓ Me / ✗ Not me, then **Find more like my marked ones**, which brings up other photographers' shots of you. Shots taken just before and after a confirmed photo are listed next to it.
+4. **Export** your photos: a CSV, the full-size originals the site serves for free, or a zip.
 
-Add an album by its gallery URL (yipai360, pailixiang, xxpie or photoplus; the platform is read from the URL):
+Clothing similarity alone is weak when hundreds of runners wear the same event jacket. What works is the loop of bib → mark → Find more → mark. Measured numbers are in [the design notes](docs/handoff/2026-09-27-photo-finder-search-design.md).
 
-```
-uv run photofinder album add <slug> <album URL> [--title "<title>"]   # e.g. album add 2026-gongga100 https://live.pailixiang.com/album/a13800138000
-```
+## Supported galleries
 
-The race, the URL and "album already in a race" are checked before anything is sent to the site. Without `--title`, the title is fetched from the site where the downloader supports it (pailixiang, xxpie, photoplus); yipai albums are registered with no title and the Album filter shows the key (e.g. `yipai-<orderId>`). If the title fetch fails, rerun with `--title`. Then `scripts/download.sh <slug>` and `photofinder index <slug>`.
+| Site | Album URL | Previews downloaded | Originals (for photos you mark) |
+|---|---|---|---|
+| 一拍即传 yipai360 | `www.yipai360.com/…?orderId=…` | 1920 px, watermarked | Full size with EXIF, as the site's 下载 button gives it (some galleries add the organizer's branding band) |
+| 拍立享 pailixiang | `live.pailixiang.com/album/<id>` | 1600 px | Free full-size watermarked copy, no EXIF |
+| 享像派 xxpie | `www.xxpie.com/m/album?id=<id>` | ~2560 px, watermarked | Free full-size watermarked copy with EXIF |
+| PhotoPlus 谱时 | `live.photoplus.cn/live/<id>` | 1600 px, watermarked | Free full-size copy with the photographer's logo watermark |
 
-**One-time move of an old yipai collection** (`data/yipai/<orderId>/`) into a new race, without re-indexing and keeping marks and saved people:
+Unwatermarked originals are paid on every site. **Open on site** links each photo to its gallery so you can buy it there.
 
-```
-uv run photofinder race import <slug> "<name>" data/yipai/<orderId> --url "<gallery URL>" [--title "<album title>"]
-```
+## Requirements
 
-It creates the race itself (don't `race add` it first). The URL's orderId must match the directory name and the manifest. It refuses while an indexer, a download of that collection, or the server holds its lock. It backs the index up to `data/backups/`, moves the collection to `data/races/<slug>/albums/yipai-<orderId>/` and the index to `data/races/<slug>/`, moves `data/exports/<orderId>/` to `data/exports/<slug>/` (rewriting the paths in each `photos.csv`), re-points `data/subsets/*` symlinks, checks that marks and saved people are unchanged and every photo resolves, and registers the race last. If it is interrupted, rerun the identical command; it finishes the remaining steps. Start nothing on that collection (download, index, serve) until it prints its summary; while an import is unfinished, `download_yipai.sh` refuses that order id. Afterwards `photofinder index <slug>` should scan 0 new photos. `--title` (default: the race name) is what the Album filter shows.
+- A Mac with Apple Silicon (models run on MPS; bib OCR uses Apple Vision). Developed on 16 GB of memory; the indexer caps each model stage at 4 GB by default.
+- [uv](https://docs.astral.sh/uv/) (Python 3.13 is installed by uv).
+- Disk space: about 1.5 GB of model weights (downloaded on first use), plus roughly 0.6 GB per 1,000 photos for previews and the index. A 12,000-photo race uses about 7 GB.
 
-Layout:
-
-```
-data/races.json
-data/races/<slug>/index.sqlite
-data/races/<slug>/albums/<platform>-<id>/{photos/, manifest.sqlite, download.log}
-data/exports/<slug>/<person>/{originals/, photos.csv}
-data/backups/                                    # index backups taken by race import
-```
-
-`index`, `search`, `eval` and `serve` take a race slug or a collection directory (any folder of JPEGs, e.g. `data/subsets/race925`).
-
-## 1. Download
+## Install
 
 ```
-scripts/download.sh <race> [album-key]           # e.g. scripts/download.sh 2026-gongga100
-tail -f data/races/<race>/download-console.log   # per album: data/races/<race>/albums/<key>/download.log
+git clone <this repo> ultra-race-photo-finder
+cd ultra-race-photo-finder
+uv sync
 ```
 
-Runs `photofinder download <race> [album-key]` detached under `caffeinate`: the race's albums one after another (or only the given one), paced, resumable. Rerun the same command a day or two later to pick up photos uploaded after the race. yipai360, pailixiang, xxpie and photoplus albums download (pailixiang: 1600px previews; xxpie: watermarked previews of about 2560px; photoplus: 1600px watermarked previews, each photo tagged with the first sub-album it appears in as its Group, then the rest of the album with no group; all 4 workers). The yipai downloader fetches only the free 1920px previews; full-size originals of the photos you mark come later from the web UI (step 3).
+All data goes into `data/` inside the checkout (gitignored). To keep it elsewhere, such as an external disk, set `PHOTOFINDER_DATA_ROOT=/path/to/data`.
 
-A yipai gallery not in any race still downloads the old way, `scripts/download_yipai.sh <orderId>` into `data/yipai/<orderId>/`. It refuses an order id registered in a race and names the `scripts/download.sh <race>` command to use instead.
-
-## 2. Index
+## Quick start
 
 ```
-uv run photofinder index <race>                  # or a collection directory
+uv run photofinder race add 2026-myrace "2026 My Race"                    # a race groups one or more albums
+uv run photofinder album add 2026-myrace https://live.pailixiang.com/album/a13800138000
+scripts/download.sh 2026-myrace                                           # detached, resumable; rerun later to top up
+tail -f data/races/2026-myrace/download-console.log
+uv run photofinder index 2026-myrace                                      # add --ocr to read bib numbers (slow)
+uv run photofinder serve                                                  # http://127.0.0.1:8000/
 ```
 
-Stages: scan (EXIF time, photographer, album, group) → detect people → clothing embeddings → scene embeddings. Add `--ocr` to also read bib numbers with Apple Vision (optional and slow: ~2–3 h for 190k people). Resumable and incremental; throttles under memory pressure. Each model stage runs in its own process; when that process's footprint is over 4 GB (`--max-memory MB`, checked between batches, so a batch can briefly go past it) the stage restarts in a fresh process and carries on. Measured peaks on 2560px photos: detect ~2.2 GB, clothing embeddings ~3.9 GB, scene embeddings ~2.0 GB. A cap below a stage's first batch stops with a message naming the stage.
+Indexing time depends on the race. On an M4 Mac, about 96,000 photos took 4 h 37 min. Indexing is incremental, so after a top-up download rerun `index` and only the new photos are processed.
 
-## 3. Search in the browser
+In the browser, pick the race, then type your bib number or upload a photo of yourself and click your box. Full guide: [docs/usage.md](docs/usage.md).
 
-```
-uv run photofinder serve                         # race picker, http://127.0.0.1:8000/
-uv run photofinder serve <race>                  # same, with that race preloaded
-uv run photofinder serve <collection-dir>        # serve one directory alone (e.g. data/subsets/race925)
-```
-
-With no argument the page opens on the race picker: pick any indexed race from **Race:** at the top (races that are not indexed yet are greyed out and name the `photofinder index <race>` command). The server keeps one race loaded at a time; switching unloads the previous race (loading a large race takes up to a minute) and clears the page's search, filters and viewer. A page opens on the race the server already has loaded (e.g. `serve <race>`); only when nothing is loaded does it load the last race this browser used, and otherwise shows the picker. Per race, the browser also remembers the last person you searched for. A second tab still on the old race shows a banner with a Reload button instead of writing marks into the wrong race. Switching is refused while an originals download runs.
-
-Only one server runs at a time: a second `serve` exits right away and names the running one (pid, URL, collection).
-
-The server runs the models (person detector, re-ID, SigLIP2 in half precision) in a separate worker process that starts on the first upload or description/scene search and exits after 5 minutes without one, so the OS reclaims all of its memory; the server itself stays at its baseline (~1.3 GB, mostly the embedding index). Starting the worker takes about 20 s (the busy bar says "Loading the … models") and peaks at ~3.5 GB while the checkpoint loads. If the worker dies (e.g. killed under memory pressure), that request fails with "try again" and the next one starts a fresh worker.
-
-What works best (measured in the handoff log): clothing alone is weak when many runners wear the same event jacket, so iterate:
-
-1. Upload a photo of you (race day, same kit) and click your box — or start from your bib number if the index was built with `--ocr`.
-2. Mark results **✓ <name>** / **✗ Not <name>** (the active person, "Me" by default).
-3. **Find more like my marked ones** — searches with all your marked shots, which is how other photographers' photos of you surface. When the search uses two or more marked people, each result shows a small **matched via** thumbnail: the marked photo it resembled most; click it to jump to that photo in My photos. Changed clothes (jacket on/off)? Mark one photo of each look.
-4. Narrow with time, photographer, album, group; add a scene or outfit description.
-5. **My photos** lists the marked photos with each one's original status (✓ original / `buy on site: <reason>` / `failed: …` / `open on site`):
-   - **Download originals** (yipai360, photoplus, pailixiang and xxpie galleries) fetches the full-size originals into `data/exports/<race>/<person>/originals/<YYYYMMDD-HHMMSS>_<photographer>_<source photo id>.jpg` — one yipai360 lookup every 6 s (the site rate-limits file-name searches), skips files already there, shows `n / N`, the current file and errors, and can be cancelled; rerun to resume. Photos the site refuses are listed as `buy on site: <reason>`. Pailixiang and xxpie use a file-name search too (one request per photo, at least 2.5 s apart; files are `…_pailixiang-<id>.jpg` and `…_xxpie-<id>.jpg`): both are the site's free full-size watermarked copy, at the size the photographer uploaded; the pailixiang copy has no camera EXIF, the xxpie copy keeps it. In a race that mixes platforms every platform downloads; if one site's API is down, its photos fail with `<platform> API unavailable` and the others still download, and the job ends with an error listing it. Photoplus has no per-photo lookup: the photo is located by bisecting the album listing on shot time (one listing request per 2.5 s, cached for a few minutes), so a cold lookup on a big album takes about 30 s and a whole job averages about 23 s per photo (measured on 四姑娘山, mostly the 2–8 MB transfer); a photo it cannot find shows `failed: not found …`, and a link photoplus still refuses after relisting shows `failed: …` (not `buy on site`). Photoplus files are named `…_photoplus-<source photo id>.jpg`. A photoplus original is the site's free full-size copy, which carries the photographer's logo watermark (unwatermarked ones are paid on the site).
-   - **Download as zip** streams that person's originals folder plus `photos.csv` to the browser (e.g. to move them to a phone).
-   - **Export CSV** writes `data/exports/<race>/<person>/photos.csv` (UTF-8 with BOM, opens in Excel): source photo id, original file name (searchable on the site), photographer, time, album, group, preview/original paths, download status and `site_url` (the photo's page on its site: on xxpie the photo itself, elsewhere its album — find the photo there by the original file name).
-   - In the photo viewer, **Download original** fetches one photo, saves it into the same folder and hands it to the browser (yipai360, photoplus, pailixiang and xxpie photos; hidden for unknown platforms; a photoplus download on a big album takes about 35 s on a cold lookup).
-   - **Open on site** (on each My photos card and in the viewer) opens the photo's site in a new tab so you can buy or download it there. On xxpie it lands on the photo itself. Elsewhere it opens the album, and the viewer shows the original file name with a **Copy** button plus a hint: on yipai360, paste the file name (with extension) into the album's 通过照片名搜索 box and press Enter; on pailixiang look near the shot time and check 照片信息 under a photo; on photoplus open the group's tab and check the ⓘ icon under a photo. Where the browser blocks clipboard access (plain http on a LAN address), Copy selects the name so you can press ⌘C.
-
-   yipai360 originals are exactly what the site's own 下载 button gives: full resolution with EXIF, but for FUGA galleries with the organizer's branding band along the bottom (the signed URL applies it). An unbranded source was not probed. The photoplus and xxpie copies are the sites' free full-size copies and keep EXIF; the pailixiang copy has no EXIF.
-
-**Nearby shots.** Photographers shoot bursts, so the shot just before or after a confirmed photo of you often shows you too (same photographer ±1 shot 63%, ±2 43%, ±3 30% on 2026-gongga100, measured as a shared bib read — a lower bound). Find more lists **Next to your marked photos** above the ranked results, bib searches list it below the exact bib hits: the unmarked shots within ±N that were taken at most 30 s from the confirmed photo (same runner by gap: ≤2 s 73%, ≤5 s 26%, ≤10 s 10%, >30 s ~2%; default N 2, **Include nearby shots** toggle and ±1–5 stepper, remembered in the browser), each badged with its gap (`2 s after`, `same sec`); click the badge to see the photo it sits next to. In the viewer, a photo you marked (or a bib hit opened from a bib search) shows a **Same photographer · before / after** strip of ±3 shots; click a shot or press `,` / `.` to step through the roll, the likely same runner is pre-selected, so `M` marks it. Marking a shot re-centres the strip on it.
-
-**Not me: the other N.** After you mark the runner(s) that are you as Me on a results page, the bar's **Not me: the other N** button marks every other still-unmarked runner on the page (nearby section and ranked results, including Load more pages; photos that already contain a Me runner are left alone); on a bib page it covers only the nearby shots, never the exact bib reads as Not me in one step, and those photos stop appearing in later **Find more** results (a Not me mark on a single card only hides that person). Only Find more hides them: bib, similar, description and upload results and the bib page's nearby shots still show them, dimmed as Not me. Find more says how many photos it left out. **Undo** in the banner reverts that batch (anything you changed afterwards is kept); a new batch, a new search or switching person/race retires the Undo.
-
-**Back.** Every new results page (bib, Find more, Find people like this, description) is a step: the **← <previous page>** link at the top of the results bar, or the browser's back/forward (Alt+←), returns to that page exactly as it was (cards including Load more, nearby shots, filters, scroll position; current Me/Not me marks) without searching again. History is kept for 20 pages in this tab and cleared by reload, switching person or race.
-
-**Several people.** `Searching for: [Me ▾]` in the top bar switches between saved people; **+ New person** adds one (e.g. a friend), **Rename** / **Delete** act on the active one (delete removes only that person's marks; the last person can't be deleted). Each person has their own marks, Find more, My photos, CSV and originals folder. The browser remembers the active person.
-
-**Keyboard.** On a focused result card (Tab to it) or in the photo viewer: `M` = this is <name>, `N` = not <name> (press again to clear), `←` / `→` previous / next result, `,` / `.` previous / next shot in the photographer's roll (viewer strip), `Esc` closes the viewer. Shortcuts are off while typing in a text box.
-
-**Upgrading an existing index.** The first time this version opens an index made by an older version it moves the old Me / Not me marks into the person "Me" (one-way). A server still running the older code on that index can no longer save marks — restart it on the new code.
-
-## CLI search / evaluation
+## Data layout
 
 ```
-uv run photofinder search <race> --photo me.jpg [--box N] [--scene 雪山] [--bib 8038] [--from ... --to ...]
-uv run photofinder eval <race> --bib 8038            # recall of clothing search against OCR'd bib ground truth
+data/races.json                                         race registry (written by the CLI)
+data/races/<race>/index.sqlite                          one index per race
+data/races/<race>/albums/<platform>-<id>/photos/        downloaded previews
+data/races/<race>/albums/<platform>-<id>/manifest.sqlite  catalog: photographer, shot time, group
+data/exports/<race>/<person>/{originals/, photos.csv}   your exports
+data/models/                                            model weights and caches
 ```
 
-## Rehearsals and dev: another data root
+| Variable | Default | Purpose |
+|---|---|---|
+| `PHOTOFINDER_DATA_ROOT` | `<checkout>/data` | Registry, races, exports, server lock |
+| `PHOTOFINDER_MODELS_DIR` | `<checkout>/data/models` | Model weights; not affected by `PHOTOFINDER_DATA_ROOT` |
 
-`PHOTOFINDER_DATA_ROOT=<dir>` points the CLI and both download scripts at another data folder (registry, races, exports, backups, subsets, `serve.lock`); model weights still come from the real `data/models`. Set it when running from a git worktree: the scripts otherwise use the checkout's own `data/`, while the CLI uses `/Volumes/Ext1TB/Projects/photo-finder/data`. Caveat: `serve.lock` follows it, so a server started under another root doesn't see the real one; stop the real server first, since only one may run machine-wide.
+## Please be polite to the sites
 
-## Tests
+The downloaders fetch only what a visitor's browser can see, and they are paced on purpose: a few workers, delays between pages, a circuit breaker, and one original lookup every few seconds. Please keep it that way. Use the tool for your own photos (or friends' photos, with their consent), respect the photographers' copyright and each site's terms, and buy the unwatermarked photos you want to keep. The sites' private APIs can change at any time, which will break the matching downloader.
+
+## Docs
+
+- [docs/usage.md](docs/usage.md): the web UI and CLI in detail.
+- [docs/superpowers/specs/](docs/superpowers/specs/): design documents (architecture, data model, scoring, races and albums).
+- [docs/handoff/](docs/handoff/): build logs with decisions, rejected alternatives and measured results.
+- [docs/ROADMAP.md](docs/ROADMAP.md): status, next steps and known issues.
+
+## Development
 
 ```
 uv run pytest -q
 ```
+
+Tests use fake HTTP servers and stub models, so they need neither network access nor model weights. `PHOTOFINDER_REAL_MODELS=1` enables one test that loads the real models. `CLAUDE.md` contains the working rules for coding agents.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE). The person detector (Ultralytics YOLO) and re-ID library (BoxMOT) are AGPL-3.0.
