@@ -28,3 +28,22 @@
 - xxpie registration is paced: `Adapter.registrar` hook; `Locator` sets it so a (re-)register waits for the gap before and sleeps a gap after (search never follows it back to back). At most 2 registrations per lookup (first + one renewal), then ValueError -> retries exhaust -> `xxpie API unavailable`. `Adapter.ok` (clears token on any non-zero code) unchanged.
 - Early stop with 2+ down platforms: every remaining row of a down platform (incl. the current one) gets `failed: <P> API unavailable ...` in the CSV; done/counts unchanged. With exactly one down platform the stop is as before (rest of the CSV statuses untouched) because `test_api_failure_stops_job_with_error` asserts empty statuses there - kept unchanged.
 - Tests (first-failing): pacing order/gaps, <=2 registrations, two-platform stop marks all rows; cancel-in-gap xxpie test now signals on registration. Mutations 3/3 caught (rows[i:] slice, registration bound, post-register gap).
+
+# T2 - UI + docs
+
+## Decisions
+- Viewer gate: allow the four `ORIGINAL_PLATFORMS` explicitly (null platform still allowed); hide only for unknown platforms. origTag 'open on site' title no longer names platforms.
+- Docs state pailixiang copy has no EXIF, photoplus/xxpie keep it; E2E numbers written as given (pre-review-fix code), orchestrator to update.
+- CLAUDE.md test count 638 passed (fresh `uv run --frozen pytest -q`, 1 skipped).
+
+## Rejected
+- Reading the platform list from the backend facets: extra API surface for a 4-item list.
+
+## Assumptions
+- Unknown platforms still render `open on site`; the old photoplus ROADMAP line (line 15) kept as history with a pointer.
+
+## Deferred
+- Final E2E numbers (orchestrator).
+
+## Touches
+- src/photofinder/web/static/index.html, README.md, docs/ROADMAP.md, CLAUDE.md.

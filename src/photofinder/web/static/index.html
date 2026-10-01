@@ -1313,7 +1313,7 @@ function origTag(s) {
   const site = s === 'open on site';
   return h('span', {class: `orig${s === 'downloaded' ? ' ok' : site ? ' info' : s.startsWith('failed') ? ' bad' : ''}`,
     title: s === 'downloaded' ? 'Original downloaded into this person’s folder'
-      : site ? 'Originals are downloaded only from yipai360 and photoplus; use Open on site to buy or download this photo there' : s}, text);
+      : site ? 'Original not downloadable for this photo; use Open on site to buy or download it there' : s}, text);
 }
 
 async function exportList() {
@@ -1593,7 +1593,7 @@ function renderModal() {
       if (s.hint) row('Find it', h('span', {id: 'm-hint'}, s.hint));
     }
   }
-  $('#m-acts').hidden = !S.facets.originals || !!(d.platform && d.platform !== 'yipai' && d.platform !== 'photoplus');
+  $('#m-acts').hidden = !S.facets.originals || !!(d.platform && !['yipai', 'photoplus', 'pailixiang', 'xxpie'].includes(d.platform));
   const frame = $('#m-frame');
   frame.querySelectorAll('.box').forEach(b => b.remove());
   const list = $('#m-list');
