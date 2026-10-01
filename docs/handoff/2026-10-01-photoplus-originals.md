@@ -28,3 +28,21 @@
 - Second photoplus 403 -> `failed: photoplus refused the download link again after relisting (HTTP 403)`; yipai 403 still `buy on site`.
 - Budget message: "photoplus listing request limit reached while locating the photo; try again later" (`BudgetExceeded(NotFound)`, no fresh retry).
 - Tests: shifting-album regression (cached p3 / p1 + newer upload; found by brute force on the old code), absent id retried fresh once, missing total. Mutations 3/3 caught (retry gate, total fallback, 403 text); the 4th (dropping the BudgetExceeded short-circuit) is behaviourally equivalent.
+
+# T2 - UI gate + docs
+
+## Decisions
+- Viewer gate `#m-acts` allows platform yipai, photoplus or null; `origTag` open-on-site title names yipai360 and photoplus (still shown only for pailixiang/xxpie).
+- README/ROADMAP/CLAUDE.md: originals = yipai360 + photoplus; photoplus watermark and ~30 s cold lookup noted; test count 608 (full suite 2026-10-01).
+
+## Rejected
+- JS test for the gate: no JS harness exists; the gate is one expression, covered by reading plus test_web.
+
+## Assumptions
+- The ~30 s figure is the spec's estimate (about 10 listings x 2.5 s), not re-measured.
+
+## Deferred
+- Real-site E2E of the viewer button.
+
+## Touches
+- src/photofinder/web/static/index.html (2 lines), README.md, docs/ROADMAP.md, CLAUDE.md.
