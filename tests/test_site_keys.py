@@ -15,7 +15,7 @@ def test_env_wins_over_the_keys_file(tmp_path, monkeypatch):
     assert site_key("photoplus_salt") == "from-file"
 
 
-@pytest.mark.parametrize("content", [None, "{}", "not json", "[]"])
+@pytest.mark.parametrize("content", [None, "{}"])
 def test_missing_key_names_the_env_var_and_the_file(tmp_path, monkeypatch, content):
     keys = tmp_path / "site-keys.json"
     if content is not None:
@@ -57,3 +57,13 @@ def test_non_string_salt_is_rejected(tmp_path, monkeypatch):
     monkeypatch.delenv("PHOTOFINDER_PHOTOPLUS_SALT")
     with pytest.raises(MissingSiteKey, match="invalid photoplus_salt"):
         photoplus.sign({"activityNo": 1}, 0)
+
+
+@pytest.mark.parametrize("content", ['{"pailixiang_key": "x",}', "[]"])
+def test_unreadable_keys_file_says_so(tmp_path, monkeypatch, content):
+    keys = tmp_path / "site-keys.json"
+    keys.write_text(content)
+    monkeypatch.setenv("PHOTOFINDER_SITE_KEYS", str(keys))
+    monkeypatch.delenv("PHOTOFINDER_PAILIXIANG_KEY")
+    with pytest.raises(MissingSiteKey, match=f"cannot read pailixiang_key from {keys}: not a JSON object"):
+        site_key("pailixiang_key")

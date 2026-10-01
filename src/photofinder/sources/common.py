@@ -57,8 +57,10 @@ def site_key(name: str, length: int | None = None) -> str:
     if not (value := os.environ.get(env)):
         try:
             value = json.loads(path.read_text()).get(name)
-        except (OSError, ValueError, AttributeError):
+        except OSError:
             value = None
+        except (ValueError, AttributeError) as e:
+            raise MissingSiteKey(f"cannot read {name} from {path}: not a JSON object ({e})") from e
     if not value:
         raise MissingSiteKey(f"no {name}: set {env} or add \"{name}\" to {path} (see docs/usage.md, Site keys)")
     if not isinstance(value, str) or (length and len(value) != length):
