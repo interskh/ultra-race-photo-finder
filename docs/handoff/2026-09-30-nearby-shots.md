@@ -88,3 +88,21 @@
 
 **Touches**
 - `src/photofinder/nearby.py` (`collect`), `tests/test_nearby.py`, `src/photofinder/web/static/index.html` (`search`, `renderStrip`, `modalLabelled`, `openModal`, `nearText`). Scratchpad jsdom harness: 38 checks; 6 new ones (fixes 2–7) failed before the fix.
+
+## Gate fixes (round 2) + E2E
+
+**Decisions**
+- Bib reference guard lives in one place, `openModal`: any bib person (default from bib results or explicit from `openAnchor`) whose current label is Not me is dropped, so no strip around a rejected anchor on any path.
+- Bib mode: nearby section moves below the bib grid and its Load more (`.near.below`, DOM moved in `renderNear`); summary says "below". Find more keeps it on top: exact bib hits are certain, while in Find more a nearby shot is stronger evidence than similarity.
+- `/nearby` drops neighbours with |gap| > `nearby.MAX_GAP` (30 s); same-bib rate by gap (coordinator E2E data): ≤2 s 73%, ≤5 s 26%, ≤10 s 10%, ≤20 s 5%, ≤30 s 3%, >30 s ~2%. Sort: |offset|, |gap|, time. The viewer strip stays the raw roll (it labels gaps).
+- The viewer scrolls the pre-selected person row into view (`block: 'nearest'`) after rendering, so a cyan pick in a 22-person photo isn't off-screen.
+
+**Rejected**
+- A gap cap on the strip too: the strip is for browsing the roll and shows each gap; hiding shots there would leave holes in `,` / `.` stepping.
+- Sorting by gap before offset: offset is the measured primary signal (±1 > ±2); gap only breaks ties.
+
+**Assumptions**
+- 30 s holds across platforms/photographers (measured on race925); check with the eval nearby table on another race.
+
+**Touches**
+- `src/photofinder/nearby.py` (`MAX_GAP`, filter, sort), `tests/test_nearby.py` (new max-gap test; sort expectation in `..._from_its_nearest_anchor` updated to the new order), `src/photofinder/web/static/index.html` (`openModal`, `renderNear`, `renderModal`, `summary`, CSS), `README.md`, `docs/ROADMAP.md`, `CLAUDE.md` (test count). Scratchpad jsdom harness: 43 checks; new r2 checks for fixes 1, 2 (bib order) and 4 failed pre-fix; the Find-more-on-top check is a regression guard (passed before too).

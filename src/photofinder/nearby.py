@@ -7,6 +7,7 @@ from photofinder import models, search
 
 ORDER = "photographer_uid, taken_ts, length(source_photo_id), source_photo_id, id"
 SPAN_MAX = 5
+MAX_GAP = 30
 NOT_INDEXED = "this photo is not part of the index"
 NO_PHOTOGRAPHER = "this photo has no photographer, so it has no roll of shots"
 NO_TIME = "this photo has no capture time, so its place in the photographer's roll is unknown"
@@ -97,7 +98,7 @@ def collect(conn: sqlite3.Connection, persons: search.Persons, profile_id: int, 
     for a, shots in neighbours.items():
         for photo, offset, gap, ts in shots:
             key = (abs(offset), abs(gap), a)
-            if photo not in anchors and photo not in hidden and (photo not in near or key < near[photo][0]):
+            if abs(gap) <= MAX_GAP and photo not in anchors and photo not in hidden and (photo not in near or key < near[photo][0]):
                 near[photo] = (key, a, offset, gap, ts)
     ids = list(near)
     where, args = search.filter_where(dataclasses.replace(filters, bib=None))
@@ -120,7 +121,7 @@ def collect(conn: sqlite3.Connection, persons: search.Persons, profile_id: int, 
         pid, ref, sim = match or (None, int(persons.ids[anchors[a][0]]), None)
         out.append(shot(photo, offset, gap, person_id=pid, similarity=sim, anchor_photo_id=a,
                         anchor_person_id=ref, taken_ts=ts))
-    out.sort(key=lambda s: (abs(s["offset"]), s["taken_ts"], s["photo_id"]))
+    out.sort(key=lambda s: (abs(s["offset"]), abs(s["gap_s"]), s["taken_ts"], s["photo_id"]))
     warnings = [f"{len(blind)} confirmed photo{'s have' if len(blind) > 1 else ' has'} no embedded reference person "
                 "yet; nearby shots skip it until you rerun `photofinder index`"] if blind else []
     return out, warnings

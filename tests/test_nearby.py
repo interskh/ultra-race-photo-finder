@@ -145,10 +145,10 @@ def test_nearby_reaches_each_photo_once_from_its_nearest_anchor(tmp_path):
     for pid in (ids[2][0], ids[4][1], ids[7][0]):
         label(api, pid, "me")
     got = near(api, span=2)["results"]
-    assert numbers(photo, got) == [1, 3, 5]
+    assert numbers(photo, got) == [1, 5, 3]
     assert [(r["anchor_photo_id"], r["offset"], r["gap_s"], r["same_second"]) for r in got] == [
-        (photo[2], 1, 0, True), (photo[4], -1, -3, False), (photo[7], -1, -1, False)]
-    assert got[1]["anchor_person_id"] == ids[4][1]
+        (photo[2], 1, 0, True), (photo[7], -1, -1, False), (photo[4], -1, -3, False)]
+    assert got[2]["anchor_person_id"] == ids[4][1]
 
 
 def test_nearby_bib_anchors_use_the_bib_person_as_reference(tmp_path):
@@ -179,6 +179,20 @@ def test_nearby_never_lists_a_bib_result_photo_even_when_its_bib_person_is_not_m
     bib_hits = {r["photo_id"] for r in api.post("/api/search", json={"profile_id": ME, "start_bib": "2001"}).json()["results"]}
     assert bib_hits == {photo[8], photo[9]}
     assert not bib_hits & {r["photo_id"] for r in near(api, anchors_bib="2001")["results"]}
+
+
+def test_nearby_drops_neighbours_more_than_max_gap_away_but_the_strip_keeps_them(tmp_path):
+    c, conn, ids, photo = roll_index(tmp_path)
+    conn.executemany("update photos set taken_ts = ?, taken_at = ? where id = ?",
+                     [(55, at(55), photo[3]), (104, at(104), photo[4])])
+    conn.commit()
+    api = client(c)
+    label(api, ids[2][0], "me")
+    got = near(api, span=2)["results"]
+    assert [(n, r["offset"], r["gap_s"]) for n, r in zip(numbers(photo, got), got)] == [(1, 1, 0), (4, 2, 4)]
+    assert nearby.MAX_GAP == 30
+    strip = api.get(f"/api/photos/{photo[2]}/neighbors", params={"profile_id": ME, "span": 2}).json()["neighbors"]
+    assert [(r["offset"], r["gap_s"]) for r in strip] == [(-1, -45), (1, 0), (2, 4)]
 
 
 def test_nearby_applies_search_filters(tmp_path):

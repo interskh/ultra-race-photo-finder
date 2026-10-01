@@ -216,6 +216,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .shot .cropbox img.whole { max-width: 100%; max-height: 100%; object-fit: contain; }
 .acts .none { flex: 1; margin: 0; align-self: center; text-align: center; }
 .near { margin-bottom: var(--s4); padding-bottom: var(--s4); border-bottom: 1px solid var(--line); }
+.near.below { margin: var(--s4) 0 0; padding: var(--s4) 0 0; border-bottom: 0; border-top: 1px solid var(--line); }
 .near-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4); margin-bottom: var(--s3); }
 .near-head h2 { margin: 0; }
 .near-head .hint { margin: 0; flex: 1 1 200px; min-width: 0; }
@@ -713,7 +714,7 @@ function summary() {
   }
   if (parts.length) title += (isStart(b) ? ' + ' : ': ') + parts.join(' + ');
   const sub = [`${fmt(S.results.length)}${S.total != null ? ' of ' + fmt(S.total) : ''} photos shown`];
-  if (S.near && S.near.length && !$('#near').hidden) sub.push(`${fmt(S.near.length)} nearby shot${S.near.length === 1 ? '' : 's'} above`);
+  if (S.near && S.near.length && !$('#near').hidden) sub.push(`${fmt(S.near.length)} nearby shot${S.near.length === 1 ? '' : 's'} ${b.start_bib ? 'below' : 'above'}`);
   if (b.start_bib) sub.push('exact bib reads, in time order');
   if (b.mode === 'more') sub.push('marked photos hidden');
   if (q.start || q.end || q.bib || q.photographers.length || q.albums.length || q.groups.length) sub.push('filtered');
@@ -809,6 +810,9 @@ function renderNear() {
   const b = S.base;
   const show = nearApplies(b) && (meCount() > 0 || !!(b.start_bib && S.results.length));
   $('#near').hidden = $('#ranked-h').hidden = !show;
+  const near = $('#near');
+  near.classList.toggle('below', !!(b && b.start_bib));
+  if (b && b.start_bib) $('#tail').after(near); else $('#ranked-h').before(near);
   const grid = $('#near-grid');
   grid.innerHTML = '';
   if (!show) return;
@@ -1203,7 +1207,8 @@ async function openModal(list, i, shot = null, bib) {
   if (!shot) {
     ++S.sseq;
     S.strip = null;
-    if (bib === undefined) bib = list === S.results && S.base && S.base.start_bib && S.labels[r.person_id] !== 'not_me' ? r.person_id : null;
+    if (bib === undefined) bib = list === S.results && S.base && S.base.start_bib ? r.person_id : null;
+    if (bib != null && S.labels[bib] === 'not_me') bib = null;
     if (S.mine.has(r.photo_id) || bib != null) loadStrip(r.photo_id, S.mine.has(r.photo_id) ? null : bib);
     else renderStrip();
   } else markCur();
@@ -1386,6 +1391,8 @@ function renderModal() {
             onclick: () => { closeModal(); run({persons: [pid], label: runner}); }}, 'Find people like this')))));
     paint(pid);
   });
+  const pre = m.sel != null ? $(`#m-list [data-pp="${m.sel}"]`) : null;
+  if (pre) pre.scrollIntoView({block: 'nearest'});
 }
 
 function copyText(text, el, btn) {
