@@ -34,7 +34,7 @@ def tables(conn):
 
 def test_fresh_index_has_profile_labels_and_one_default_profile(tmp_path):
     c, conn, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
-    assert columns(conn, "labels") == ["profile_id", "person_id", "label", "created_at"]
+    assert columns(conn, "labels") == ["profile_id", "person_id", "label", "created_at", "hidden"]
     assert conn.execute("select id, name from profiles").fetchall() == [(1, "Me")]
     conn.execute("update profiles set name = 'Alex'")
     conn.commit()
@@ -51,7 +51,7 @@ def test_migration_moves_old_labels_under_me_once(tmp_path):
     assert conn.execute("select id, name from profiles").fetchall() == [(1, "Me")]
     assert conn.execute("select profile_id, person_id, label, created_at from labels order by person_id").fetchall() \
         == [(1, *r) for r in rows]
-    assert columns(conn, "labels") == ["profile_id", "person_id", "label", "created_at"]
+    assert columns(conn, "labels") == ["profile_id", "person_id", "label", "created_at", "hidden"]
     assert {r[2] for r in conn.execute("pragma foreign_key_list(labels)")} == {"persons", "profiles"}
     assert "labels_new" not in tables(conn) and not conn.in_transaction
     conn.close()

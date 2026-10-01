@@ -53,7 +53,7 @@ def make_collection(root):
                                               (3, "photos/103.jpg", "103", None, None, "终点")])
     conn.executemany("insert into persons(id, photo_id) values (?,?)", [(1, 1), (2, 1), (3, 2), (4, 3)])
     conn.executemany("insert into profiles(id, name, created_at) values (?,?,?)", [(1, "Me", T), (2, "Pat", T)])
-    conn.executemany("insert into labels values (?,?,?,?)",
+    conn.executemany("insert into labels(profile_id, person_id, label, created_at) values (?,?,?,?)",
                      [(1, 1, "me", T), (1, 2, "not_me", T), (2, 3, "me", T), (2, 4, "not_me", T)])
     conn.commit()
     conn.close()
@@ -126,7 +126,7 @@ def final_state(root):
     with closing(sqlite3.connect(race / "index.sqlite")) as conn:
         photos = conn.execute("select id, relpath, source_photo_id, photographer_uid, photographer, album, album_key, "
                               "grp from photos order by id").fetchall()
-        labels = conn.execute("select * from labels order by 1, 2").fetchall()
+        labels = conn.execute("select profile_id, person_id, label, created_at from labels order by 1, 2").fetchall()
         profiles = conn.execute("select * from profiles order by id").fetchall()
     with closing(sqlite3.connect(race / "albums" / KEY / "manifest.sqlite")) as m:
         catalog = m.execute("select source_id, photographer_uid, group_name from catalog order by 1").fetchall()
@@ -375,7 +375,7 @@ def test_index_without_profiles_imports_with_the_default_profile(root):
 
 @pytest.mark.parametrize("change", ["update profiles set name = 'Pat'",
                                     "insert into profiles(name, created_at) values ('Pat', 'x')",
-                                    "insert into labels values (1, 1, 'me', 'x')"])
+                                    "insert into labels(profile_id, person_id, label, created_at) values (1, 1, 'me', 'x')"])
 def test_verify_rejects_other_changes_to_an_index_without_profiles(root, monkeypatch, change):
     src = make_collection(root)
     without_profiles(src)

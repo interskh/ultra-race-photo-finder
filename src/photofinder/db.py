@@ -21,6 +21,7 @@ create index if not exists bibs_person on bibs(person_id);
 LABELS = """create table if not exists {}(
   profile_id integer not null references profiles(id), person_id integer not null references persons(id),
   label text not null check (label in ('me', 'not_me')), created_at text not null,
+  hidden integer not null default 0,
   primary key(profile_id, person_id))"""
 PROFILES = "create table if not exists profiles(id integer primary key, name text unique not null, created_at text not null)"
 SCHEMA += PROFILES + ";\n" + LABELS.format("labels") + ";\n"
@@ -40,6 +41,7 @@ MIGRATE_PHOTOS = [
     "alter table photos add column grp text",
     "update photos set grp = album, album = null",
 ]
+MIGRATE_HIDDEN = ["alter table labels add column hidden integer not null default 0"]
 
 INDEX_NAME = "index.sqlite"
 
@@ -47,6 +49,11 @@ INDEX_NAME = "index.sqlite"
 def old_labels(db) -> bool:
     cols = [r[1] for r in db.execute("pragma table_info(labels)")]
     return bool(cols) and "profile_id" not in cols
+
+
+def no_hidden(db) -> bool:
+    cols = [r[1] for r in db.execute("pragma table_info(labels)")]
+    return bool(cols) and "hidden" not in cols
 
 
 def old_photos(db) -> bool:
@@ -70,6 +77,7 @@ def once(db, needed, sqls):
 
 def migrate(db):
     once(db, old_labels, MIGRATE)
+    once(db, no_hidden, MIGRATE_HIDDEN)
     once(db, old_photos, MIGRATE_PHOTOS)
 
 

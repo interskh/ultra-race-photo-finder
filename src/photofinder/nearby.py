@@ -75,13 +75,14 @@ def shot(photo, offset, gap, **extra) -> dict:
 
 
 def collect(conn: sqlite3.Connection, persons: search.Persons, profile_id: int, span: int,
-            filters: search.Filters, bib: str | None = None) -> tuple[list[dict], list[str]]:
-    labels = conn.execute("select l.person_id, l.label, p.photo_id from labels l join persons p on p.id = l.person_id "
-                          "where l.profile_id = ?", (profile_id,)).fetchall()
-    not_me = {p for p, label, _ in labels if label == "not_me"}
-    not_me_photos = {photo for _, label, photo in labels if label == "not_me"}
+            filters: search.Filters, bib: str | None = None, hide_hidden: bool = False) -> tuple[list[dict], list[str]]:
+    labels = conn.execute("select l.person_id, l.label, p.photo_id, l.hidden from labels l "
+                          "join persons p on p.id = l.person_id where l.profile_id = ?", (profile_id,)).fetchall()
+    not_me = {p for p, label, *_ in labels if label == "not_me"}
+    not_me_photos = {photo for _, label, photo, _ in labels if label == "not_me"}
+    skip = {photo for _, label, photo, flag in labels if label == "not_me" and flag} if hide_hidden else set()
     refs = {}
-    for p, label, photo in labels:
+    for p, label, photo, _ in labels:
         if label == "me":
             refs.setdefault(photo, []).append(p)
     hidden = set()
@@ -98,7 +99,7 @@ def collect(conn: sqlite3.Connection, persons: search.Persons, profile_id: int, 
     for a, shots in neighbours.items():
         for photo, offset, gap, ts in shots:
             key = (abs(offset), abs(gap), a)
-            if abs(gap) <= MAX_GAP and photo not in anchors and photo not in hidden and (photo not in near or key < near[photo][0]):
+            if abs(gap) <= MAX_GAP and photo not in anchors and photo not in hidden and photo not in skip and (photo not in near or key < near[photo][0]):
                 near[photo] = (key, a, offset, gap, ts)
     ids = list(near)
     where, args = search.filter_where(dataclasses.replace(filters, bib=None))

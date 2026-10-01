@@ -75,12 +75,18 @@ class NearbyQuery(BaseModel):
     albums: list[str] = []
     groups: list[str] = []
     bib: str | None = None
+    hide_hidden: bool = False
 
 
 class LabelBody(BaseModel):
     profile_id: Id
     person_id: Id
     label: Literal["me", "not_me"] | None = None
+
+
+class BatchBody(BaseModel):
+    profile_id: Id
+    person_ids: list[Id]
 
 
 class ProfileBody(BaseModel):
@@ -611,12 +617,12 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
         persons = st.persons
         with connect(st) as conn:
             profile_name(conn, q.profile_id)
-            labels = conn.execute("select l.person_id, l.label, p.photo_id from labels l "
+            labels = conn.execute("select l.person_id, l.label, p.photo_id, l.hidden from labels l "
                                   "join persons p on p.id = l.person_id where l.profile_id = ?",
                                   (q.profile_id,)).fetchall()
         embedded = lambda ids: [p for p, ok in zip(ids, np.isin(ids, persons.ids)) if ok]
-        me = [p for p, label, _ in labels if label == "me"]
-        not_me = [p for p, label, _ in labels if label == "not_me"]
+        me = [p for p, label, *_ in labels if label == "me"]
+        not_me = [p for p, label, *_ in labels if label == "not_me"]
         me_emb, not_me_emb = embedded(me), embedded(not_me)
         if q.mode == "more":
             if not me:
@@ -642,11 +648,13 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
                 v = up[k][row:row + 1]
                 refs[k] = np.vstack([refs[k], v]) if k in refs else v
         negatives = search.person_refs(persons, not_me_emb)["osnet"] if not_me_emb else None
-        exclude = {photo for _, label, photo in labels if label == "me"} if q.mode == "more" else set()
+        exclude = {photo for _, label, photo, _ in labels if label == "me"} if q.mode == "more" else set()
+        hidden = {photo for _, label, photo, flag in labels if label == "not_me" and flag} - exclude \
+            if q.mode == "more" else set()
         drop = not_me if q.mode == "more" else []
-        return refs, ref_ids, negatives, exclude | set(q.seen) | set(q.exclude_photos), drop, note
+        return refs, ref_ids, negatives, exclude | hidden | set(q.seen) | set(q.exclude_photos), drop, note, hidden
 
-    def ranked(st: RaceState, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note):
+    def ranked(st: RaceState, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note, hidden):
         persons = st.persons
         with connect(st) as conn:
             warnings = [note, search.check_filters(conn, filters)]
@@ -656,6 +664,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             t0 = time.monotonic()
             scores = search.score(persons, refs, negatives=negatives)
             keep = np.ones(len(scores), bool) if mask is None else mask
+            shown = set(persons.photo_ids[keep].tolist())
             if drop:
                 keep &= ~np.isin(persons.ids, drop)
             rows = np.flatnonzero(keep)
@@ -665,7 +674,10 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             via = search.matched_via(persons, picked, refs, ref_ids)
             results = hydrate(conn, [(int(persons.ids[i]), float(scores[i])) for i in picked],
                               offset + len(set(q.seen)), q.profile_id, via)
-        return {"results": results, "warnings": [w for w in warnings if w], "timing": round(timing, 4)}
+        out = {"results": results, "warnings": [w for w in warnings if w], "timing": round(timing, 4)}
+        if q.mode == "more":
+            out["hidden"] = len(hidden & shown)
+        return out
 
     def bib_start(st: RaceState, q, filters, top, offset):
         bib = q.start_bib.strip()
@@ -700,14 +712,14 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
         texts = {k: v.strip() for k, v in (("text", q.text), ("scene", q.scene)) if v and v.strip()}
         if "scene" in texts and st.scene_error:
             raise bad(st.scene_error)
-        refs, ref_ids, negatives, exclude, drop, note = await run_in_threadpool(prepare, st, q)
+        refs, ref_ids, negatives, exclude, drop, note, hidden = await run_in_threadpool(prepare, st, q)
         if not refs and not texts:
             raise bad("give a person, an uploaded box, text, scene or start_bib to search")
         if texts:
             vecs = await on_models(models.encode_text, list(texts.values()))
             refs.update({k: v[None] for k, v in zip(texts, vecs)})
         return await run_in_threadpool(ranked, st, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop,
-                                       note)
+                                       note, hidden)
 
     @app.post(RACE + "/labels")
     def set_label(st: Race, body: LabelBody):
@@ -723,10 +735,50 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             else:
                 conn.execute("insert into labels(profile_id, person_id, label, created_at) values (?, ?, ?, ?) "
                              "on conflict(profile_id, person_id) "
-                             "do update set label = excluded.label, created_at = excluded.created_at",
+                             "do update set label = excluded.label, created_at = excluded.created_at, hidden = 0",
                              (*key, body.label, now()))
         return {"profile_id": body.profile_id, "person_id": body.person_id, "label": body.label,
                 "previous": previous and previous[0]}
+
+    @app.post(RACE + "/labels/batch")
+    def hide_not_me(st: Race, body: BatchBody):
+        ids = list(dict.fromkeys(body.person_ids))
+        with connect(st) as conn, conn:
+            conn.execute("begin immediate")
+            profile_name(conn, body.profile_id)
+            photo_of = dict(conn.execute(f"select id, photo_id from persons where id in ({marks(ids)})", ids))
+            missing = [p for p in ids if p not in photo_of]
+            if missing:
+                raise bad(f"person {missing[0]} not found", 404)
+            label_of = dict(conn.execute(f"select person_id, label from labels where profile_id = ? "
+                                         f"and person_id in ({marks(ids)})", [body.profile_id, *ids]))
+            mine = {p for p, in conn.execute("select p.photo_id from labels l join persons p on p.id = l.person_id "
+                                             "where l.profile_id = ? and l.label = 'me'", (body.profile_id,))}
+            changed, skipped = [], []
+            for p in ids:
+                if p in label_of:
+                    skipped.append({"person_id": p, "reason": f"already {label_of[p]}"})
+                elif photo_of[p] in mine:
+                    skipped.append({"person_id": p, "reason": "photo has a me person"})
+                else:
+                    changed.append(p)
+            conn.executemany("insert into labels(profile_id, person_id, label, created_at, hidden) "
+                             "values (?, ?, 'not_me', ?, 1)", [(body.profile_id, p, now()) for p in changed])
+        return {"profile_id": body.profile_id, "changed": changed, "skipped": skipped}
+
+    @app.post(RACE + "/labels/batch/undo")
+    def unhide_not_me(st: Race, body: BatchBody):
+        ids = list(dict.fromkeys(body.person_ids))
+        with connect(st) as conn, conn:
+            conn.execute("begin immediate")
+            profile_name(conn, body.profile_id)
+            still = [p for p, in conn.execute(f"select person_id from labels where profile_id = ? and label = 'not_me' "
+                                              f"and hidden = 1 and person_id in ({marks(ids)})",
+                                              [body.profile_id, *ids])]
+            conn.executemany("delete from labels where profile_id = ? and person_id = ?",
+                             [(body.profile_id, p) for p in still])
+        return {"profile_id": body.profile_id, "removed": still,
+                "kept": [p for p in ids if p not in set(still)]}
 
     @app.get(RACE + "/photos/{photo_id}")
     def photo(st: Race, photo_id: Id, profile_id: Id):
@@ -791,7 +843,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
                 except search.MissingEmbeddings as e:
                     warnings.append(str(e))
             t0 = time.monotonic()
-            shots, notes = nearby.collect(conn, st.persons, q.profile_id, q.span, filters, bib)
+            shots, notes = nearby.collect(conn, st.persons, q.profile_id, q.span, filters, bib, q.hide_hidden)
             timing = time.monotonic() - t0
             results = shot_cards(conn, shots, q.profile_id)
         return {"results": results, "count": len(results), "warnings": [w for w in warnings + notes if w],

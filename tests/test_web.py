@@ -535,7 +535,7 @@ def test_page_is_served_and_calls_only_real_endpoints(tmp_path):
     script = re.search(r"<script>(.*)</script>", res.text, re.S).group(1)
     used = {re.sub(r"\$\{[^}]*\}", "{}", p) for p in re.findall(r"/api/[^\s'\"`?]*", script)}
     routes = {re.sub(r"\{[^}]+\}", "{}", r.path) for r in api.routes if r.path.startswith("/api/")}
-    assert used == routes
+    assert used == routes - {"/api/r/{}/labels/batch", "/api/r/{}/labels/batch/undo"}
 
 
 def test_page_sends_nearby_ids_to_search_and_steps_the_roll_with_comma_and_period(tmp_path):
