@@ -535,7 +535,16 @@ def test_page_is_served_and_calls_only_real_endpoints(tmp_path):
     script = re.search(r"<script>(.*)</script>", res.text, re.S).group(1)
     used = {re.sub(r"\$\{[^}]*\}", "{}", p) for p in re.findall(r"/api/[^\s'\"`?]*", script)}
     routes = {re.sub(r"\{[^}]+\}", "{}", r.path) for r in api.routes if r.path.startswith("/api/")}
-    assert used <= routes and routes - used == {"/api/r/{}/photos/{}/neighbors", "/api/r/{}/nearby"}
+    assert used == routes
+
+
+def test_page_sends_nearby_ids_to_search_and_steps_the_roll_with_comma_and_period(tmp_path):
+    c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+    script = re.search(r"<script>(.*)</script>", TestClient(web.create_app(c)).get("/").text, re.S).group(1)
+    assert re.search(r"exclude_photos: S\.near \? S\.near\.map\(x => x\.photo_id\)", script)
+    on_key = re.search(r"function onKey\(e\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "k === ','" in on_key and "k === '.'" in on_key and "shotStep(" in on_key
+    assert "press , / . to step" in script
 
 
 def test_load_more_excludes_seen_photos_so_labelling_does_not_skip_results(tmp_path):

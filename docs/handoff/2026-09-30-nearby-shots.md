@@ -36,3 +36,37 @@
 **Touches**
 - `src/photofinder/nearby.py` (new), `src/photofinder/web/app.py` (`SearchQuery.exclude_photos`, `NearbyQuery`, `shot_cards`, two routes), `src/photofinder/evaluate.py` (`NearRow`, `nearby_bib`, `mean_near`), `src/photofinder/cli.py` (`print_near` in `eval`), `tests/test_nearby.py` (new), `tests/test_web.py` (page-routes test).
 - Public API: `GET /api/r/{slug}/photos/{id}/neighbors`, `POST /api/r/{slug}/nearby`, `exclude_photos` on `/search`.
+
+## T2 — UI (viewer filmstrip, "Next to your marked photos" section, docs)
+
+**Decisions**
+- Strip under the stage (`.m-main` column, fixed `--strip: 144px`, image max-height shrinks only with `.has-strip`): the 352 px side panel can't hold 7 landscape thumbs.
+- Modal keeps `list`/`i` = the result the user opened from (Prev/Next, `n of N`, close refocus); a walked shot is a third arg `shot` and `m.r` is the displayed photo (download original uses `m.r`). Stale guard is modal identity (`S.modal === m`).
+- Confirmed = `S.mine.has(photo)` (client truth, no wait for details) or opened from bib-start results → `person_id` = the hit person. The response's `confirmed` is not used (false for bib hits).
+- Strip edge: refetch around the current photo only if it has a Me person; at the anchor's own edge the roll has ended. Hints are rendered in the strip head, not banners. Errors (e.g. 400 unembedded bib person, `reason`) show inline in the strip.
+- Marking Me on the displayed photo (re)anchors there; unmarking hides only when the anchor has no Me left and it isn't a bib anchor (or its bib person is now Not me).
+- Shots and nearby cards: best match pre-selected cyan + "likely same runner" (box tag, list tag, legend); no yellow "matched" hit for them.
+- Prev/Next: nearby cards and ranked cards are separate lists (each grid passes its own array to `card()`): `n of N` stays meaningful, a section refetch can't shift ranked indices, and card-keyboard nav already works per grid.
+- Badge click: Me anchor → `showMatched` (same as matched via); bib anchor (not Me) → opens the anchor in the viewer, because My photos would say "no longer marked".
+- Find more: `/nearby` awaited before `/search` (ids feed `exclude_photos`); bib: both in parallel, no `exclude_photos` (T1). Load more reuses the current nearby ids.
+- Section controls refetch the section only (`S.nseq`), dropping nearby cards already in the ranked grid. Prefs in one key `photofinder.nearby` `{on, span}`.
+- Section shown when Find more (Me ≥ 1) or bib start with Me marks or bib hits; empty → hint; toggle off → header + "Off" hint only.
+
+**Rejected**
+- One combined Prev/Next list (nearby + ranked): rebuilding it on every Load more/refetch, and positions shifting under the user.
+- Re-running page 1 of `/search` on toggle/stepper change: spec says section only; the cost is that photos dropped from the section (span shrunk / toggle off) stay out of the ranked list until Load more or the next search.
+- Auto-re-anchoring when merely walking onto an already-marked shot: the strip would jump each step through a marked burst; it re-anchors on the edge step or on a new mark instead.
+- Painting strip cells via `paint()` / `data-pid`: cells reflect the photo (any Me person = me) and are re-rendered after each mark.
+
+**Assumptions**
+- `/neighbors` neighbours come ordered by offset (they do: `rolls` iterates j ascending).
+- `gap_s` is whole seconds (second-precision `taken_ts`).
+
+**Deferred**
+- No automated JS behaviour test in the repo (no JS runtime in the test stack); a jsdom smoke harness with canned API responses lived in the session scratchpad (32 checks; mutants: pytest page tests 3/6, harness 6/6). Real-browser E2E is the orchestrator's.
+- Edge-walk past a bib hit that isn't Me does not refetch (only Me counts as confirmed while walking).
+- Nearby section isn't refreshed when you mark Me on ranked cards (would reshuffle under the user); the next Find more picks the new anchors up.
+
+**Touches**
+- `src/photofinder/web/static/index.html` (CSS, `#near` section, `#m-strip`, `.m-main` wrapper, search/openModal/closeModal/onKey/setLabel/card).
+- `tests/test_web.py` (route test back to `used == routes`; new page test), `README.md`, `docs/ROADMAP.md`, `CLAUDE.md` (layout line, 564 passed).
