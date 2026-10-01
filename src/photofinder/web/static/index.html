@@ -106,8 +106,8 @@ main { overflow-y: auto; position: relative; }
 .summary .back { display: block; max-width: 100%; margin-bottom: 2px; font-size: 12px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary .sub { color: var(--muted); font-size: 12px; }
-.bulk-wrap { text-align: right; }
-.more-wrap { text-align: right; }
+.bulk-wrap { text-align: right; align-self: flex-start; }
+.more-wrap { text-align: right; align-self: flex-start; }
 .more-wrap .hint { margin: 2px 0 0; }
 .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; overflow: hidden; }
 .progress::after { content: ""; position: absolute; top: 0; left: -30%; width: 30%; height: 100%; background: var(--focus); animation: slide 1.1s ease-in-out infinite; }
