@@ -18,7 +18,7 @@ from photofinder.index import stages
 from photofinder.memory import MAX_FOOTPRINT_MB, watch_parent
 from photofinder.sources import pailixiang, photoplus, xxpie, yipai
 from photofinder.sources.base import AlbumDownloader
-from photofinder.sources.common import AlreadyRunning, Blocked
+from photofinder.sources.common import AlreadyRunning, Blocked, MissingSiteKey
 
 log = logging.getLogger("photofinder")
 ADAPTERS = {"pailixiang": pailixiang, "xxpie": xxpie, "photoplus": photoplus}
@@ -375,6 +375,9 @@ def download_album(album: races.Album, out_dir: Path) -> dict[str, int]:
                 counts = dl.run()
             except AlreadyRunning as e:
                 sys.exit(str(e))
+            except MissingSiteKey as e:
+                log.error("%s skipped: %s", album.key, e)
+                return {"missing site key": 1}
             except Blocked as e:
                 log.error("%s stopped: %s (rerun later to resume)", album.key, e)
                 sys.exit(2)

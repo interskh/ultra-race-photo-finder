@@ -51,17 +51,18 @@ class Paced:
         self.pause(max(wait, self.gap))
 
 
-def site_key(name: str) -> str:
+def site_key(name: str, length: int | None = None) -> str:
     env = f"PHOTOFINDER_{name.upper()}"
-    if value := os.environ.get(env):
-        return value
     path = Path(os.environ.get("PHOTOFINDER_SITE_KEYS") or SITE_KEYS)
-    try:
-        value = json.loads(path.read_text()).get(name)
-    except (OSError, ValueError, AttributeError):
-        value = None
+    if not (value := os.environ.get(env)):
+        try:
+            value = json.loads(path.read_text()).get(name)
+        except (OSError, ValueError, AttributeError):
+            value = None
     if not value:
         raise MissingSiteKey(f"no {name}: set {env} or add \"{name}\" to {path} (see docs/usage.md, Site keys)")
+    if not isinstance(value, str) or (length and len(value) != length):
+        raise MissingSiteKey(f"invalid {name} (expected a {length or 'non-empty'}-character string): fix {env} or {path}")
     return value
 
 

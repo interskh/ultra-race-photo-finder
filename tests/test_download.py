@@ -141,6 +141,14 @@ def test_downloads_pailixiang_album_into_the_race(data_root, plx, site, caplog):
     assert not album_handlers()
 
 
+def test_missing_site_key_skips_only_that_album_and_the_run_still_fails(data_root, plx, site, monkeypatch, caplog):
+    monkeypatch.delenv("PHOTOFINDER_PAILIXIANG_KEY")
+    race(PLX_URL, YIPAI_URL)
+    msg = fail("download", "2026-x")
+    assert "not every photo downloaded in pailixiang-a13800138000" in msg
+    assert site.made == [ORDER] and sum(plx.images.values()) == 0
+    assert "no pailixiang_key: set PHOTOFINDER_PAILIXIANG_KEY" in caplog.text
+
 def test_album_pacing_is_the_new_platform_default(monkeypatch):
     seen = {}
     monkeypatch.setattr(cli, "AlbumDownloader", lambda client, adapter, out_dir, **kw: seen.update(kw))

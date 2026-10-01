@@ -28,7 +28,7 @@ log = logging.getLogger("download")
 
 
 def ak():
-    t = list(site_key("pailixiang_key"))
+    t = list(site_key("pailixiang_key", 32))
     n = ""
     for _ in range(3):
         e = random.randrange(10)
