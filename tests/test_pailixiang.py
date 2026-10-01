@@ -15,7 +15,7 @@ from photofinder import cli, config, db, races
 from photofinder.index.stages import scan
 from photofinder.sources import pailixiang
 from photofinder.sources.base import AlbumDownloader
-from photofinder.sources.common import RetriesExhausted
+from photofinder.sources.common import RetriesExhausted, site_key
 
 FIXTURES = Path(__file__).parent / "fixtures"
 VIEW = json.loads((FIXTURES / "pailixiang_view.json").read_text(encoding="utf-8"))
@@ -91,7 +91,7 @@ def test_ak_is_the_prefixed_key_with_three_copied_digits():
     for _ in range(50):
         value = pailixiang.ak()
         assert len(value) == 35 and value[:3].isdigit()
-        key = list("REMOVED-pailixiang-web-client-key")
+        key = list(site_key("pailixiang_key"))
         for d in value[:3]:
             key[int(d) + 15] = key[int(d)]
         assert value[3:] == "".join(key)

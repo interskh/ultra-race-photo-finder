@@ -8,14 +8,13 @@ import time
 import httpx
 
 from photofinder.sources.base import CatalogRow
-from photofinder.sources.common import NotFound, fetch_json
+from photofinder.sources.common import NotFound, fetch_json, site_key
 
 API = "https://live.photoplus.cn"
 HEADERS = {
     "Referer": f"{API}/",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
 }
-SALT = "REMOVED-photoplus-salt"
 LIST_PAGE = 100
 ALBUM_PAGE = 200
 PAGE_GAP = 2.5
@@ -32,7 +31,7 @@ def sign(params: dict, t: int) -> dict:
     text = "&".join(f"{k}={json.dumps(p[k], separators=(',', ':'), ensure_ascii=False)}".replace('"', '')
                     for k in sorted(p))
     query = {k: json.dumps(v) if isinstance(v, bool) else v for k, v in p.items()}
-    return {**query, "_s": hashlib.md5((text + SALT).encode()).hexdigest()}
+    return {**query, "_s": hashlib.md5((text + site_key("photoplus_salt")).encode()).hexdigest()}
 
 
 def ok(body):

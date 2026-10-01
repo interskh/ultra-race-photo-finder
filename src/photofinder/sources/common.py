@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import random
 import time
 from email.utils import parsedate_to_datetime
@@ -7,6 +9,7 @@ from pathlib import Path
 import httpx
 
 RETRYABLE = {429, 500, 502, 503, 504}
+SITE_KEYS = Path.home() / ".config" / "photofinder" / "site-keys.json"
 
 log = logging.getLogger("download")
 
@@ -16,6 +19,10 @@ class Blocked(Exception):
 
 
 class RetriesExhausted(Blocked):
+    pass
+
+
+class MissingSiteKey(Blocked):
     pass
 
 
@@ -42,6 +49,20 @@ class Paced:
 
     def retry_sleep(self, wait):
         self.pause(max(wait, self.gap))
+
+
+def site_key(name: str) -> str:
+    env = f"PHOTOFINDER_{name.upper()}"
+    if value := os.environ.get(env):
+        return value
+    path = Path(os.environ.get("PHOTOFINDER_SITE_KEYS") or SITE_KEYS)
+    try:
+        value = json.loads(path.read_text()).get(name)
+    except (OSError, ValueError, AttributeError):
+        value = None
+    if not value:
+        raise MissingSiteKey(f"no {name}: set {env} or add \"{name}\" to {path} (see docs/usage.md, Site keys)")
+    return value
 
 
 def looks_like_jpeg(data: bytes) -> bool:

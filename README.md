@@ -42,6 +42,16 @@ uv sync
 
 All data goes into `data/` inside the checkout (gitignored). To keep it elsewhere, such as an external disk, create the folder and set `PHOTOFINDER_DATA_ROOT=/path/to/data`; a missing custom folder is refused, so an unmounted disk fails loudly instead of filling the wrong drive.
 
+## Site keys (pailixiang and PhotoPlus)
+
+The pailixiang and PhotoPlus web pages sign their API requests with a key embedded in the sites' own JavaScript. The keys are not shipped with this repo. Put them in `~/.config/photofinder/site-keys.json`:
+
+```
+{"pailixiang_key": "<32-character key>", "photoplus_salt": "<signing salt>"}
+```
+
+or set `PHOTOFINDER_PAILIXIANG_KEY` / `PHOTOFINDER_PHOTOPLUS_SALT` (`PHOTOFINDER_SITE_KEYS` points at another file). Without a key, that site's downloads and originals fail with a message naming what's missing; the other sites keep working. yipai360 and xxpie need no key.
+
 ## Quick start
 
 ```

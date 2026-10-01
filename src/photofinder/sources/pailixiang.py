@@ -6,11 +6,10 @@ import time
 import httpx
 
 from photofinder.sources.base import CatalogRow
-from photofinder.sources.common import NotFound, Paced, fetch_json
+from photofinder.sources.common import NotFound, Paced, fetch_json, site_key
 
 API = "https://mapi.pailixiang.com/plx"
 SITE = "https://live.pailixiang.com"
-KEY = "REMOVED-pailixiang-web-client-key"  # public web-client app key from the site's index.js; gitleaks:allow
 HEADERS = {
     "Referer": f"{SITE}/",
     "Origin": SITE,
@@ -29,7 +28,7 @@ log = logging.getLogger("download")
 
 
 def ak():
-    t = list(KEY)
+    t = list(site_key("pailixiang_key"))
     n = ""
     for _ in range(3):
         e = random.randrange(10)

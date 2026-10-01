@@ -42,6 +42,16 @@ uv sync
 
 所有数据都放在仓库目录下的 `data/`（已被 git 忽略）。如果想放到别处（比如外接硬盘），先建好文件夹，再设置 `PHOTOFINDER_DATA_ROOT=/path/to/data`；自定义的文件夹不存在时程序会拒绝运行，这样硬盘没挂载时会直接报错，而不会把数据写到别的盘上。
 
+## 网站密钥（拍立享和 PhotoPlus）
+
+拍立享和 PhotoPlus 的网页在调用接口时，会用嵌在网站自身 JavaScript 里的密钥签名。本仓库不附带这些密钥，请写入 `~/.config/photofinder/site-keys.json`：
+
+```
+{"pailixiang_key": "<32 位密钥>", "photoplus_salt": "<签名盐值>"}
+```
+
+也可以设置环境变量 `PHOTOFINDER_PAILIXIANG_KEY` / `PHOTOFINDER_PHOTOPLUS_SALT`（`PHOTOFINDER_SITE_KEYS` 可指向别的文件）。缺少密钥时，该网站的下载和原图会报错并说明缺了什么，其他网站不受影响。一拍即传和享像派不需要密钥。
+
 ## 快速开始
 
 ```

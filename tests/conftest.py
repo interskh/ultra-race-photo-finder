@@ -16,3 +16,12 @@ def isolated_data_root(tmp_path_factory):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(config, "DATA_ROOT", root)
         yield root
+
+
+@pytest.fixture(autouse=True)
+def fake_site_keys(tmp_path_factory):
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("PHOTOFINDER_PAILIXIANG_KEY", "fake-pailixiang-key-for-the-test")
+        mp.setenv("PHOTOFINDER_PHOTOPLUS_SALT", "test-salt")
+        mp.setenv("PHOTOFINDER_SITE_KEYS", str(tmp_path_factory.mktemp("keys") / "site-keys.json"))
+        yield

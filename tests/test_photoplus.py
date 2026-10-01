@@ -16,7 +16,7 @@ from photofinder import cli, config, db, races
 from photofinder.index.stages import scan
 from photofinder.sources import photoplus
 from photofinder.sources.base import AlbumDownloader
-from photofinder.sources.common import RetriesExhausted
+from photofinder.sources.common import RetriesExhausted, site_key
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DETAIL = json.loads((FIXTURES / "photoplus_detail.json").read_text(encoding="utf-8"))
@@ -79,7 +79,7 @@ class FakePP:
         if self.status != 200:
             return httpx.Response(self.status)
         s = q.pop("_s")
-        text = "&".join(f"{k}={v}" for k, v in sorted(q.items())) + "REMOVED-photoplus-salt"
+        text = "&".join(f"{k}={v}" for k, v in sorted(q.items())) + site_key("photoplus_salt")
         if self.bad_codes or hashlib.md5(text.encode()).hexdigest() != s:
             self.bad_codes = max(0, self.bad_codes - 1)
             return httpx.Response(200, json={"code": -1, "message": "请求参数不合法", "success": False})
@@ -129,10 +129,11 @@ def sid(i):
     return str(770000000 + i)
 
 
-def test_signature_matches_the_site_vector():
+def test_signature_is_the_md5_of_the_sorted_unquoted_query_plus_the_salt():
     params = dict(activityNo=39352660, key="", isNew=False, count=100, page=1, size=2000, ppSign="")
     signed = photoplus.sign(params, 1790640755565)
-    assert signed["_s"] == "00000000000000000000000000000000"
+    text = "_t=1790640755565&activityNo=39352660&count=100&isNew=false&key=&page=1&ppSign=&size=2000"
+    assert signed["_s"] == hashlib.md5((text + "test-salt").encode()).hexdigest()
     assert photoplus.sign({**params, "activityNo": "39352660"}, 1790640755565)["_s"] == signed["_s"]
     assert signed["isNew"] == "false" and signed["_t"] == 1790640755565
 

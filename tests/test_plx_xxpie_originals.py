@@ -442,3 +442,13 @@ def test_xxpie_registers_at_most_twice_per_lookup_when_every_answer_is_an_error(
     status = run(api)
     assert status["state"] == "error" and len(w.registrations) == 2
     assert status["errors"][-1].startswith("xxpie API unavailable")
+
+
+def test_missing_site_key_fails_only_that_platform_without_requests(tmp_path, monkeypatch):
+    c, conn, t, w, api = setup(tmp_path, monkeypatch, [plx(1), YPE, xxp(3)])
+    monkeypatch.delenv("PHOTOFINDER_PAILIXIANG_KEY")
+    status = run(api)
+    assert status["state"] == "error" and status["done"] == 3
+    assert status["counts"]["downloaded"] == 2 and status["counts"]["failed"] == 1
+    assert len(w.plx) == 0
+    assert status["errors"][-1].startswith("pailixiang API unavailable: no pailixiang_key: set PHOTOFINDER_PAILIXIANG_KEY")

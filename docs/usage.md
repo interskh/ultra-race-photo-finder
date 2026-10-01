@@ -106,6 +106,10 @@ uv run photofinder eval <race> --bib 8038            # recall of clothing search
 ```
 
 
+## Site keys
+
+pailixiang requests carry an `ak` built from the site's web-client key, and PhotoPlus requests carry `_s`, an MD5 over the sorted query plus a salt. Both values sit in the sites' own JavaScript and are not part of this repo. `photofinder` reads them from `PHOTOFINDER_PAILIXIANG_KEY` / `PHOTOFINDER_PHOTOPLUS_SALT`, else from the JSON file at `PHOTOFINDER_SITE_KEYS` (default `~/.config/photofinder/site-keys.json`, keys `pailixiang_key` and `photoplus_salt`). A missing key stops that site's download with the message `no pailixiang_key: set …`; in Download originals its photos fail as `pailixiang API unavailable: no pailixiang_key …` and the other sites still download. Tests use fake keys.
+
 ## Another data root (rehearsals and development)
 
 `PHOTOFINDER_DATA_ROOT=<dir>` points the CLI and both download scripts at another data folder (registry, races, exports, backups, subsets, `serve.lock`). Model weights stay in `PHOTOFINDER_MODELS_DIR`, by default the checkout's `data/models`. Both default to the checkout's own `data/`, so a git worktree starts with an empty data folder. To reuse the main checkout's data, point `PHOTOFINDER_DATA_ROOT` at it or at a rehearsal copy, and point `PHOTOFINDER_MODELS_DIR` at its `data/models` so the weights aren't downloaded again. `serve.lock` lives in the data root, so a server started under another root doesn't see one already running. Only one server should run at a time, so stop the other one first.
