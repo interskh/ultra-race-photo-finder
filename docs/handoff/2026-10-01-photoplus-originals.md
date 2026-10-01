@@ -56,3 +56,4 @@
 - Budget now counts every HTTP attempt (incremented in the `fetch_json` `fresh` callback, so retries spend it); retry sleeps are `max(backoff, gap)` through `Fetcher.pause`.
 - The fresh retry after a cache-assisted NotFound has its own budget: worst case is 2x `MAX_PAGE_REQUESTS` (48) HTTP attempts per lookup.
 - Tests fail without each fix (4/4 reverts caught): attempt-counted budget, retry gap, own fresh budget, CSV collision.
+- Real-site E2E: live URLs end `:<bytes>.JPG` (uppercase); the declared-size match is now extension-agnostic/case-insensitive and fixtures use `.JPG`. Downloaded files equalled the declared sizes exactly (7220286, 4888854, 3864617 bytes); the mismatch test fails with the old lowercase-only regex.

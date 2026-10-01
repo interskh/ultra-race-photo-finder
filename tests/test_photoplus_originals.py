@@ -52,7 +52,7 @@ class PP:
             if forced is not None:
                 return forced
             return httpx.Response(200, json={"code": 1, "result": {"pics_total": len(self.entries), "pics_array": [
-                {"id": i, "relate_time": tm, "watermark_origin_img": f"//img.test/o/{i}{self.size(i)}.jpg?sign=1"}
+                {"id": i, "relate_time": tm, "watermark_origin_img": f"//img.test/o/{i}{self.size(i)}.JPG?sign=1"}
                 for i, tm in self.entries[(n - 1) * c: n * c]]}})
         assert req.url.host == "img.test" and req.headers["referer"] == photoplus.API + "/"
         pid = int(req.url.path.rsplit("/", 1)[1][:-4].split(":")[0])
@@ -288,7 +288,7 @@ def test_new_upload_between_cached_and_fresh_pages_does_not_lose_the_photo(monke
     loc.page(ACT, cached, [0, 0])
     shot = dict((i, tm) for i, tm in entries)[target]
     entries.insert(0, (1013, "2026-09-25 10:00:00"))
-    assert loc.locate(ACT, shot, str(target)).endswith(f"/o/{target}.jpg?sign=1")
+    assert loc.locate(ACT, shot, str(target)).endswith(f"/o/{target}.JPG?sign=1")
 
 
 def test_genuinely_absent_photo_is_retried_fresh_once_then_not_found(monkeypatch):
@@ -370,4 +370,4 @@ def test_fresh_retry_gets_its_own_budget(monkeypatch):
     loc.page(ACT, 3, [0, 0])
     shot = dict(entries)[1007]
     entries.insert(0, (1013, "2026-09-25 10:00:00"))
-    assert loc.locate(ACT, shot, "1007").endswith("/o/1007.jpg?sign=1")
+    assert loc.locate(ACT, shot, "1007").endswith("/o/1007.JPG?sign=1")

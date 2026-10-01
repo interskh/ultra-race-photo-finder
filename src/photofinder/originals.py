@@ -153,7 +153,7 @@ def downloadable(row: dict) -> bool:
 
 
 def photoplus_complete(data: bytes, url: str = "") -> bool:
-    declared = re.search(r":(\d+)\.jpg$", urlsplit(url).path)
+    declared = re.search(r":(\d+)\.[A-Za-z]+$", urlsplit(url).path)
     return len(data) > 1024 and data[:2] == b"\xff\xd8" and (not declared or len(data) == int(declared[1]))
 
 
