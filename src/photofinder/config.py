@@ -2,17 +2,20 @@ import os
 import sys
 from pathlib import Path
 
-DEFAULT_DATA_ROOT = Path("/Volumes/Ext1TB/Projects/photo-finder/data")
+CHECKOUT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_ROOT = (CHECKOUT if (CHECKOUT / "pyproject.toml").is_file() else Path.cwd()) / "data"
 DATA_ROOT = Path(os.environ.get("PHOTOFINDER_DATA_ROOT") or DEFAULT_DATA_ROOT)
-MODELS_DIR = DEFAULT_DATA_ROOT / "models"
+MODELS_DIR = Path(os.environ.get("PHOTOFINDER_MODELS_DIR") or DEFAULT_DATA_ROOT / "models")
 SIGLIP_REPO = "models--timm--ViT-B-16-SigLIP2"
 SIGLIP_FILES = ("open_clip_model.safetensors", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
 
 
 def require_mounted(root: Path | None = None):
     root = root or DATA_ROOT
+    if root == DEFAULT_DATA_ROOT:
+        root.mkdir(exist_ok=True)
     if not root.is_dir():
-        sys.exit(f"{root} does not exist; is the external disk mounted?")
+        sys.exit(f"{root} does not exist; is its disk mounted?")
 
 
 def setup_model_env(models_dir: Path = MODELS_DIR):

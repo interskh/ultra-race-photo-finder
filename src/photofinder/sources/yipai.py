@@ -271,7 +271,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if not args.data_root.parent.is_dir():
-        sys.exit(f"{args.data_root.parent} does not exist; is the external disk mounted?")
+        sys.exit(f"{args.data_root.parent} does not exist; is its disk mounted?")
     if args.data_root.resolve() == config.DATA_ROOT.resolve() and (msg := refusal(args.order_id)):
         sys.exit(msg)
     out_dir = args.data_root / "yipai" / args.order_id

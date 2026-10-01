@@ -5,7 +5,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 order="$1"; shift
-[ -d /Volumes/Ext1TB ] || { echo "external disk not mounted" >&2; exit 1; }
 uv run --frozen python -c 'import sys; from photofinder.sources import yipai; sys.exit(yipai.refusal(sys.argv[1]))' "$order"
 root="${PHOTOFINDER_DATA_ROOT:-data}"
 out="$root/yipai/$order"

@@ -1,7 +1,10 @@
 [project]
-name = "photofinder"
+name = "ultra-race-photo-finder"
 version = "0.1.0"
-description = "Add your description here"
+description = "Find your own photos in Chinese race-photo galleries (yipai360, photoplus, pailixiang, xxpie) by clothing, bib, time and scene"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     { name = "Kyle Sun", email = "interskh@gmail.com" }
 ]
@@ -34,3 +37,6 @@ build-backend = "uv_build"
 dev = [
     "pytest",
 ]
+
+[tool.uv.build-backend]
+module-name = "photofinder"

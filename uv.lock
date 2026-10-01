@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-09-20T21:41:48.248171Z"
+exclude-newer = "2026-09-24T21:46:37.792787Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -1241,53 +1241,6 @@ wheels = [
 ]
 
 [[package]]
-name = "photofinder"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "boxmot" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "numpy" },
-    { name = "ocrmac" },
-    { name = "open-clip-torch" },
-    { name = "pillow" },
-    { name = "psutil" },
-    { name = "python-multipart" },
-    { name = "torch" },
-    { name = "torchvision" },
-    { name = "transformers" },
-    { name = "ultralytics" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boxmot", specifier = ">=25.0.0" },
-    { name = "fastapi", specifier = ">=0.141.1" },
-    { name = "httpx" },
-    { name = "numpy", specifier = ">=2.5.3" },
-    { name = "ocrmac", specifier = ">=1.0.1" },
-    { name = "open-clip-torch", specifier = ">=3.3.0" },
-    { name = "pillow", specifier = ">=12.3.0" },
-    { name = "psutil", specifier = ">=7.2.2" },
-    { name = "python-multipart", specifier = ">=0.0.32" },
-    { name = "torch", specifier = ">=2.14.0" },
-    { name = "torchvision", specifier = ">=0.29.0" },
-    { name = "transformers", specifier = ">=5.17.0" },
-    { name = "ultralytics", specifier = ">=8.4.157" },
-    { name = "uvicorn", specifier = ">=0.53.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest" }]
-
-[[package]]
 name = "pillow"
 version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2237,6 +2190,53 @@ sdist = { url = "https://files.pythonhosted.org/packages/e4/31/3d74fa778a63b98b7
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f9/bc/8737e8d54cf51106118039b83f485a4783112fab49ea9d044b234978a46e/tzdata-2026.4-py2.py3-none-any.whl", hash = "sha256:c2169a8b0a7a5e9674da5a135ccdfb2b3e671b333ed9fed17b41f73c34476e81", size = 347494, upload-time = "2026-09-12T12:56:01.67Z" },
 ]
+
+[[package]]
+name = "ultra-race-photo-finder"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "boxmot" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "numpy" },
+    { name = "ocrmac" },
+    { name = "open-clip-torch" },
+    { name = "pillow" },
+    { name = "psutil" },
+    { name = "python-multipart" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+    { name = "ultralytics" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boxmot", specifier = ">=25.0.0" },
+    { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx" },
+    { name = "numpy", specifier = ">=2.5.3" },
+    { name = "ocrmac", specifier = ">=1.0.1" },
+    { name = "open-clip-torch", specifier = ">=3.3.0" },
+    { name = "pillow", specifier = ">=12.3.0" },
+    { name = "psutil", specifier = ">=7.2.2" },
+    { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "torch", specifier = ">=2.14.0" },
+    { name = "torchvision", specifier = ">=0.29.0" },
+    { name = "transformers", specifier = ">=5.17.0" },
+    { name = "ultralytics", specifier = ">=8.4.157" },
+    { name = "uvicorn", specifier = ">=0.53.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest" }]
 
 [[package]]
 name = "ultralytics"
