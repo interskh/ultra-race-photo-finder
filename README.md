@@ -28,7 +28,7 @@ Unwatermarked originals are paid on every site. **Open on site** links each phot
 
 ## Requirements
 
-- A Mac with Apple Silicon (models run on MPS; bib OCR uses Apple Vision). Developed on 16 GB of memory; the indexer caps each model stage at 4 GB by default.
+- A Mac with Apple Silicon (models run on MPS; bib OCR uses Apple Vision). Developed on 16 GB of memory; the indexer restarts a model stage once its process passes 4 GB (checked between batches, so it can briefly go over).
 - [uv](https://docs.astral.sh/uv/) (Python 3.13 is installed by uv).
 - Disk space: about 1.5 GB of model weights (downloaded on first use), plus roughly 0.6 GB per 1,000 photos for previews and the index. A 12,000-photo race uses about 7 GB.
 
@@ -40,7 +40,7 @@ cd ultra-race-photo-finder
 uv sync
 ```
 
-All data goes into `data/` inside the checkout (gitignored). To keep it elsewhere, such as an external disk, set `PHOTOFINDER_DATA_ROOT=/path/to/data`.
+All data goes into `data/` inside the checkout (gitignored). To keep it elsewhere, such as an external disk, create the folder and set `PHOTOFINDER_DATA_ROOT=/path/to/data`; a missing custom folder is refused, so an unmounted disk fails loudly instead of filling the wrong drive.
 
 ## Quick start
 

@@ -43,16 +43,18 @@ def test_default_data_root_is_the_checkouts_data_dir():
 
 
 def test_env_overrides_data_root_and_models_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("PHOTOFINDER_MODELS_DIR", raising=False)
     monkeypatch.setenv("PHOTOFINDER_DATA_ROOT", str(tmp_path / "root"))
-    monkeypatch.setenv("PHOTOFINDER_MODELS_DIR", str(tmp_path / "weights"))
     try:
         importlib.reload(config)
         assert config.DATA_ROOT == tmp_path / "root"
+        assert config.MODELS_DIR == config.DEFAULT_DATA_ROOT / "models"
+        monkeypatch.setenv("PHOTOFINDER_MODELS_DIR", str(tmp_path / "weights"))
+        importlib.reload(config)
         assert config.MODELS_DIR == tmp_path / "weights"
     finally:
         monkeypatch.undo()
         importlib.reload(config)
-    assert config.MODELS_DIR == config.DEFAULT_DATA_ROOT / "models"
 
 
 def test_require_mounted_creates_the_default_root(tmp_path, monkeypatch):

@@ -2,7 +2,7 @@
 
 Date: 2026-09-29 · Status: sections 1–2 approved in chat ("sounds good"; UI race picker, lazy per-race load; CLI to add albums; originals for new platforms next phase, but always a way to jump to the photo on the site).
 
-Probe scripts and trimmed API samples: `docs/handoff/2026-09-29-platform-probes/`.
+Probe scripts and trimmed API samples were kept in `docs/handoff/2026-09-29-platform-probes/`; that folder is not published (raw site responses). The trimmed samples the tests use are in `tests/fixtures/`.
 
 ## 1. Problem & goals
 

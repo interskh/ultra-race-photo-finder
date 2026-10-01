@@ -28,7 +28,7 @@
 
 ## 运行环境
 
-- Apple Silicon 芯片的 Mac（模型跑在 MPS 上；号码布 OCR 用 Apple Vision）。开发机为 16 GB 内存；建索引时每个模型阶段默认最多占用 4 GB。
+- Apple Silicon 芯片的 Mac（模型跑在 MPS 上；号码布 OCR 用 Apple Vision）。开发机为 16 GB 内存；建索引时某个模型阶段的进程超过 4 GB 就会重启（在批次之间检查，所以可能短暂超出）。
 - [uv](https://docs.astral.sh/uv/)（Python 3.13 由 uv 自动安装）。
 - 磁盘空间：模型权重约 1.5 GB（首次使用时下载）；预览图加索引大约每 1000 张照片 0.6 GB。一场 12000 张照片的赛事约占 7 GB。
 
@@ -40,7 +40,7 @@ cd ultra-race-photo-finder
 uv sync
 ```
 
-所有数据都放在仓库目录下的 `data/`（已被 git 忽略）。如果想放到别处（比如外接硬盘），设置 `PHOTOFINDER_DATA_ROOT=/path/to/data`。
+所有数据都放在仓库目录下的 `data/`（已被 git 忽略）。如果想放到别处（比如外接硬盘），先建好文件夹，再设置 `PHOTOFINDER_DATA_ROOT=/path/to/data`；自定义的文件夹不存在时程序会拒绝运行，这样硬盘没挂载时会直接报错，而不会把数据写到别的盘上。
 
 ## 快速开始
 
