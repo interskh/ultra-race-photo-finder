@@ -536,15 +536,15 @@ function renderCounts() {
   $('#coll').innerHTML = '';
   $('#coll').append(h('b', {}, f.race.name), ` · ${fmt(f.photos)} photos · ${fmt(f.persons)} people`);
   document.title = `${f.race.name} · photofinder`;
-  $('#c-me').textContent = fmt(f.labels.me);
+  $('#c-me').textContent = fmt(S.mePhotos);
   $('#c-me2').textContent = fmt(S.mePhotos);
   $('#c-nm').textContent = fmt(f.labels.not_me);
   $('.nm-me').textContent = S.name;
   $('.nm-not').textContent = `Not ${S.name}`;
-  $('.pill.me').title = `People marked “This is ${S.name}”`;
+  $('.pill.me').title = `Photos marked “This is ${S.name}” (${fmt(f.labels.me)} marked people; a runner detected twice in one photo counts once here)`;
   $('.pill.nm').title = `People marked “This is not ${S.name}”`;
   const n = f.labels.me;
-  $('#more-n').textContent = n ? `(${n} marked)` : '';
+  $('#more-n').textContent = n ? `(${fmt(S.mePhotos)} marked)` : '';
   $('#more').disabled = !n || S.busy > 0;
   $('#more').title = `Hides photos already marked ${S.name} and people marked Not ${S.name}.`;
   $('#more-hint').textContent = n ? 'Changed clothes? Mark one photo of each look.' : `Mark at least one photo as ${S.name} to enable.`;
