@@ -21,7 +21,7 @@ Last updated 2026-09-29.
 - Live 贡嘎 migration done: the collection lives in `data/races/2026-gongga100/`; top-up is `scripts/download.sh 2026-gongga100`, then `photofinder index 2026-gongga100`.
 
 ## Next (ranked)
-Races and albums slices 1–7 are done on the branch (spec above). Operational: 2026-chongli168 fully indexed 2026-09-29 (11,939 photos, 53,400 people; no `--ocr` yet); index 2026-siguniang once its download ends.
+Races and albums slices 1–7 are done on the branch (spec above). Operational: 2026-chongli168 fully indexed 2026-09-29 (11,939 photos, 53,400 people); 2026-siguniang downloaded and fully indexed 2026-10-01 (101,005 photos, 239,923 people; 4 h 37 min for the first 96,598 photos at peak ~3.4 GB between batches, no memory restarts; the album lists 1 photo fewer than it reports). Neither has `--ocr` yet.
 
 1. **Cross-photographer recall** — biggest lever. Ideas: tighter crops / drop ghost & prop detections; stronger re-ID (CLIP-ReID, SOLIDER); part-based colour features (top / bottom / shoes / pack); use `eval --bib` across the 36 bibs as the benchmark.
 2. Soft score boost for the user's own bib (reasoning for deferring in handoff S3-T1).
