@@ -18,6 +18,9 @@ HEADERS = {
 SALT = "REMOVED-photoplus-salt"
 LIST_PAGE = 100
 ALBUM_PAGE = 200
+PAGE_GAP = 2.5
+PAGE_TTL = 240
+MAX_PAGE_REQUESTS = 24
 SHOT_TIME = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 SAFE_ID = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -126,3 +129,108 @@ class Adapter:
 
     def preview_url(self, row: CatalogRow) -> str:
         return row.url
+
+
+class NotFound(Exception):
+    pass
+
+
+class BudgetExceeded(NotFound):
+    pass
+
+
+def https(url):
+    return "https:" + url if isinstance(url, str) and url.startswith("//") else url
+
+
+class Locator:
+    def __init__(self, client: httpx.Client, *, pause, clock=time.monotonic, tries=5, gap=PAGE_GAP, ttl=PAGE_TTL,
+                 budget=MAX_PAGE_REQUESTS):
+        self.client, self.pause, self.clock = client, pause, clock
+        self.tries, self.gap, self.ttl, self.budget = tries, gap, ttl, budget
+        self.pages = {}
+        self.found = {}
+        self.last = None
+
+    def page(self, activity: str, n: int, spent: list) -> tuple[list, int]:
+        hit = self.pages.get((activity, n))
+        if hit and self.clock() - hit[0] < self.ttl:
+            spent[1] += 1
+            return hit[1], hit[2]
+        if spent[0] >= self.budget:
+            raise BudgetExceeded("photoplus listing request limit reached while locating the photo; try again later")
+        spent[0] += 1
+        if self.last is not None:
+            self.pause(self.last + self.gap - self.clock())
+        params = {"activityNo": activity, "key": "", "isNew": False, "count": LIST_PAGE, "page": n, "size": 2000,
+                  "ppSign": ""}
+        try:
+            result = fetch_json(self.client, "GET", f"{API}/pic/list", check=ok, tries=self.tries, sleep=self.pause,
+                                fresh=lambda: {"params": sign(params, int(time.time() * 1000)), "headers": HEADERS})
+        finally:
+            self.last = self.clock()
+        pics = (result or {}).get("pics_array") or []
+        total = (result or {}).get("pics_total")
+        if not isinstance(total, int) or isinstance(total, bool):
+            raise NotFound("photoplus did not report the album size")
+        self.pages[(activity, n)] = self.clock(), pics, total
+        return pics, total
+
+    def locate(self, activity: str, shot: str | None, source_id: str) -> str:
+        if not shot:
+            raise NotFound("no shot time recorded")
+        spent = [0, 0]
+        try:
+            return self.search(activity, shot, source_id, spent)
+        except BudgetExceeded:
+            raise
+        except NotFound:
+            if not spent[1]:
+                raise
+        for key in [k for k in self.pages if k[0] == activity]:
+            del self.pages[key]
+        spent[1] = 0
+        return self.search(activity, shot, source_id, spent)
+
+    def search(self, activity, shot, source_id, spent) -> str:
+        _, total = self.page(activity, 1, spent)
+        pages = max(1, math.ceil(total / LIST_PAGE))
+        lo, hi = 1, pages
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            pics, total = self.page(activity, mid, spent)
+            pages = max(1, math.ceil(total / LIST_PAGE))
+            if not pics or shot > (pics[0].get("relate_time") or ""):
+                hi = mid - 1
+            elif shot < (pics[-1].get("relate_time") or ""):
+                lo = mid + 1
+            else:
+                return self.scan(activity, mid, pages, shot, source_id, spent)
+        raise NotFound("not found in the photoplus album")
+
+    def scan(self, activity, mid, pages, shot, source_id, spent) -> str:
+        def find(pics, n):
+            for p in pics:
+                if str(p.get("id")) == source_id:
+                    self.found[(activity, source_id)] = n
+                    return https(p.get("watermark_origin_img")) or ""
+        pics, _ = self.page(activity, mid, spent)
+        if (url := find(pics, mid)) is not None:
+            return url
+        for step, edge in ((-1, pics[0]), (1, pics[-1])):
+            n = mid + step
+            while edge.get("relate_time") == shot and 1 <= n <= pages:
+                near, _ = self.page(activity, n, spent)
+                if not near:
+                    break
+                first, last = near[0], near[-1]
+                if (first if step > 0 else last).get("relate_time") != shot:
+                    break
+                if (url := find(near, n)) is not None:
+                    return url
+                edge = last if step > 0 else first
+                n += step
+        raise NotFound("not found in the photoplus album")
+
+    def forget(self, activity: str, source_id: str):
+        self.pages.pop((activity, self.found.pop((activity, source_id), None)), None)

@@ -17,7 +17,7 @@ import httpx
 
 from photofinder import config, races, sources
 from photofinder.index.stages import ALBUMS, MANIFEST_NAME
-from photofinder.sources import yipai
+from photofinder.sources import photoplus, yipai
 
 LOOKUP_GAP = 6.0
 RATE_LIMIT_WAITS = (60, 120, 240)
@@ -30,6 +30,8 @@ DOWNLOADED = "downloaded"
 COLUMNS = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "group", "preview_path",
            "original_path", "status", "site_url"]
 OPEN_ON_SITE = "open on site"
+ORIGINAL_PLATFORMS = ("yipai", "photoplus")
+PLATFORM_NAMES = {"yipai": "yipai360", "photoplus": "photoplus"}
 COUNTS = ("downloaded", "skipped", "buy_on_site", "failed", "open_on_site")
 CSV_LOCK = threading.Lock()
 
@@ -52,6 +54,14 @@ class Busy(Exception):
     pass
 
 
+class Forbidden(BuyOnSite):
+    pass
+
+
+class Unavailable(Exception):
+    pass
+
+
 def safe_name(name: str | None, fallback="profile") -> str:
     return re.sub(r"[^\w-]+", "_", unicodedata.normalize("NFC", name or "")).strip("_")[:NAME_PART_MAX] or fallback
 
@@ -60,8 +70,9 @@ def folder_key(name: str) -> str:
     return safe_name(name).casefold()
 
 
-def is_yipai(collection: Path) -> bool:
-    return (collection / MANIFEST_NAME).is_file() or any((collection / ALBUMS).glob(f"yipai-*/{MANIFEST_NAME}"))
+def has_originals(collection: Path) -> bool:
+    return (collection / MANIFEST_NAME).is_file() or any(
+        any((collection / ALBUMS).glob(f"{platform}-*/{MANIFEST_NAME}")) for platform in ORIGINAL_PLATFORMS)
 
 
 def manifest_of(collection: Path, album_key: str | None) -> Path:
@@ -82,13 +93,13 @@ def read_manifest(path: Path, platform: str | None, ids: list[str]) -> tuple[str
         names = {n for n, in m.execute("select name from sqlite_master")}
         if platform in (None, "yipai") and "photos" in names:
             nums = [int(i) for i in ids if i.isdigit()]
-            return "yipai", {str(pid): (fname, order) for pid, order, fname in m.execute(
+            return "yipai", {str(pid): (fname, order, None) for pid, order, fname in m.execute(
                 f"select photo_id, order_id, fname from photos where photo_id in ({','.join('?' * len(nums))})",
                 nums)}
         if "catalog" not in names:
             return platform, {}
-        return platform, {sid: (fname, None) for sid, fname in m.execute(
-            f"select source_id, fname from catalog where source_id in ({','.join('?' * len(ids))})", ids)}
+        return platform, {sid: (fname, None, shot) for sid, fname, shot in m.execute(
+            f"select source_id, fname, taken_at from catalog where source_id in ({','.join('?' * len(ids))})", ids)}
 
 
 def sites_of(collection: Path, metas: list[dict]) -> list[dict]:
@@ -107,10 +118,11 @@ def sites_of(collection: Path, metas: list[dict]) -> list[dict]:
     out = []
     for meta in metas:
         platform, site_id, rows = found[meta.get("album_key")]
-        fname, order = rows.get(meta["source_photo_id"] or "", (None, None))
+        fname, order, shot = rows.get(meta["source_photo_id"] or "", (None, None, None))
         site = sources.site_link(platform, order if platform == "yipai" else site_id, fname) \
             if (meta["source_photo_id"] or "") in rows else None
-        out.append({"platform": platform, "fname": fname, "site": site, "order_id": order})
+        out.append({"platform": platform, "fname": fname, "site": site, "order_id": order, "site_id": site_id,
+                    "shot_at": shot})
     return out
 
 
@@ -118,10 +130,11 @@ def profile_folder(collection: Path, profile: str) -> Path:
     return config.DATA_ROOT / "exports" / collection.name / safe_name(profile)
 
 
-def file_name(meta: dict) -> str:
+def file_name(meta: dict, platform: str | None = None) -> str:
     t = meta["taken_at"]
     stamp = t.replace("-", "").replace(":", "").replace(" ", "-") if t else "undated"
-    return f"{stamp}_{safe_name(meta['photographer'], 'unknown')}_{safe_name(meta['source_photo_id'], 'none')}.jpg"
+    sid = safe_name(meta['source_photo_id'], 'none')
+    return f"{stamp}_{safe_name(meta['photographer'], 'unknown')}_{'photoplus-' if platform == 'photoplus' else ''}{sid}.jpg"
 
 
 def yipai_id(meta: dict) -> int | None:
@@ -130,12 +143,12 @@ def yipai_id(meta: dict) -> int | None:
 
 
 def rows_of(collection: Path, metas: list[dict]) -> list[dict]:
-    return [{**meta, "preview": collection / meta["relpath"], "file": file_name(meta), **site}
+    return [{**meta, "preview": collection / meta["relpath"], "file": file_name(meta, site["platform"]), **site}
             for meta, site in zip(metas, sites_of(collection, metas))]
 
 
 def downloadable(row: dict) -> bool:
-    return row["platform"] in (None, "yipai")
+    return row["platform"] in (None, *ORIGINAL_PLATFORMS)
 
 
 def valid(path: Path) -> bool:
@@ -205,6 +218,7 @@ class Fetcher:
         self.img_delay = img_delay
         self.tries = tries
         self.last_lookup = None
+        self.locator = photoplus.Locator(self.client, pause=self.pause, clock=clock, tries=tries)
         self.note = lambda message: None
 
     def pause(self, seconds: float):
@@ -245,18 +259,21 @@ class Fetcher:
     def fetch(self, img: dict) -> bytes:
         if not img.get("sign"):
             raise BuyOnSite("no original URL")
+        return self.download([img["primary"] + img["path"] + img["sign"], img["failover"] + img["path"] + img["sign"]],
+                             yipai.HEADERS)
+
+    def download(self, urls: list[str], headers: dict) -> bytes:
         self.pause(random.uniform(*self.img_delay))
         error = None
         for attempt in range(self.tries):
-            domain = img["primary"] if attempt % 2 == 0 else img["failover"]
             wait = yipai.backoff_seconds(attempt)
             try:
-                r = self.client.get(domain + img["path"] + img["sign"], headers=yipai.HEADERS)
+                r = self.client.get(urls[attempt % len(urls)], headers=headers)
             except httpx.HTTPError as e:
                 error = repr(e)
             else:
                 if r.status_code == 403:
-                    raise BuyOnSite("HTTP 403")
+                    raise Forbidden("HTTP 403")
                 if r.status_code == 200:
                     if yipai.looks_like_jpeg(r.content):
                         return r.content
@@ -272,14 +289,35 @@ class Fetcher:
                 self.pause(wait)
         raise Failed(error)
 
+    def photoplus_original(self, row: dict) -> bytes:
+        for relisted in (False, True):
+            try:
+                url = self.locator.locate(row["site_id"], row["shot_at"], row["source_photo_id"])
+            except photoplus.NotFound as e:
+                raise Failed(str(e))
+            if not url:
+                raise BuyOnSite("no original URL")
+            try:
+                return self.download([url], photoplus.HEADERS)
+            except Forbidden:
+                if relisted:
+                    raise Failed("photoplus refused the download link again after relisting (HTTP 403)")
+                self.locator.forget(row["site_id"], row["source_photo_id"])
+
+    def yipai_original(self, row: dict) -> bytes:
+        return self.fetch(self.lookup(row["order_id"], row["fname"], yipai_id(row)))
+
     def original(self, row: dict, dest: Path) -> str:
         if not downloadable(row):
             return OPEN_ON_SITE
         dest.unlink(missing_ok=True)
-        if row["platform"] is None or not row["fname"]:
+        photoplus_row = row["platform"] == "photoplus"
+        if row["platform"] is None or (row["site"] is None if photoplus_row else not row["fname"]):
             return "failed: not in the gallery manifest"
         try:
-            data = self.fetch(self.lookup(row["order_id"], row["fname"], yipai_id(row)))
+            data = self.photoplus_original(row) if photoplus_row else self.yipai_original(row)
+        except yipai.Blocked as e:
+            raise Unavailable(f"{PLATFORM_NAMES[row['platform']]} API unavailable: {e}") from e
         except BuyOnSite as e:
             return f"buy on site: {e}"
         except Failed as e:
@@ -353,8 +391,8 @@ class Job:
                         self.state["errors"].append(f"{row['source_photo_id']} {row['fname']}: {result}")
         except Cancelled:
             state = "cancelled"
-        except yipai.Blocked as e:
-            state, error = "error", f"yipai360 API unavailable: {e}"
+        except Unavailable as e:
+            state, error = "error", str(e)
         except Exception as e:
             log.exception("originals job failed")
             state, error = "error", f"{type(e).__name__}: {e}"

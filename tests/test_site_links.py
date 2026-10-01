@@ -143,7 +143,7 @@ def test_old_status_belongs_to_the_row_with_the_same_id_and_file_name(tmp_path):
     base = {"photographer": None, "taken_at": None, "album": None, "group": None, "preview": "p", "file": "f.jpg"}
     rows = [{**base, "photo_id": 1, "source_photo_id": "101", "fname": "IMG_101.JPG", "platform": "yipai",
              "site": None},
-            {**base, "photo_id": 2, "source_photo_id": "101", "fname": "P1.JPG", "platform": "photoplus",
+            {**base, "photo_id": 2, "source_photo_id": "101", "fname": "P1.JPG", "platform": "xxpie",
              "site": None},
             {**base, "photo_id": 3, "source_photo_id": "102", "fname": None, "platform": "yipai", "site": None}]
     folder = tmp_path / "out"
@@ -156,7 +156,7 @@ def test_old_status_belongs_to_the_row_with_the_same_id_and_file_name(tmp_path):
 def test_yipai_status_survives_a_later_non_yipai_row_with_the_same_id_and_file_name(tmp_path):
     base = {"photographer": None, "taken_at": None, "album": None, "group": None, "preview": "p", "file": "f.jpg",
             "source_photo_id": "101", "fname": "IMG_101.JPG", "site": None}
-    rows = [{**base, "photo_id": 1, "platform": "yipai"}, {**base, "photo_id": 2, "platform": "photoplus"}]
+    rows = [{**base, "photo_id": 1, "platform": "yipai"}, {**base, "photo_id": 2, "platform": "xxpie"}]
     folder = tmp_path / "out"
     originals.write_csv(folder, rows, {1: "failed: HTTP 503"})
     assert originals.statuses(folder, rows) == {1: "failed: HTTP 503", 2: "open on site"}

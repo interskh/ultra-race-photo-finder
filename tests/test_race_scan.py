@@ -161,10 +161,10 @@ def test_rows_of_reads_order_and_fname_from_each_album_manifest(tmp_path):
     }
 
 
-def test_is_yipai_for_race_needs_a_yipai_album(tmp_path):
+def test_has_originals_for_race_needs_a_yipai_or_photoplus_album(tmp_path):
     r = tmp_path / "race"
     (r / "albums" / "xxpie-abc").mkdir(parents=True)
     (r / "albums" / "xxpie-abc" / "manifest.sqlite").write_bytes(b"")
-    assert not originals.is_yipai(r)
+    assert not originals.has_originals(r)
     yipai_album(r / "albums" / "yipai-1001", [], [], [])
-    assert originals.is_yipai(r)
+    assert originals.has_originals(r)

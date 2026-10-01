@@ -26,7 +26,7 @@ from starlette.background import BackgroundTask
 
 from photofinder import db, models, nearby, originals, races, search
 from photofinder.memory import watch_parent
-from photofinder.sources.yipai import CATALOG_SELECT, Blocked
+from photofinder.sources.yipai import CATALOG_SELECT
 from photofinder.index.stages import ALBUMS, MANIFEST_NAME, now
 
 STATIC = Path(__file__).parent / "static"
@@ -321,7 +321,7 @@ class RaceState:
     dir: Path
     persons: search.Persons
     scene_error: str | None
-    is_yipai: bool
+    has_originals: bool
     job: originals.Job
     uploads: OrderedDict = field(default_factory=OrderedDict)
 
@@ -338,7 +338,7 @@ def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher,
             scene_error = None
         except search.MissingEmbeddings as e:
             scene_error = str(e)
-    return RaceState(slug, name, directory, persons, scene_error, originals.is_yipai(directory),
+    return RaceState(slug, name, directory, persons, scene_error, originals.has_originals(directory),
                      originals.Job(fetcher))
 
 
@@ -515,7 +515,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
         out = {"race": {"slug": st.slug, "name": st.name}, "collection": st.dir.name, "photos": count,
                "persons": len(st.persons.ids), "taken_at": {"min": first, "max": last}, "photographers": photographers,
                "albums": albums, "groups": groups,
-               "scenes": st.scene_error is None, "originals": st.is_yipai, "warnings": [w for w in warnings if w]}
+               "scenes": st.scene_error is None, "originals": st.has_originals, "warnings": [w for w in warnings if w]}
         if profile_id is not None:
             out["labels"] = {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)}
         return out
@@ -942,13 +942,13 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             return bad("an originals download is already running", 409)
         return bad("a download is in progress; try again in a moment", 409)
 
-    def need_yipai(st: RaceState):
-        if not st.is_yipai:
-            raise bad("originals are only available for yipai360 collections (no manifest.sqlite)")
+    def need_originals(st: RaceState):
+        if not st.has_originals:
+            raise bad("originals are only available for yipai360 and photoplus collections (no matching manifest)")
 
     @app.post(RACE + "/originals")
     def start_originals(st: Race, body: ExportBody):
-        need_yipai(st)
+        need_originals(st)
         try:
             st.job.claim()
         except originals.Busy:
@@ -976,7 +976,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
 
     @app.get(RACE + "/originals/zip")
     def originals_zip(st: Race, profile_id: Id):
-        need_yipai(st)
+        need_originals(st)
         with connect(st) as conn:
             name = profile_name(conn, profile_id)
         folder = originals.profile_folder(st.dir, name)
@@ -988,7 +988,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
 
     @app.post(RACE + "/photos/{photo_id}/original")
     def photo_original(st: Race, photo_id: Id, body: ExportBody):
-        need_yipai(st)
+        need_originals(st)
         try:
             with st.job.claimed():
                 with connect(st) as conn:
@@ -1003,10 +1003,10 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             raise busy(st)
         except originals.Cancelled:
             raise bad("download was cancelled; try again", 409)
-        except Blocked as e:
-            raise bad(f"yipai360 API unavailable: {e}", 502)
+        except originals.Unavailable as e:
+            raise bad(str(e), 502)
         if result == originals.OPEN_ON_SITE:
-            raise bad(f"{result}: originals are downloaded only from yipai360; open this photo on "
+            raise bad(f"{result}: originals are downloaded only from yipai360 and photoplus; open this photo on "
                       f"{row['platform']} instead", 409)
         if result.startswith("buy on site"):
             raise bad(result, 402)
