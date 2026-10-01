@@ -103,6 +103,7 @@ main { overflow-y: auto; position: relative; }
 .bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4);
   background: rgba(17,18,20,.94); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); min-height: 60px; }
 .summary { min-width: 0; flex: 1; }
+.summary .back { display: block; max-width: 100%; margin-bottom: 2px; font-size: 12px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary .sub { color: var(--muted); font-size: 12px; }
 .bulk-wrap { text-align: right; }
@@ -339,7 +340,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   </aside>
   <main id="main">
     <div class="bar">
-      <div class="summary" id="summary"><div class="title">Find your photos</div><div class="sub">Pick a start point on the left.</div></div>
+      <div class="summary"><button class="btn link back" id="back" type="button" hidden></button><div id="summary"><div class="title">Find your photos</div><div class="sub">Pick a start point on the left.</div></div></div>
       <div class="busy-msg" id="busy" hidden><span class="spin"></span><span id="busy-text"></span><span class="model-load" id="busy-model" hidden></span></div>
       <div class="bulk-wrap" id="bulk-wrap" hidden>
         <button class="btn big" id="bulk" type="button" disabled>Not me: the other <span id="bulk-n">0</span><span id="bulk-sfx"></span></button>
@@ -410,10 +411,13 @@ const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
   profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0, races: [], loading: null, stale: null,
-  gen: 0, failed: false, got: 0, hiddenN: 0, bulk: null, bepoch: 0, lseq: 0, wantSync: false, syncing: false, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
+  gen: 0, failed: false, got: 0, hiddenN: 0, bulk: null, bepoch: 0, lseq: 0, wantSync: false, syncing: false, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0,
+  hist: newHist(), inputs: null, searchScroll: 0};
 const RACE_KEY = 'photofinder.race';
 const NEAR_KEY = 'photofinder.nearby';
 const STRIP_SPAN = 3;
+const HIST_MAX = 20;
+const TEXT_IDS = ['bib', 'q-text', 'q-scene', 'f-start', 'f-end', 'f-bib'];
 const $ = s => document.querySelector(s);
 
 function h(tag, props = {}, ...kids) {
@@ -688,6 +692,7 @@ async function switchProfile(id) {
   }
   ++S.seq;
   retireBulk();
+  clearHist();
   S.results = [];
   S.near = null;
   $('#grid').innerHTML = '';
@@ -789,16 +794,117 @@ function run(base) {
     banner('Enter a person description or scene, or pick a start point first.', 'warn');
     return;
   }
+  if (!S.hist.fresh) leavePage();
+  S.hist.fresh = true;
   if (isStart(base)) {
     S.start = base;
     if (!base.start_bib) $('#bib').value = '';
   }
+  S.inputs = readInputs();
   S.base = base;
   S.query = q;
   S.descIgnored = !!(q.start_bib && (describe().text || describe().scene));
   renderStart();
   showView('search');
+  renderBack();
   search(false);
+}
+
+function newHist() {
+  return {hid: Math.random().toString(36).slice(2), next: 0, pages: [], i: -1, fresh: false};
+}
+
+function clearHist() {
+  S.hist = newHist();
+  S.searchScroll = 0;
+  renderBack();
+}
+
+const readInputs = () => ({text: TEXT_IDS.map(id => $('#' + id).value),
+  checked: [...document.querySelectorAll('#filter-form input[type=checkbox]:checked')].map(c => `${c.name}\n${c.value}`)});
+
+function writeInputs(f) {
+  if (!f) return;
+  TEXT_IDS.forEach((id, k) => { $('#' + id).value = f.text[k]; });
+  document.querySelectorAll('#filter-form input[type=checkbox]').forEach(c => { c.checked = f.checked.includes(`${c.name}\n${c.value}`); });
+  countFilters();
+}
+
+const scrollNow = () => S.view === 'search' ? $('#main').scrollTop : S.searchScroll;
+
+function capture() {
+  return {base: S.base, query: S.query, start: S.start, inputs: S.inputs, descIgnored: S.descIgnored, results: S.results.slice(), total: S.total,
+    got: S.got, done: S.done, timing: S.timing, hiddenN: S.hiddenN, near: S.near && S.near.slice(), scroll: scrollNow()};
+}
+
+function leavePage() {
+  const hs = S.hist;
+  if (hs.i >= 0) Object.assign(hs.pages[hs.i], capture());
+}
+
+function commitPage() {
+  const hs = S.hist;
+  hs.fresh = false;
+  hs.pages.length = hs.i + 1;
+  const first = !hs.pages.length;
+  hs.pages.push({id: ++hs.next, ...capture()});
+  hs.i = hs.pages.length - 1;
+  while (hs.pages.length > HIST_MAX) { hs.pages.shift(); hs.i--; }
+  history[first ? 'replaceState' : 'pushState']({hid: hs.hid, pf: hs.pages[hs.i].id}, '');
+  renderBack();
+}
+
+function restorePage(p) {
+  ++S.seq;
+  ++S.nseq;
+  retireBulk();
+  closeModal();
+  Object.assign(S, {base: p.base, query: p.query, start: p.start, inputs: p.inputs, descIgnored: p.descIgnored, results: p.results.slice(), total: p.total,
+    got: p.got, done: p.done, timing: p.timing, hiddenN: p.hiddenN, near: p.near && p.near.slice()});
+  writeInputs(p.inputs);
+  renderStart();
+  showView('search');
+  renderResults(null);
+  $('#main').scrollTop = p.scroll;
+  renderBack();
+  syncControls();
+  if (nearApplies(S.base) && S.nearOn && !S.near) refreshNear();
+}
+
+function cancelFresh() {
+  const hs = S.hist;
+  if (!hs.fresh) return;
+  hs.fresh = false;
+  if (hs.i >= 0) restorePage(hs.pages[hs.i]);
+  else renderBack();
+}
+
+function renderBack() {
+  const hs = S.hist;
+  const to = hs.fresh ? hs.pages[hs.i] : hs.pages[hs.i - 1];
+  const btn = $('#back');
+  btn.hidden = !to || S.view !== 'search';
+  if (!to) return;
+  const title = pageTitle(to.base, to.query);
+  btn.textContent = `← ${title}`;
+  btn.title = `Back to ${title}`;
+  btn.setAttribute('aria-label', `Back to ${title}`);
+}
+
+function goBack() {
+  if (S.hist.fresh) cancelFresh();
+  else history.back();
+}
+
+function onPop(e) {
+  const hs = S.hist, st = e.state;
+  if (!st || st.hid !== hs.hid) return;
+  const j = hs.pages.findIndex(p => p.id === st.pf);
+  if (j < 0 || j === hs.i) return;
+  if (!hs.fresh) leavePage();
+  hs.fresh = false;
+  hs.i = j;
+  restorePage(hs.pages[j]);
 }
 
 function renderStart() {
@@ -808,8 +914,7 @@ function renderStart() {
   if (S.upload) renderUpload();
 }
 
-function summary() {
-  const b = S.base, q = S.query;
+function pageTitle(b, q) {
   let title;
   if (b.start_bib) title = `Bib ${b.start_bib}`;
   else if (b.mode === 'more') title = 'More like my marked photos';
@@ -821,6 +926,12 @@ function summary() {
     if (q.scene) parts.push(`scene “${q.scene}”`);
   }
   if (parts.length) title += (isStart(b) ? ' + ' : ': ') + parts.join(' + ');
+  return title;
+}
+
+function summary() {
+  const b = S.base, q = S.query;
+  const title = pageTitle(b, q);
   const sub = [`${fmt(S.results.length)}${S.total != null ? ' of ' + fmt(S.total) : ''} photos shown`];
   if (S.near && S.near.length && !$('#near').hidden) sub.push(`${fmt(S.near.length)} nearby shot${S.near.length === 1 ? '' : 's'} ${b.start_bib ? 'below' : 'above'}`);
   if (b.start_bib) sub.push('exact bib reads, in time order');
@@ -887,8 +998,13 @@ async function search(append) {
     S.timing = ms / 1000;
     S.done = S.total != null ? S.got >= S.total : r.results.length < q.top;
     renderResults(append ? got : null);
+    if (!append) {
+      if (S.view === 'search') $('#main').scrollTop = 0;
+      S.searchScroll = 0;
+      commitPage();
+    }
   } catch (e) {
-    if (seq === S.seq) fail(e);
+    if (seq === S.seq) { fail(e); if (!append) cancelFresh(); }
   } finally {
     setBusy(null);
     S.appending = false;
@@ -1121,7 +1237,9 @@ function cropThumb(src, box, w, hgt, W = 56, H = 96) {
 
 function showView(v) {
   if (v !== S.view) { $('#banners').innerHTML = ''; S.bulk = null; }
+  if (S.view === 'search' && v !== 'search') S.searchScroll = $('#main').scrollTop;
   S.view = v;
+  renderBack();
   $('#view-search').hidden = v !== 'search';
   $('#view-me').hidden = v !== 'me';
   $('#tab-search').setAttribute('aria-selected', String(v === 'search'));
@@ -1672,13 +1790,14 @@ function clearRace(slug) {
   ++S.seq;
   ++S.pseq;
   retireBulk();
+  clearHist();
   S.failed = false;
   clearTimeout(S.pollT);
   S.pollT = null;
   closeModal();
   Object.assign(S, {race: slug, facets: null, base: null, query: null, start: null, results: [], total: null, timing: null, done: true,
     labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), me: [], upload: null, details: new Map(), profile: null,
-    profiles: [], name: 'Me', job: null, highlight: null, descIgnored: false, near: null, hiddenN: 0, bulk: null});
+    profiles: [], name: 'Me', job: null, highlight: null, descIgnored: false, near: null, hiddenN: 0, bulk: null, inputs: null});
   for (const id of ['bib', 'q-text', 'q-scene', 'f-start', 'f-end', 'f-bib', 'file']) $('#' + id).value = '';
   $('#f-start').placeholder = $('#f-end').placeholder = 'YYYY-MM-DD HH:MM';
   $('#q-scene').placeholder = 'e.g. finish arch, 雪山';
@@ -1775,6 +1894,8 @@ function wire() {
   });
   ['f-start', 'f-end', 'f-bib'].forEach(id => $('#' + id).addEventListener('input', countFilters));
   $('#bulk').addEventListener('click', markOthers);
+  $('#back').addEventListener('click', goBack);
+  window.addEventListener('popstate', onPop);
   $('#more').addEventListener('click', () => run({mode: 'more', label: 'your marked photos (Find more)'}));
   $('#load-more').addEventListener('click', () => search(true));
   $('#near-on').addEventListener('change', e => { S.nearOn = e.target.checked; refreshNear(); });

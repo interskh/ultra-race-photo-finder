@@ -553,6 +553,25 @@ def test_page_has_the_bulk_not_me_button_with_undo_and_hides_only_in_find_more(t
     assert "S.profile !== profile || S.gen !== gen" in re.search(r"async function markOthers\(\) \{(.*?)\n\}", script, re.S).group(1)
 
 
+def test_page_keeps_a_history_of_results_pages_with_a_back_link_and_popstate(tmp_path):
+    c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
+    page = TestClient(web.create_app(c)).get("/").text
+    script = re.search(r"<script>(.*)</script>", page, re.S).group(1)
+    assert page.index('id="back"') < page.index('id="summary"')
+    assert "window.addEventListener('popstate', onPop)" in script and "history[first ? 'replaceState' : 'pushState']" in script
+    assert "const HIST_MAX = 20;" in script and "hs.pages.length > HIST_MAX" in script
+    restore = re.search(r"function restorePage\(p\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "++S.seq;" in restore and "++S.nseq;" in restore and "retireBulk();" in restore and "closeModal();" in restore
+    assert "search(" not in restore.replace("refreshNear", "")
+    run = re.search(r"function run\(base\) \{(.*?)\n\}", script, re.S).group(1)
+    assert run.index("leavePage()") < run.index("S.base = base") and run.index("S.inputs = readInputs()") < run.index("S.base = base")
+    assert "clearHist();" in re.search(r"async function switchProfile\(id\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "clearHist();" in re.search(r"function clearRace\(slug\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "commitPage();" in re.search(r"async function search\(append\) \{(.*?)\n\}", script, re.S).group(1)
+    on_key = re.search(r"function onKey\(e\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "back" not in on_key.lower()
+
+
 def test_page_sends_nearby_ids_to_search_and_steps_the_roll_with_comma_and_period(tmp_path):
     c, _, _ = make_index(tmp_path, [(1, (0, 0, 9, 9), A, X)])
     script = re.search(r"<script>(.*)</script>", TestClient(web.create_app(c)).get("/").text, re.S).group(1)
