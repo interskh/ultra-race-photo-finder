@@ -24,3 +24,21 @@ Goal: publish the repo as `ultra-race-photo-finder`: folder structure review, an
 ## Deferred
 - Optional cleanup of personal migration paths that new users never need: `race import`, `scripts/download_yipai.sh` and the legacy `data/yipai/` layout.
 - `pyproject` `requires-python >=3.13` plus macOS-only dependencies (ocrmac/pyobjc): Linux installs fail at `uv sync`. Documented as Mac-only.
+
+## Round 2 (2026-10-01): site keys out, everything pseudonymised
+- **Site keys**: the pailixiang web-client key and the photoplus signing salt are no longer in the source. `sources.common.site_key(name, length=None)` reads `PHOTOFINDER_<NAME>`, else the JSON file at `PHOTOFINDER_SITE_KEYS` (default `~/.config/photofinder/site-keys.json`). `MissingSiteKey` is a `Blocked`, so the existing handlers apply:
+  - Download originals marks only that platform `API unavailable`.
+  - The viewer download returns 502.
+  - `album add` asks for `--title`.
+  - `photofinder download` skips only that album and exits non-zero at the end.
+
+  Malformed values and an unreadable file get their own messages. Tests use fake keys. The signature test now checks the canonical string instead of a site vector. A live check (one title request per site) passed with the keys read from the file.
+- **History rewrite**: done with `git filter-repo` and a redaction module kept privately (not in the repo), applied to every blob and message:
+  - the literal list (names, the owner's photo file name, the album slug, keys);
+  - same-shape pseudonyms for every id, file name, account id and URL token found in any version of the test fixtures;
+  - in Markdown and commit messages, every 7+ digit run, except 8- and 14-digit dates;
+  - real race bib numbers mapped to 8xxx in docs, code examples and tests. Tests keep `2001`, because their substring tests depend on it and it no longer links to anything.
+
+  The photoplus sub-album ids stay, because the tests derive them arithmetically. Album titles, race names and shot times stay.
+- **Consequences**: all commit shas changed, and shas quoted in old handoffs no longer resolve. All-digit shas and some measured byte sizes in the docs are now pseudonyms. The pre-rewrite `.git` is backed up privately under `data/backups/`.
+- **Verification**: none of the replaced literals, fixture tokens, site keys or scratch paths remain anywhere in history. No real bib is left apart from the image size 1280 and the tests' generic 2001. privacy-scan reports only the author identity, which the owner kept. Full suite 660 passed, 1 skipped.
