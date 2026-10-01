@@ -57,3 +57,10 @@
 - The fresh retry after a cache-assisted NotFound has its own budget: worst case is 2x `MAX_PAGE_REQUESTS` (48) HTTP attempts per lookup.
 - Tests fail without each fix (4/4 reverts caught): attempt-counted budget, retry gap, own fresh budget, CSV collision.
 - Real-site E2E: live URLs end `:<bytes>.JPG` (uppercase); the declared-size match is now extension-agnostic/case-insensitive and fixtures use `.JPG`. Downloaded files equalled the declared sizes exactly (7220286, 4888854, 3864617 bytes); the mismatch test fails with the old lowercase-only regex.
+
+## E2E (real photoplus, 2026-10-01)
+- Setup: rehearsal root `data/rehearsal-pp-originals` (PHOTOFINDER_DATA_ROOT) with `.backup` copies of the 四姑娘山 index and both album manifests, photo dirs symlinked; one server (the user's stopped first and restored after); exports written only under the rehearsal root. Profile in the copy: 87 photos marked Me.
+- First run at 6645d35: every photo `failed: truncated JPEG` (trailing data after EOI) — fixed in the gate (see Gate fixes).
+- My photos → Download originals at 6381504: 87/87 downloaded, 0 failed, 34 min; 103 listing requests + 87 image requests, all 200. Files are camera size (4800×3200 sampled, 2–8 MB, 425 MB total) and equal the URL-declared sizes. Per photo ≈ 23 s: ≈ 10 s file transfer, the rest listing lookups (2.5 s gap) and the image delay; Me photos cluster in time, so most lookups hit the page cache (103 listings for 87 photos).
+- At 225e60e (server restarted on final HEAD): rerun from the UI → 87 skipped, 0 requests to photoplus. Deleted one original from the rehearsal folder, viewer → Download original: 10 listing requests + 1 image, ≈ 35 s, 200, 4800×3200 file saved and handed to the browser. My photos shows "✓ original" on every card, "87 originals downloaded", zip button visible (screenshot `data/exports/screens/pp-originals-myphotos-20261001.png`).
+- Not exercised on the real site: 403 relist (links stayed valid for the whole 34 min job), API down, cancel mid-lookup (cancel was used once at 6645d35 during the failing run and ended `cancelled`).
