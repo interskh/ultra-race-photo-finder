@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from photofinder import db, models, originals, races, search
+from photofinder import db, models, nearby, originals, races, search
 from photofinder.memory import watch_parent
 from photofinder.sources.yipai import CATALOG_SELECT, Blocked
 from photofinder.index.stages import ALBUMS, MANIFEST_NAME, now
@@ -62,6 +62,19 @@ class SearchQuery(BaseModel):
     top: int = 60
     offset: int = 0
     seen: list[Id] = []
+    exclude_photos: list[Id] = []
+
+
+class NearbyQuery(BaseModel):
+    profile_id: Id
+    span: int = Field(2, ge=1, le=nearby.SPAN_MAX)
+    anchors_bib: str | None = None
+    start: str | None = None
+    end: str | None = None
+    photographers: list[str] = []
+    albums: list[str] = []
+    groups: list[str] = []
+    bib: str | None = None
 
 
 class LabelBody(BaseModel):
@@ -103,7 +116,7 @@ def when(field: str, value: str | None, minute_end=False) -> str | None:
         raise bad(f"{field} {e}")
 
 
-def filters_of(q: SearchQuery) -> search.Filters:
+def filters_of(q: SearchQuery | NearbyQuery) -> search.Filters:
     return search.Filters(when("start", q.start), when("end", q.end, minute_end=True),
                           tuple(q.photographers), tuple(q.albums), (q.bib or "").strip() or None,
                           groups=tuple(q.groups))
@@ -178,6 +191,18 @@ def hydrate(conn, picked, offset, profile_id, via=None) -> list[dict]:
     return [{"rank": offset + i, "score": s, "person_id": p, "box": list(rows[p][1:]), **photos[rows[p][0]],
              "bibs": bibs.get(p, []), "label": labels.get(p), "matched_via": v}
             for i, ((p, s), v) in enumerate(zip(picked, via), 1)]
+
+
+def shot_cards(conn, shots, profile_id) -> list[dict]:
+    ids = [s["person_id"] for s in shots if s["person_id"] is not None]
+    boxes = {r[0]: list(r[1:]) for r in conn.execute(f"select id, x1, y1, x2, y2 from persons where id in ({marks(ids)})",
+                                                     ids)}
+    photos = photo_meta(conn, {s["photo_id"] for s in shots})
+    bibs, labels = bibs_of(conn, ids), labels_of(conn, ids, profile_id)
+    return [{"rank": None, "score": None, "person_id": s["person_id"], "box": boxes.get(s["person_id"]),
+             **photos[s["photo_id"]], "bibs": bibs.get(s["person_id"], []), "label": labels.get(s["person_id"]),
+             "matched_via": None, **{k: v for k, v in s.items() if k not in ("person_id", "photo_id", "taken_ts")}}
+            for s in shots]
 
 
 def detect_and_embed(img):
@@ -619,7 +644,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
         negatives = search.person_refs(persons, not_me_emb)["osnet"] if not_me_emb else None
         exclude = {photo for _, label, photo in labels if label == "me"} if q.mode == "more" else set()
         drop = not_me if q.mode == "more" else []
-        return refs, ref_ids, negatives, exclude | set(q.seen), drop, note
+        return refs, ref_ids, negatives, exclude | set(q.seen) | set(q.exclude_photos), drop, note
 
     def ranked(st: RaceState, q, filters, top, offset, refs, ref_ids, negatives, exclude, drop, note):
         persons = st.persons
@@ -716,6 +741,65 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             bibs, labels = bibs_of(conn, ids), labels_of(conn, ids, profile_id)
         return {**meta, **site_fields(originals.sites_of(st.dir, [meta])[0]), "persons": [{"person_id": r[0], "box": list(r[1:]), "bibs": bibs.get(r[0], []),
                                      "label": labels.get(r[0])} for r in rows]}
+
+    def photo_neighbors(st: RaceState, photo_id, profile_id, span, person_id):
+        persons = st.persons
+        with connect(st) as conn:
+            profile_name(conn, profile_id)
+            anchor = photo_meta(conn, [photo_id]).get(photo_id)
+            if anchor is None:
+                raise bad(f"photo {photo_id} not found", 404)
+            mine = dict(conn.execute("select p.id, l.label from persons p left join labels l on l.person_id = p.id "
+                                     "and l.profile_id = ? where p.photo_id = ?", (profile_id, photo_id)))
+            if person_id is not None:
+                if person_id not in mine:
+                    raise bad(f"person {person_id} is not in photo {photo_id}")
+                ref_ids = [person_id]
+                if not nearby.rows_of(persons, ref_ids):
+                    raise bad(f"person {person_id} is not an indexed person with embeddings")
+            else:
+                ref_ids = sorted(p for p, label in mine.items() if label == "me")
+            refs = nearby.rows_of(persons, ref_ids)
+            not_me = {p for p, label in conn.execute("select person_id, label from labels where profile_id = ?",
+                                                     (profile_id,)) if label == "not_me"}
+            rolls, reasons = nearby.rolls(conn, [photo_id], span)
+            shots = rolls.get(photo_id, [])
+            by_photo = nearby.rows_by_photo(persons, [p for p, *_ in shots])
+            found = []
+            for photo, offset, gap, _ in shots:
+                rows = [r for r in by_photo.get(photo, []) if int(persons.ids[r]) not in not_me]
+                pid, _, sim = nearby.best_match(persons, rows, refs) or (None, None, None)
+                found.append(nearby.shot(photo, offset, gap, person_id=pid, similarity=sim))
+            cards = shot_cards(conn, found, profile_id)
+        return {"anchor": anchor, "span": span, "reference": [int(persons.ids[r]) for r in refs],
+                "confirmed": any(mine.get(int(persons.ids[r])) == "me" for r in refs),
+                "neighbors": cards, "reason": reasons.get(photo_id)}
+
+    @app.get(RACE + "/photos/{photo_id}/neighbors")
+    async def neighbors(st: Race, photo_id: Id, profile_id: Id, span: int = Query(3, ge=1, le=nearby.SPAN_MAX),
+                        person_id: Id | None = None):
+        return await run_in_threadpool(photo_neighbors, st, photo_id, profile_id, span, person_id)
+
+    def nearby_shots(st: RaceState, q: NearbyQuery, filters):
+        bib = (q.anchors_bib or "").strip() or None
+        with connect(st) as conn:
+            profile_name(conn, q.profile_id)
+            warnings = [search.check_filters(conn, filters)]
+            if bib:
+                try:
+                    warnings.append(search.check_filters(conn, search.Filters(bib=bib)))
+                except search.MissingEmbeddings as e:
+                    warnings.append(str(e))
+            t0 = time.monotonic()
+            shots, notes = nearby.collect(conn, st.persons, q.profile_id, q.span, filters, bib)
+            timing = time.monotonic() - t0
+            results = shot_cards(conn, shots, q.profile_id)
+        return {"results": results, "count": len(results), "warnings": [w for w in warnings + notes if w],
+                "timing": round(timing, 4)}
+
+    @app.post(RACE + "/nearby")
+    async def nearby_photos(st: Race, q: NearbyQuery):
+        return await run_in_threadpool(nearby_shots, st, q, filters_of(q))
 
     def photo_path(st: RaceState, photo_id) -> Path:
         with connect(st) as conn:

@@ -5,13 +5,14 @@ from pathlib import Path
 import numpy as np
 from PIL import ImageOps
 
-from photofinder import models, search
+from photofinder import models, nearby, search
 
 CONFIGS = {"osnet": {"osnet": 1.0}, "siglip": {"siglip": 1.0}, "0.3:0.7": {"osnet": 0.3, "siglip": 0.7},
            "0.5:0.5": {"osnet": 0.5, "siglip": 0.5}, "0.7:0.3": {"osnet": 0.7, "siglip": 0.3}}
 KS = (10, 50)
 SHEET_TOP = 30
 MIN_PHOTOS = 2
+NEAR_SPANS = (1, 2, 3)
 
 
 @dataclass
@@ -33,6 +34,16 @@ class Row:
     refs: int
     xrefs: int
     photos: int
+
+
+@dataclass
+class NearRow:
+    span: int
+    precision: float
+    pairs: int
+    r50: float
+    near50: float
+    refs: int
 
 
 def configs(weights=search.WEIGHTS) -> dict:
@@ -104,6 +115,35 @@ def mean_over_bibs(per_bib: list[list[Row]]) -> list[Row]:
         means = (float(np.nanmean([getattr(r, a) for r in rows])) for a in ("r10", "r50", "x50", "s10", "s50"))
         out.append(Row(rows[0].config, *means, sum(r.refs for r in rows), sum(r.xrefs for r in rows),
                        sum(r.photos for r in rows)))
+    return out
+
+
+def nearby_bib(db: sqlite3.Connection, persons: search.Persons, truth: Truth, weights) -> list[NearRow]:
+    rolls, _ = nearby.rolls(db, list(truth.photos), max(NEAR_SPANS))
+    tops = {}
+    for ref, photo in truth.refs:
+        if set(truth.photos) - {photo}:
+            picked, _ = rank_photos(persons, ref, photo, weights)
+            tops[photo] = {int(persons.photo_ids[i]) for i in picked}
+    out = []
+    for span in NEAR_SPANS:
+        hits = [n in truth.photos for shots in rolls.values() for n, off, *_ in shots if abs(off) <= span]
+        found = []
+        for photo, top in tops.items():
+            gt = set(truth.photos) - {photo}
+            near = {n for n, off, *_ in rolls.get(photo, []) if abs(off) <= span}
+            found.append((len(top & gt) / len(gt), len((top | near) & gt) / len(gt)))
+        out.append(NearRow(span, _mean(hits), len(hits), _mean([f[0] for f in found]), _mean([f[1] for f in found]),
+                           len(found)))
+    return out
+
+
+def mean_near(per_bib: list[list[NearRow]]) -> list[NearRow]:
+    out = []
+    for rows in zip(*per_bib):
+        m = {a: float(np.nanmean([getattr(r, a) for r in rows])) for a in ("precision", "r50", "near50")}
+        out.append(NearRow(rows[0].span, m["precision"], sum(r.pairs for r in rows), m["r50"], m["near50"],
+                           sum(r.refs for r in rows)))
     return out
 
 
