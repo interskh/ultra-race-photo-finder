@@ -87,3 +87,13 @@
 
 **Touches**
 - `index.html` only (showView, syncCounts/pumpSync, setLabel, state `lseq/wantSync/syncing`). Harness `smoke_bulk.js`: 2 new scenarios, both fail on the round-1 page; mutants (no pending guard, epoch bump on view) caught.
+
+## Whole-run gate result (orchestrator)
+
+- Fresh reviewer: approve after rounds 1 and 2. Codex: NO-SHIP after round 2 with two open MAJOR UI races; the 2-round gate cap was reached, and the owner chose to merge with them as known issues (2026-10-01).
+- **Known issues (open):**
+  1. Undo clicked, then Search → My photos → Search before its response: the server deletes the batch rows, but `showView` cleared `S.bulk`, so the cards stay painted Not me and are not bulk candidates until the next search (counts resync correctly).
+  2. A second batch started while a stale-batch count sync is fetching `/profiles`: if the fetch already includes the new batch's commit, `lseq` still matches, the sync applies the new total and the batch response adds its delta again (Not me over-counted until the next sync/search). Batch requests lack the single-label pending guard.
+  - Both need a click inside one in-flight request (~50 ms locally); display-only, no data loss. Proposed fix: drop local deltas for batch/undo and always resync counts from `/profiles`; paint keyed on the epoch only, not `S.bulk` identity.
+- Full suite 586 passed, 1 skipped (06bd986).
+- Real-browser E2E (playwright, worktree server on `data/subsets/race925`, user's server stopped and restored; 0 console errors; screenshots `data/exports/screens/bulk-0{1..3}-*.png`): bib 8039 page button reads "Not me: the other 25 nearby" (bib hits never counted); 3 bib cards Me → Find more → 4 more bib-8039 cards Me → "Not me: the other 59" → 59 cards painted, Not me pill 59, banner with Undo; Undo → 0 painted, pill 0; batch again → Find more: 0 of the 59 dismissed photos back, summary "59 hidden (Not me: the other)"; a similar search (top 200) still returns 8 of them. All E2E labels removed afterwards (race925 labels 0 / 0). The race925 index now has the migrated `hidden` column.

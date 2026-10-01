@@ -43,4 +43,5 @@ Races and albums slices 1–7 are done on the branch (spec above). Operational: 
 - `pyobjc-framework-Vision` arrives transitively via ocrmac; declare it directly.
 - boxmot's OSNet download wrote `~/.cache/gdown/cookies.txt` once (weights themselves are on Ext1TB).
 - Label counts drift between two open browser tabs until reload.
+- Bulk Not me: two display-only races left open at merge (Undo across a Search ↔ My photos round-trip leaves cards painted Not me; a second batch during a count resync can over-count Not me) until the next search; fix = resync counts from `/profiles` instead of local deltas. Details: `docs/handoff/2026-10-01-bulk-not-me.md`.
 - Server startup transiently needs ~3× the float16 matrix (~2.7 GB at ~350k persons).
