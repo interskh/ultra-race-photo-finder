@@ -23,6 +23,27 @@ class AlreadyRunning(Exception):
     pass
 
 
+class NotFound(Exception):
+    pass
+
+
+class Paced:
+    def __init__(self, pause, clock, gap):
+        self.pause, self.clock, self.gap = pause, clock, gap
+        self.last = None
+
+    def call(self, fn):
+        if self.last is not None:
+            self.pause(self.last + self.gap - self.clock())
+        try:
+            return fn()
+        finally:
+            self.last = self.clock()
+
+    def retry_sleep(self, wait):
+        self.pause(max(wait, self.gap))
+
+
 def looks_like_jpeg(data: bytes) -> bool:
     return len(data) > 1024 and data[:2] == b"\xff\xd8" and b"\xff\xd9" in data[-64:]
 

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from photofinder.sources.base import CatalogRow
-from photofinder.sources.common import fetch_json
+from photofinder.sources.common import NotFound, Paced, fetch_json
 
 API = "https://int.xxpie.com"
 SITE = "https://www.xxpie.com"
@@ -19,6 +19,8 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
 }
 PAGE = 60
+LOOKUP_GAP = 2.5
+MAX_LOOKUP_PAGES = 5
 RECORD_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9_-]+")
 LOCAL = ZoneInfo("Asia/Shanghai")
@@ -55,24 +57,27 @@ def site_link(site_id: str, fname: str | None) -> dict:
 
 
 class Adapter:
-    def __init__(self, client: httpx.Client, site_id: str, *, tries=5, sleep=time.sleep):
+    def __init__(self, client: httpx.Client, site_id: str, *, tries=5, sleep=time.sleep, headers=None):
         self.client = client
+        self.headers = headers or {}
         self.album_id = site_id
         self.tries = tries
         self.sleep = sleep
         self.token = None
+        self.registrar = None
         self.total = None
         self.skipped = set()
 
     def register(self):
         self.token = fetch_json(self.client, "POST", f"{API}/api/sm/registerVisitorUser", check=registered,
                                 tries=self.tries, sleep=self.sleep,
-                                fresh=lambda: {"json": {"username": uuid.uuid4().hex, "platform": "H5"}})
+                                fresh=lambda: {"json": {"username": uuid.uuid4().hex, "platform": "H5"},
+                                       "headers": self.headers})
 
     def auth(self) -> dict:
         if self.token is None:
-            self.register()
-        return {"headers": {"x-access-token": self.token}}
+            (self.registrar or self.register)()
+        return {"headers": {**self.headers, "x-access-token": self.token}}
 
     def ok(self, body):
         if body.get("code") != 0:
@@ -108,3 +113,40 @@ class Adapter:
 
     def preview_url(self, row: CatalogRow) -> str:
         return row.url
+
+
+class Locator(Paced):
+    def __init__(self, client: httpx.Client, *, pause, clock=time.monotonic, tries=5, gap=LOOKUP_GAP):
+        super().__init__(pause, clock, gap)
+        self.client, self.tries = client, tries
+        self.adapters = {}
+
+    def locate(self, site_id: str, fname: str, source_id: str) -> str:
+        if site_id not in self.adapters:
+            self.adapters[site_id] = Adapter(self.client, site_id, tries=self.tries, sleep=self.retry_sleep,
+                                             headers=HEADERS)
+        a = self.adapters[site_id]
+        registered = 0
+
+        def renew():
+            nonlocal registered
+            if registered >= 2:
+                raise ValueError("xxpie keeps rejecting the visitor token")
+            registered += 1
+            if self.last is not None:
+                self.pause(self.last + self.gap - self.clock())
+            try:
+                a.register()
+            finally:
+                self.last = self.clock()
+            self.pause(self.gap)
+        a.registrar = renew
+        for n in range(1, MAX_LOOKUP_PAGES + 1):
+            photos = self.call(lambda: a.get("queryAlbumItemsPgByDefaultSort", {
+                "album_id": site_id, "page_no": n, "page_size": PAGE, "file_name": fname})).get("photos") or []
+            for p in photos:
+                if str(p.get("album_ossobject_id")) == source_id:
+                    return p.get("url_origin") or ""
+            if len(photos) < PAGE:
+                break
+        raise NotFound("not found in the xxpie album")

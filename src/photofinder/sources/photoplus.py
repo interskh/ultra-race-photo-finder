@@ -8,7 +8,7 @@ import time
 import httpx
 
 from photofinder.sources.base import CatalogRow
-from photofinder.sources.common import fetch_json
+from photofinder.sources.common import NotFound, fetch_json
 
 API = "https://live.photoplus.cn"
 HEADERS = {
@@ -129,10 +129,6 @@ class Adapter:
 
     def preview_url(self, row: CatalogRow) -> str:
         return row.url
-
-
-class NotFound(Exception):
-    pass
 
 
 class BudgetExceeded(NotFound):

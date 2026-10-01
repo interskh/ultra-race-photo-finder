@@ -944,7 +944,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
 
     def need_originals(st: RaceState):
         if not st.has_originals:
-            raise bad("originals are only available for yipai360 and photoplus collections (no matching manifest)")
+            raise bad("originals are only available for yipai360, photoplus, pailixiang and xxpie collections (no matching manifest)")
 
     @app.post(RACE + "/originals")
     def start_originals(st: Race, body: ExportBody):
@@ -1006,7 +1006,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
         except originals.Unavailable as e:
             raise bad(str(e), 502)
         if result == originals.OPEN_ON_SITE:
-            raise bad(f"{result}: originals are downloaded only from yipai360 and photoplus; open this photo on "
+            raise bad(f"{result}: originals cannot be downloaded for this photo; open it on "
                       f"{row['platform']} instead", 409)
         if result.startswith("buy on site"):
             raise bad(result, 402)

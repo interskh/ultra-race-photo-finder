@@ -240,8 +240,8 @@ def test_rerun_skips_valid_files_without_requests(tmp_path, monkeypatch):
     assert status["counts"]["skipped"] == 2 and (g.listings, g.fetched) == ([], [])
 
 
-def test_mixed_race_photoplus_downloads_pailixiang_stays_open_on_site_csv_zip_and_viewer(tmp_path, monkeypatch):
-    c, conn, t, g, api = setup(tmp_path, monkeypatch, [pos(2)], others=[("pailixiang-zz", "198", when(2))])
+def test_mixed_race_photoplus_downloads_unknown_platform_stays_open_on_site_csv_zip_and_viewer(tmp_path, monkeypatch):
+    c, conn, t, g, api = setup(tmp_path, monkeypatch, [pos(2)], others=[("elsewhere-zz", "198", when(2))])
     assert api.get("/api/facets").json()["originals"] is True
     status = run(api)
     assert status["counts"] == {"downloaded": 1, "skipped": 0, "buy_on_site": 0, "failed": 0, "open_on_site": 1}
@@ -258,15 +258,18 @@ def test_mixed_race_photoplus_downloads_pailixiang_stays_open_on_site_csv_zip_an
     res = api.post(f"/api/photos/{one}/original", json={"profile_id": ME})
     assert res.status_code == 200 and res.content == jpeg(198) and res.headers["content-type"] == "image/jpeg"
     res = api.post(f"/api/photos/{other}/original", json={"profile_id": ME})
-    assert res.status_code == 409 and "yipai360 and photoplus" in res.json()["detail"]
+    assert res.status_code == 409 and "cannot be downloaded" in res.json()["detail"]
 
 
 def test_downloadable_and_file_names_per_platform():
-    assert [originals.downloadable({"platform": p}) for p in (None, "yipai", "photoplus", "pailixiang", "xxpie")] == \
-        [True, True, True, False, False]
+    assert [originals.downloadable({"platform": p}) for p in (None, "yipai", "photoplus", "pailixiang", "xxpie",
+                                                              "elsewhere")] == [True] * 5 + [False]
     meta = {"taken_at": "2026-09-25 08:00:00", "photographer": "cam", "source_photo_id": "101"}
     assert originals.file_name(meta) == originals.file_name(meta, "yipai") == "20260925-080000_cam_101.jpg"
     assert originals.file_name(meta, "photoplus") == "20260925-080000_cam_photoplus-101.jpg"
+    assert originals.file_name(meta, "pailixiang") == "20260925-080000_cam_pailixiang-101.jpg"
+    assert originals.file_name(meta, "xxpie") == "20260925-080000_cam_xxpie-101.jpg"
+    assert originals.file_name(meta, "elsewhere") == "20260925-080000_cam_101.jpg"
 
 
 def locator_for(entries, gap=photoplus.PAGE_GAP, **kw):

@@ -161,10 +161,16 @@ def test_rows_of_reads_order_and_fname_from_each_album_manifest(tmp_path):
     }
 
 
-def test_has_originals_for_race_needs_a_yipai_or_photoplus_album(tmp_path):
+def test_has_originals_for_race_needs_an_album_of_a_downloadable_platform(tmp_path):
     r = tmp_path / "race"
-    (r / "albums" / "xxpie-abc").mkdir(parents=True)
-    (r / "albums" / "xxpie-abc" / "manifest.sqlite").write_bytes(b"")
+    (r / "albums" / "elsewhere-abc").mkdir(parents=True)
+    (r / "albums" / "elsewhere-abc" / "manifest.sqlite").write_bytes(b"")
+    assert not originals.has_originals(r)
+    for platform in ("pailixiang", "xxpie"):
+        (r / "albums" / f"{platform}-abc").mkdir(parents=True)
+        (r / "albums" / f"{platform}-abc" / "manifest.sqlite").write_bytes(b"")
+        assert originals.has_originals(r)
+        (r / "albums" / f"{platform}-abc" / "manifest.sqlite").unlink()
     assert not originals.has_originals(r)
     yipai_album(r / "albums" / "yipai-1001", [], [], [])
     assert originals.has_originals(r)

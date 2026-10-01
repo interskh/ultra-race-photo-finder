@@ -81,7 +81,8 @@ def test_legacy_single_album_uses_the_manifest_order_id_and_plain_folders_have_n
     assert detail(RaceClient(web.create_app(plain)), photo) == (None, None, None)
 
 
-def test_mixed_race_originals_download_yipai_and_mark_others_open_on_site(tmp_path):
+def test_mixed_race_originals_download_yipai_and_mark_others_open_on_site(tmp_path, monkeypatch):
+    monkeypatch.setattr(originals, "ORIGINAL_PLATFORMS", ("yipai", "photoplus"))
     r, conn, p = indexed_race()
     t = FakeTime()
     g = Gallery(t, order="1001")
@@ -115,7 +116,8 @@ def test_mixed_race_originals_download_yipai_and_mark_others_open_on_site(tmp_pa
     assert len(g.lookups) == 1 and len(g.fetched) == 1
 
 
-def test_non_yipai_photo_never_takes_a_colliding_yipai_original(tmp_path):
+def test_non_yipai_photo_never_takes_a_colliding_yipai_original(tmp_path, monkeypatch):
+    monkeypatch.setattr(originals, "ORIGINAL_PLATFORMS", ("yipai", "photoplus"))
     r, conn, p = indexed_race()
     t = FakeTime()
     g = Gallery(t, order="1001")
@@ -143,7 +145,7 @@ def test_old_status_belongs_to_the_row_with_the_same_id_and_file_name(tmp_path):
     base = {"photographer": None, "taken_at": None, "album": None, "group": None, "preview": "p", "file": "f.jpg"}
     rows = [{**base, "photo_id": 1, "source_photo_id": "101", "fname": "IMG_101.JPG", "platform": "yipai",
              "site": None},
-            {**base, "photo_id": 2, "source_photo_id": "101", "fname": "P1.JPG", "platform": "xxpie",
+            {**base, "photo_id": 2, "source_photo_id": "101", "fname": "P1.JPG", "platform": "elsewhere",
              "site": None},
             {**base, "photo_id": 3, "source_photo_id": "102", "fname": None, "platform": "yipai", "site": None}]
     folder = tmp_path / "out"
@@ -156,13 +158,14 @@ def test_old_status_belongs_to_the_row_with_the_same_id_and_file_name(tmp_path):
 def test_yipai_status_survives_a_later_non_yipai_row_with_the_same_id_and_file_name(tmp_path):
     base = {"photographer": None, "taken_at": None, "album": None, "group": None, "preview": "p", "file": "f.jpg",
             "source_photo_id": "101", "fname": "IMG_101.JPG", "site": None}
-    rows = [{**base, "photo_id": 1, "platform": "yipai"}, {**base, "photo_id": 2, "platform": "xxpie"}]
+    rows = [{**base, "photo_id": 1, "platform": "yipai"}, {**base, "photo_id": 2, "platform": "elsewhere"}]
     folder = tmp_path / "out"
     originals.write_csv(folder, rows, {1: "failed: HTTP 503"})
     assert originals.statuses(folder, rows) == {1: "failed: HTTP 503", 2: "open on site"}
 
 
-def test_open_on_site_status_ignores_stale_csv_and_files(tmp_path):
+def test_open_on_site_status_ignores_stale_csv_and_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(originals, "ORIGINAL_PLATFORMS", ("yipai", "photoplus"))
     r, conn, p = indexed_race()
     rows = originals.rows_of(r, list(web.photo_meta(conn, [p["albums/xxpie-abc/photos/late.jpg"]]).values()))
     folder = tmp_path / "out"

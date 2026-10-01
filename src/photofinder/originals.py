@@ -18,7 +18,8 @@ import httpx
 
 from photofinder import config, races, sources
 from photofinder.index.stages import ALBUMS, MANIFEST_NAME
-from photofinder.sources import photoplus, yipai
+from photofinder.sources import pailixiang, photoplus, xxpie, yipai
+from photofinder.sources.common import NotFound
 
 LOOKUP_GAP = 6.0
 RATE_LIMIT_WAITS = (60, 120, 240)
@@ -31,8 +32,10 @@ DOWNLOADED = "downloaded"
 COLUMNS = ["source_photo_id", "original_file_name", "photographer", "taken_at", "album", "group", "preview_path",
            "original_path", "status", "site_url"]
 OPEN_ON_SITE = "open on site"
-ORIGINAL_PLATFORMS = ("yipai", "photoplus")
-PLATFORM_NAMES = {"yipai": "yipai360", "photoplus": "photoplus"}
+ORIGINAL_PLATFORMS = ("yipai", "photoplus", "pailixiang", "xxpie")
+PREFIXED = ("photoplus", "pailixiang", "xxpie")
+DECLARED = ("photoplus", "xxpie")
+PLATFORM_NAMES = {"yipai": "yipai360", "photoplus": "photoplus", "pailixiang": "pailixiang", "xxpie": "xxpie"}
 COUNTS = ("downloaded", "skipped", "buy_on_site", "failed", "open_on_site")
 CSV_LOCK = threading.Lock()
 
@@ -60,7 +63,9 @@ class Forbidden(BuyOnSite):
 
 
 class Unavailable(Exception):
-    pass
+    def __init__(self, message: str, platform: str | None = None):
+        super().__init__(message)
+        self.platform = platform
 
 
 def safe_name(name: str | None, fallback="profile") -> str:
@@ -135,7 +140,7 @@ def file_name(meta: dict, platform: str | None = None) -> str:
     t = meta["taken_at"]
     stamp = t.replace("-", "").replace(":", "").replace(" ", "-") if t else "undated"
     sid = safe_name(meta['source_photo_id'], 'none')
-    return f"{stamp}_{safe_name(meta['photographer'], 'unknown')}_{'photoplus-' if platform == 'photoplus' else ''}{sid}.jpg"
+    return f"{stamp}_{safe_name(meta['photographer'], 'unknown')}_{platform + '-' if platform in PREFIXED else ''}{sid}.jpg"
 
 
 def yipai_id(meta: dict) -> int | None:
@@ -152,16 +157,20 @@ def downloadable(row: dict) -> bool:
     return row["platform"] in (None, *ORIGINAL_PLATFORMS)
 
 
-def photoplus_complete(data: bytes, url: str = "") -> bool:
+def declared_complete(data: bytes, url: str = "") -> bool:
     declared = re.search(r":(\d+)\.[A-Za-z]+$", urlsplit(url).path)
     return len(data) > 1024 and data[:2] == b"\xff\xd8" and (not declared or len(data) == int(declared[1]))
+
+
+def sized_complete(size: int | None):
+    return lambda data, url: yipai.looks_like_jpeg(data) and (size is None or len(data) == size)
 
 
 def valid(path: Path, platform: str | None = None) -> bool:
     if not path.is_file():
         return False
     data = path.read_bytes()
-    return photoplus_complete(data) if platform == "photoplus" else yipai.looks_like_jpeg(data)
+    return declared_complete(data) if platform in DECLARED else yipai.looks_like_jpeg(data)
 
 
 def read_csv(folder: Path) -> dict:
@@ -229,6 +238,8 @@ class Fetcher:
         self.tries = tries
         self.last_lookup = None
         self.locator = photoplus.Locator(self.client, pause=self.pause, clock=clock, tries=tries)
+        self.plx_locator = pailixiang.Locator(self.client, pause=self.pause, clock=clock, tries=tries)
+        self.xxpie_locator = xxpie.Locator(self.client, pause=self.pause, clock=clock, tries=tries)
         self.note = lambda message: None
 
     def pause(self, seconds: float):
@@ -301,20 +312,33 @@ class Fetcher:
                 self.pause(wait)
         raise Failed(error)
 
-    def photoplus_original(self, row: dict) -> bytes:
+    def locate(self, row: dict) -> tuple[str, int | None]:
+        platform, site_id, sid = row["platform"], row["site_id"], row["source_photo_id"]
+        if platform == "photoplus":
+            return self.locator.locate(site_id, row["shot_at"], sid), None
+        if platform == "pailixiang":
+            return self.plx_locator.locate(site_id, row["fname"], sid)
+        return self.xxpie_locator.locate(site_id, row["fname"], sid), None
+
+    def listed_original(self, row: dict) -> bytes:
+        platform = row["platform"]
+        headers = {"photoplus": photoplus.HEADERS, "pailixiang": pailixiang.IMAGE_HEADERS,
+                   "xxpie": xxpie.HEADERS}[platform]
         for relisted in (False, True):
             try:
-                url = self.locator.locate(row["site_id"], row["shot_at"], row["source_photo_id"])
-            except photoplus.NotFound as e:
+                url, size = self.locate(row)
+            except NotFound as e:
                 raise Failed(str(e))
             if not url:
                 raise BuyOnSite("no original URL")
             try:
-                return self.download([url], photoplus.HEADERS, photoplus_complete, "truncated download")
+                return self.download([url], headers, sized_complete(size) if platform == "pailixiang" else
+                                     declared_complete, "truncated download")
             except Forbidden:
                 if relisted:
-                    raise Failed("photoplus refused the download link again after relisting (HTTP 403)")
-                self.locator.forget(row["site_id"], row["source_photo_id"])
+                    raise Failed(f"{platform} refused the download link again after relisting (HTTP 403)")
+                if platform == "photoplus":
+                    self.locator.forget(row["site_id"], row["source_photo_id"])
 
     def yipai_original(self, row: dict) -> bytes:
         return self.fetch(self.lookup(row["order_id"], row["fname"], yipai_id(row)))
@@ -323,13 +347,14 @@ class Fetcher:
         if not downloadable(row):
             return OPEN_ON_SITE
         dest.unlink(missing_ok=True)
-        photoplus_row = row["platform"] == "photoplus"
-        if row["platform"] is None or (row["site"] is None if photoplus_row else not row["fname"]):
+        listed = row["platform"] in PREFIXED
+        if row["platform"] is None or (listed and row["site"] is None) or (
+                row["platform"] != "photoplus" and not row["fname"]):
             return "failed: not in the gallery manifest"
         try:
-            data = self.photoplus_original(row) if photoplus_row else self.yipai_original(row)
+            data = self.listed_original(row) if listed else self.yipai_original(row)
         except yipai.Blocked as e:
-            raise Unavailable(f"{PLATFORM_NAMES[row['platform']]} API unavailable: {e}") from e
+            raise Unavailable(f"{PLATFORM_NAMES[row['platform']]} API unavailable: {e}", row["platform"]) from e
         except BuyOnSite as e:
             return f"buy on site: {e}"
         except Failed as e:
@@ -383,8 +408,21 @@ class Job:
             if self.state["state"] == "running":
                 self.fetcher.stop.set()
 
+    def attempt(self, row: dict, dest: Path, rest: list[dict], down: dict) -> str:
+        platform = row["platform"]
+        if platform in down:
+            return f"failed: {down[platform]}"
+        try:
+            return self.fetcher.original(row, dest)
+        except Unavailable as e:
+            down[platform] = str(e)
+            if all(r["platform"] in down for r in rest):
+                raise
+            return f"failed: {e}"
+
     def run(self, folder: Path, rows: list[dict]):
         state, error = "done", None
+        down = {}
         try:
             for i, row in enumerate(rows):
                 self.fetcher.pause(0)
@@ -393,7 +431,7 @@ class Job:
                 if downloadable(row) and valid(dest, row['platform']):
                     key, result = "skipped", DOWNLOADED
                 else:
-                    result = self.fetcher.original(row, dest)
+                    result = self.attempt(row, dest, rows[i + 1:], down)
                     key = "downloaded" if result == DOWNLOADED else result.split(":")[0].replace(" ", "_")
                     write_csv(folder, rows, {row["photo_id"]: result})
                 with self.lock:
@@ -403,11 +441,17 @@ class Job:
                         self.state["errors"].append(f"{row['source_photo_id']} {row['fname']}: {result}")
         except Cancelled:
             state = "cancelled"
-        except Unavailable as e:
-            state, error = "error", str(e)
+        except Unavailable:
+            state, error = "error", "; ".join(down.values())
+            if len(down) > 1:
+                write_csv(folder, rows, {r["photo_id"]: f"failed: {down[r['platform']]}"
+                                         for r in rows[i:] if r["platform"] in down})
         except Exception as e:
             log.exception("originals job failed")
             state, error = "error", f"{type(e).__name__}: {e}"
+        else:
+            if down:
+                state, error = "error", "; ".join(down.values())
         finally:
             try:
                 write_csv(folder, rows)

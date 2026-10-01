@@ -6,7 +6,7 @@ import time
 import httpx
 
 from photofinder.sources.base import CatalogRow
-from photofinder.sources.common import fetch_json
+from photofinder.sources.common import NotFound, Paced, fetch_json
 
 API = "https://mapi.pailixiang.com/plx"
 SITE = "https://live.pailixiang.com"
@@ -17,6 +17,9 @@ HEADERS = {
     "Content-Type": "application/json;charset=UTF-8",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
 }
+IMAGE_HEADERS = {k: v for k, v in HEADERS.items() if k != "Content-Type"}
+LOOKUP_GAP = 2.5
+MAX_LOOKUP_PAGES = 5
 COMMON = {"tt": "", "ct": 0, "cv": "169", "lang": "cn", "pid": "albumview"}
 PAGE = 80
 SHOT_TIME = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
@@ -55,8 +58,9 @@ def site_link(site_id: str, fname: str | None) -> dict:
 
 
 class Adapter:
-    def __init__(self, client: httpx.Client, site_id: str, *, tries=5, sleep=time.sleep):
+    def __init__(self, client: httpx.Client, site_id: str, *, tries=5, sleep=time.sleep, headers=None):
         self.client = client
+        self.headers = headers or {}
         self.code = site_id.removeprefix("a")
         self.tries = tries
         self.sleep = sleep
@@ -67,7 +71,7 @@ class Adapter:
 
     def post(self, action: str, body: dict) -> dict:
         return fetch_json(self.client, "POST", f"{API}/WapAbm/{action}", check=ok, tries=self.tries,
-                          sleep=self.sleep, fresh=lambda: {"json": {**body, **COMMON, "ak": ak()}})
+                          sleep=self.sleep, fresh=lambda: {"json": {**body, **COMMON, "ak": ak()}, "headers": self.headers})
 
     def meta(self) -> dict:
         entity = self.post("AlbumGetView", {"ID": self.code, "AccessType": "1", "ClientType": 0})["Data"]["Entity"]
@@ -77,12 +81,15 @@ class Adapter:
     def meta_items(self) -> dict:
         return {"album_id": self.album_id}
 
-    def list_page(self, cursor):
-        start = cursor or 1
-        body = self.post("AlbumSearchPhoto", {
+    def search(self, start: int, **extra) -> dict:
+        return self.post("AlbumSearchPhoto", {
             "AlbumID": self.album_id, "GroupID": "", "SearchType": 0, "IsPayDownload": False, "PhotoSortType": 1,
             "IsNw": False, "IsEmbed": False, "StartIndex": start, "SearchCount": PAGE, "SortType": 1,
-            "OptTime": self.opt_time or ""})
+            "OptTime": self.opt_time or "", **extra})
+
+    def list_page(self, cursor):
+        start = cursor or 1
+        body = self.search(start)
         if self.opt_time is None:
             self.opt_time = body.get("OptTime") or ""
         data = body.get("Data") or []
@@ -102,3 +109,29 @@ class Adapter:
 
     def preview_url(self, row: CatalogRow) -> str:
         return row.url
+
+
+class Locator(Paced):
+    def __init__(self, client: httpx.Client, *, pause, clock=time.monotonic, tries=5, gap=LOOKUP_GAP):
+        super().__init__(pause, clock, gap)
+        self.client, self.tries = client, tries
+        self.adapters = {}
+
+    def adapter(self, site_id: str) -> Adapter:
+        if site_id not in self.adapters:
+            a = Adapter(self.client, site_id, tries=self.tries, sleep=self.retry_sleep, headers=HEADERS)
+            self.call(a.meta)
+            self.adapters[site_id] = a
+        return self.adapters[site_id]
+
+    def locate(self, site_id: str, fname: str, source_id: str) -> tuple[str, int | None]:
+        a = self.adapter(site_id)
+        for n in range(MAX_LOOKUP_PAGES):
+            data = self.call(lambda: a.search(1 + n * PAGE, SearchText=fname)).get("Data") or []
+            for p in data:
+                if str(p.get("ID")) == source_id:
+                    size = p.get("FileSize1")
+                    return p.get("DownloadImageUrl") or "", size if type(size) is int else None
+            if len(data) < PAGE:
+                break
+        raise NotFound("not found in the pailixiang album")
