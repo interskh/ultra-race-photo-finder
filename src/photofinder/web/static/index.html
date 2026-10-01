@@ -410,7 +410,7 @@ const TOP = 60;
 const S = {facets: null, base: null, query: null, results: [], done: true, timing: null, total: null, seq: 0, busy: 0,
   labels: {}, pending: new Set(), mePhotos: 0, mine: new Map(), start: null, upload: null, me: [], modal: null, details: new Map(), view: 'search', profile: null,
   profiles: [], name: 'Me', job: null, race: null, pollT: null, highlight: null, pseq: 0, races: [], loading: null, stale: null,
-  gen: 0, failed: false, got: 0, hiddenN: 0, bulk: null, bepoch: 0, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
+  gen: 0, failed: false, got: 0, hiddenN: 0, bulk: null, bepoch: 0, lseq: 0, wantSync: false, syncing: false, near: null, nseq: 0, nearOn: true, nearSpan: 2, strip: null, sseq: 0};
 const RACE_KEY = 'photofinder.race';
 const NEAR_KEY = 'photofinder.nearby';
 const STRIP_SPAN = 3;
@@ -589,12 +589,25 @@ function bulkBanner(msg, undo) {
   return b;
 }
 
-async function syncCounts() {
-  const profile = S.profile, gen = S.gen;
+function syncCounts() {
+  S.wantSync = true;
+  pumpSync();
+}
+
+async function pumpSync() {
+  if (S.syncing || S.pending.size || !S.wantSync) return;
+  S.wantSync = false;
+  S.syncing = true;
+  const profile = S.profile, gen = S.gen, lseq = S.lseq;
   try {
     const p = (await api(`/api/r/${S.race}/profiles`)).profiles.find(x => x.id === profile);
-    if (p && S.profile === profile && S.gen === gen && S.facets) { S.facets.labels = {me: p.me, not_me: p.not_me}; renderCounts(); }
-  } catch (e) { }
+    if (S.profile !== profile || S.gen !== gen) return;
+    if (S.pending.size || S.lseq !== lseq) S.wantSync = true;
+    else if (p && S.facets) { S.facets.labels = {me: p.me, not_me: p.not_me}; renderCounts(); }
+  } catch (e) { } finally {
+    S.syncing = false;
+    pumpSync();
+  }
 }
 
 async function markOthers() {
@@ -608,6 +621,7 @@ async function markOthers() {
     if (S.profile !== profile || S.gen !== gen) return;
     if (S.bepoch !== epoch) { syncCounts(); return; }
     for (const pid of r.changed) if ((S.labels[pid] ?? null) === null && !S.pending.has(pid)) { S.labels[pid] = 'not_me'; paint(pid); }
+    ++S.lseq;
     if (S.facets) S.facets.labels.not_me += r.changed.length;
     renderCounts();
     const skipped = r.skipped.length ? ` (${r.skipped.length} left as they were)` : '';
@@ -625,6 +639,7 @@ async function undoBulk() {
     if (S.profile !== bulk.profile || S.gen !== bulk.gen) return;
     if (S.bulk !== bulk || bulk.epoch !== S.bepoch) { syncCounts(); return; }
     for (const pid of r.removed) if (S.labels[pid] === 'not_me' && !S.pending.has(pid)) { delete S.labels[pid]; paint(pid); }
+    ++S.lseq;
     if (S.facets) S.facets.labels.not_me -= r.removed.length;
     renderCounts();
     bulk.el.remove();
@@ -983,6 +998,7 @@ async function setLabel(pid, want, photoId) {
   const pending = S.pending;
   if (pending.has(pid)) return;
   pending.add(pid);
+  ++S.lseq;
   const prev = S.labels[pid] ?? null;
   const profile = S.profile, gen = S.gen;
   try {
@@ -1000,7 +1016,7 @@ async function setLabel(pid, want, photoId) {
     S.mePhotos = S.mine.size;
     renderCounts();
     modalLabelled(photoId, r.label);
-  } catch (e) { fail(e); } finally { pending.delete(pid); renderBulk(); }
+  } catch (e) { fail(e); } finally { pending.delete(pid); renderBulk(); pumpSync(); }
 }
 
 function broken(e) {
@@ -1104,7 +1120,7 @@ function cropThumb(src, box, w, hgt, W = 56, H = 96) {
 }
 
 function showView(v) {
-  if (v !== S.view) { $('#banners').innerHTML = ''; retireBulk(); }
+  if (v !== S.view) { $('#banners').innerHTML = ''; S.bulk = null; }
   S.view = v;
   $('#view-search').hidden = v !== 'search';
   $('#view-me').hidden = v !== 'me';

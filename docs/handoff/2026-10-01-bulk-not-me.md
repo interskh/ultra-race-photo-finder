@@ -75,3 +75,15 @@
 
 **Touches**
 - `web/app.py` (UndoBody, batch stamp, undo filter), `index.html`, `tests/test_bulk_not_me.py` (19; two-batch regression, token required), `tests/test_web.py`, README. API: undo body gains required `batch`; batch response gains `batch`.
+
+## Gate fixes (round 2)
+
+**Decisions**
+- View change (Search <-> My photos) no longer retires the batch or bumps `S.bepoch`: the search cards are the same cards on return, so a response that lands meanwhile still paints them. `showView` still wipes the banners (existing behaviour), so the Undo button is gone after a round trip; the paint and counts are kept. Epoch bumps only on new batch, search(false), profile switch, race switch.
+- Count sync is serialised with single-label requests: `syncCounts()` sets `wantSync`; `pumpSync()` fetches `/profiles` only when no label request is pending, and discards the result and retries if one started during the fetch (`S.lseq` bumps on every single-label send and on every batch/undo delta). `setLabel`'s finally pumps. Chosen over "skip delta if a sync finished after send": the sync's read can precede the label's commit, so skipping can lose the delta; waiting for quiet always converges to the server.
+
+**Rejected**
+- Keeping Undo across view round trips: banners are cleared per view by existing design; not worth a second mechanism.
+
+**Touches**
+- `index.html` only (showView, syncCounts/pumpSync, setLabel, state `lseq/wantSync/syncing`). Harness `smoke_bulk.js`: 2 new scenarios, both fail on the round-1 page; mutants (no pending guard, epoch bump on view) caught.
