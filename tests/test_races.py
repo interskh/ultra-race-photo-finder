@@ -114,6 +114,13 @@ def test_add_album_duplicate_key_names_owning_race(data_root):
     assert [len(r.albums) for r in races.load().races] == [1, 0]
 
 
+def test_add_album_title_is_one_line(data_root):
+    races.add_race("2026-x", "X")
+    races.add_album("2026-x", "https://live.photoplus.cn/live/39352660", title="Trail Run\n Finish  Line \n")
+    races.add_album("2026-x", "https://live.photoplus.cn/live/39352661", title=" \n ")
+    assert [a.title for a in races.race("2026-x").albums] == ["Trail Run Finish Line", None]
+
+
 def test_add_album_to_unknown_race(data_root):
     with pytest.raises(races.RaceError, match="no race 'nope'"):
         races.add_album("nope", "https://live.photoplus.cn/live/39352660")

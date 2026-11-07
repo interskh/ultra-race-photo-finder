@@ -130,6 +130,7 @@ def parse_url(url: str) -> tuple[str, str]:
 def check_album(reg: Registry, slug: str, url: str, title: str | None = None) -> Album:
     platform, site_id = parse_url(url)
     reg.require(slug)
+    title = " ".join((title or "").split()) or None
     album = Album(f"{platform}-{site_id}", platform, site_id, url.strip(), title)
     if owner := reg.owner(album.key):
         raise RaceError(f"album {album.key} already belongs to race {owner.slug}")
