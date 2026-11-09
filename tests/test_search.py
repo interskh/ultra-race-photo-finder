@@ -25,6 +25,7 @@ def make_index(tmp_path, persons, photos=3, embed=True):
         if embed:
             conn.execute("insert into emb_person_osnet values (?,?)", (pid, to_blob(osnet)))
             conn.execute("insert into emb_person_siglip values (?,?)", (pid, to_blob(siglip)))
+    conn.execute("update photos set detected_at = '2026-09-28 00:00:00'")
     conn.commit()
     return c, conn, ids
 

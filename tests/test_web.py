@@ -851,7 +851,7 @@ def test_facets_hide_batches_indexed_after_the_race_was_loaded_and_warn(tmp_path
     c, _ = stamped_index(tmp_path)
     api = client(c)
     before = api.get("/api/facets").json()
-    assert not any("indexed after" in w for w in before["warnings"])
+    assert not any("searchable" in w for w in before["warnings"])
     conn = db.connect(c)
     for i in range(1200):
         conn.execute("insert into photos(relpath, status, scanned_at) values (?, 'ok', '2026-11-02 09:00:00')",
@@ -860,5 +860,50 @@ def test_facets_hide_batches_indexed_after_the_race_was_loaded_and_warn(tmp_path
     conn.commit()
     after = api.get("/api/facets").json()
     assert after["added"] == before["added"]
-    assert [w for w in after["warnings"] if "indexed after" in w] == [
-        "1,200 photos were indexed after this race was loaded; restart photofinder serve to search them"]
+    assert [w for w in after["warnings"] if "searchable" in w] == [
+        "1,200 photos aren't searchable yet; restart photofinder serve after photofinder index finishes"]
+
+
+def test_unembedded_photos_at_load_are_cut_off_from_added_and_warned(tmp_path):
+    c, _ = stamped_index(tmp_path)
+    conn = db.connect(c)
+    conn.execute("update photos set scanned_at = '2026-11-02 09:00:00', detected_at = null where relpath = '4.jpg'")
+    for i in range(2):
+        conn.execute("insert into photos(relpath, status, scanned_at, detected_at) "
+                     "values (?, 'ok', '2026-11-02 09:00:01', '2026-09-28 00:00:00')", (f"nop{i}.jpg",))
+    p = conn.execute("insert into persons(photo_id, x1, y1, x2, y2, conf) "
+                     "select id, 0, 0, 5, 5, 0.9 from photos where relpath = 'nop1.jpg'").lastrowid
+    conn.execute("insert into emb_person_osnet values (?, ?)", (p, b"\0" * 8))
+    conn.commit()
+    f = client(c).get("/api/facets").json()
+    assert f["added"] == [{"start": "2026-11-01 14:00:00", "end": "2026-11-01 14:00:00", "photos": 1},
+                          {"start": "2026-11-01 10:00:00", "end": "2026-11-01 10:00:05", "photos": 2}]
+    assert [w for w in f["warnings"] if "searchable" in w] == [
+        "3 photos aren't searchable yet; restart photofinder serve after photofinder index finishes"]
+
+
+def test_fully_embedded_photos_without_people_do_not_warn(tmp_path):
+    c, _ = stamped_index(tmp_path)
+    conn = db.connect(c)
+    conn.execute("insert into photos(relpath, status, scanned_at, detected_at) "
+                 "values ('empty.jpg', 'ok', '2026-11-02 09:00:00', '2026-09-28 00:00:00')")
+    conn.commit()
+    f = client(c).get("/api/facets").json()
+    assert not any("searchable" in w for w in f["warnings"])
+    assert f["added"][0] == {"start": "2026-11-02 09:00:00", "end": "2026-11-02 09:00:00", "photos": 1}
+
+
+@pytest.mark.parametrize("has", ["osnet", "siglip"])
+def test_person_missing_one_embedding_is_not_searchable(tmp_path, has):
+    c, _ = stamped_index(tmp_path)
+    conn = db.connect(c)
+    conn.execute("insert into photos(relpath, status, scanned_at, detected_at) "
+                 "values ('half.jpg', 'ok', '2026-11-02 09:00:00', '2026-09-28 00:00:00')")
+    p = conn.execute("insert into persons(photo_id, x1, y1, x2, y2, conf) "
+                     "select id, 0, 0, 5, 5, 0.9 from photos where relpath = 'half.jpg'").lastrowid
+    conn.execute(f"insert into emb_person_{has} values (?, ?)", (p, b"\0" * 8))
+    conn.commit()
+    f = client(c).get("/api/facets").json()
+    assert [w for w in f["warnings"] if "searchable" in w] == [
+        "1 photos aren't searchable yet; restart photofinder serve after photofinder index finishes"]
+    assert [b["start"] for b in f["added"]] == ["2026-11-01 14:00:00", "2026-11-01 10:00:00"]

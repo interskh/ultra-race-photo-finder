@@ -342,6 +342,17 @@ class RaceState:
     uploads: OrderedDict = field(default_factory=OrderedDict)
 
 
+def searchable_upto(conn) -> int:
+    first_pending = conn.execute(
+        """select min(ph.id) from photos ph where ph.status = 'ok' and (ph.detected_at is null or exists (
+             select 1 from persons p where p.photo_id = ph.id and (
+               not exists (select 1 from emb_person_osnet o where o.person_id = p.id)
+               or not exists (select 1 from emb_person_siglip s where s.person_id = p.id))))""").fetchone()[0]
+    if first_pending is not None:
+        return first_pending - 1
+    return conn.execute("select coalesce(max(id), 0) from photos").fetchone()[0]
+
+
 def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher, hint: str | None = None) -> RaceState:
     directory = directory.resolve()
     with closing(db.connect(directory)) as conn:
@@ -354,7 +365,7 @@ def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher,
             scene_error = None
         except search.MissingEmbeddings as e:
             scene_error = str(e)
-        photo_max = conn.execute("select coalesce(max(id), 0) from photos").fetchone()[0]
+        photo_max = searchable_upto(conn)
     return RaceState(slug, name, directory, persons, scene_error, originals.has_originals(directory),
                      originals.Job(fetcher), photo_max)
 
@@ -529,8 +540,8 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
                                        (profile_id,)))
             warnings = [st.scene_error or search.check_scenes(conn)]
             if later:
-                warnings.append(f"{later:,} photos were indexed after this race was loaded; "
-                                "restart photofinder serve to search them")
+                warnings.append(f"{later:,} photos aren't searchable yet; "
+                                "restart photofinder serve after photofinder index finishes")
             try:
                 warnings.append(search.check_filters(conn, search.Filters(bib="facets")))
             except search.MissingEmbeddings as e:

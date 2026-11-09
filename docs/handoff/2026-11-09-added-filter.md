@@ -52,3 +52,9 @@
 - Rejected: auto-reloading the race on facets/load_race: changes the race-load memory lifecycle (models/persons ~1 GB per load cycle); deferred.
 - Assumption closed (verified): re-scan does not rewrite `scanned_at`; `stages.scan` skips existing relpaths and `race_import` never touches `scanned_at`.
 - Touches: web/app.py (RaceState gains defaulted `photo_max`), search.added_batches signature (optional `max_id`).
+
+## Second gate fix: photo_max means "fully searchable"
+- Decision: `searchable_upto(conn)` = (smallest ok photo id with `detected_at is null` or a person lacking an `emb_person_osnet`/`emb_person_siglip` row, matching load_persons' joins) - 1, else max(id). Not max(persons.photo_ids): trailing zero-person photos would warn forever. Warning now "N photos aren't searchable yet; restart photofinder serve after photofinder index finishes" (count = ok photos with id > photo_max); docs/usage.md matches.
+- Scene embeddings (`scene_done_at`, optional separate stage) are deliberately not gated on.
+- Test fixture: `make_index` now sets `detected_at` on all photos (realistic; otherwise every fixture photo counts as pending).
+- Touches: web/app.py (`searchable_upto`), tests/test_search.py make_index, tests/test_web.py.
