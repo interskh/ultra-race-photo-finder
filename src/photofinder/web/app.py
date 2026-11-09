@@ -57,6 +57,7 @@ class SearchQuery(BaseModel):
     photographers: list[str] = []
     albums: list[str] = []
     groups: list[str] = []
+    added: list[str] = []
     bib: str | None = None
     start_bib: str | None = None
     mode: Literal["similar", "more"] = "similar"
@@ -75,6 +76,7 @@ class NearbyQuery(BaseModel):
     photographers: list[str] = []
     albums: list[str] = []
     groups: list[str] = []
+    added: list[str] = []
     bib: str | None = None
     hide_hidden: bool = False
 
@@ -127,10 +129,23 @@ def when(field: str, value: str | None, minute_end=False) -> str | None:
         raise bad(f"{field} {e}")
 
 
+def added_range(value: str) -> tuple[str, str]:
+    try:
+        start, end = value.split("..")
+        for t in (start, end):
+            if datetime.strptime(t, search.TIME_FORMATS[0]).strftime(search.TIME_FORMATS[0]) != t:
+                raise ValueError(t)
+        if start > end:
+            raise ValueError("start is after end")
+    except ValueError:
+        raise bad(f"added {value!r} is not a batch; use 'YYYY-MM-DD HH:MM:SS..YYYY-MM-DD HH:MM:SS'")
+    return start, end
+
+
 def filters_of(q: SearchQuery | NearbyQuery) -> search.Filters:
     return search.Filters(when("start", q.start), when("end", q.end, minute_end=True),
                           tuple(q.photographers), tuple(q.albums), (q.bib or "").strip() or None,
-                          groups=tuple(q.groups))
+                          groups=tuple(q.groups), added=tuple(added_range(v) for v in q.added))
 
 
 def photo_meta(conn, photo_ids) -> dict:
@@ -505,6 +520,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             groups = [{"name": g, "photos": c} for g, c in conn.execute(
                 "select grp, count(*) from photos where status = 'ok' and grp is not null "
                 "group by grp order by count(*) desc, grp")]
+            added = search.added_batches(conn)
             labels = dict(conn.execute("select label, count(*) from labels where profile_id = ? group by label",
                                        (profile_id,)))
             warnings = [st.scene_error or search.check_scenes(conn)]
@@ -514,7 +530,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
                 warnings.append(str(e))
         out = {"race": {"slug": st.slug, "name": st.name}, "collection": st.dir.name, "photos": count,
                "persons": len(st.persons.ids), "taken_at": {"min": first, "max": last}, "photographers": photographers,
-               "albums": albums, "groups": groups,
+               "albums": albums, "groups": groups, "added": added,
                "scenes": st.scene_error is None, "originals": st.has_originals, "warnings": [w for w in warnings if w]}
         if profile_id is not None:
             out["labels"] = {"me": labels.get("me", 0), "not_me": labels.get("not_me", 0)}

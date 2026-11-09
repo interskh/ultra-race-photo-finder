@@ -274,3 +274,15 @@ def test_cli_eval_prints_nearby_rows_as_lower_bounds(tmp_path, monkeypatch, caps
     assert "lower bounds" in lines[i] and lines[i + 1].split()[:2] == ["span", "prec"]
     assert [ln.split()[:3] for ln in lines[i + 2:i + 5]] == [["1", "0.500", "4"], ["2", "0.286", "7"],
                                                               ["3", "0.400", "10"]]
+
+
+def test_nearby_applies_added_filter(tmp_path):
+    c, conn, ids, photo = roll_index(tmp_path)
+    api = client(c)
+    label(api, ids[3][0], "me")
+    conn.executemany("update photos set scanned_at = ? where id = ?",
+                     [("2026-11-01 10:00:00" if k in (1, 2, 3) else "2026-11-01 15:00:00", photo[k]) for k in photo])
+    conn.commit()
+    assert numbers(photo, near(api, span=2, photographers=["yipai:1"])["results"]) == [1, 4, 2, 5]
+    assert numbers(photo, near(api, span=2, added=["2026-11-01 10:00:00..2026-11-01 10:00:00"])["results"]) == [1, 2]
+    assert near(api, span=2, added=["2026-11-01 12:00:00..2026-11-01 12:00:01"])["results"] == []

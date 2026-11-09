@@ -16,6 +16,7 @@ SOURCES = {"text": "siglip"}
 NEG_WEIGHT = 0.3
 CHUNK = 8192
 TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
+BATCH_GAP_S = 600
 
 log = logging.getLogger("search")
 
@@ -56,9 +57,10 @@ class Filters:
     albums: tuple = ()
     bib: str | None = None
     groups: tuple = ()
+    added: tuple = ()
 
     def __bool__(self):
-        return any((self.start, self.end, self.photographers, self.albums, self.groups, self.bib))
+        return any((self.start, self.end, self.photographers, self.albums, self.groups, self.bib, self.added))
 
 
 def parse_time(value: str | None, minute_end=False) -> str | None:
@@ -105,10 +107,25 @@ def filter_where(filters: Filters) -> tuple[list[str], list]:
     if filters.groups:
         where.append(f"ph.grp in ({','.join('?' * len(filters.groups))})")
         args += filters.groups
+    if filters.added:
+        where.append("(" + " or ".join(["ph.scanned_at between ? and ?"] * len(filters.added)) + ")")
+        args += [t for pair in filters.added for t in pair]
     if filters.bib:
         where.append("exists (select 1 from bibs b where b.person_id = p.id and instr(b.text, ?) > 0)")
         args.append(filters.bib)
     return where, args
+
+
+def added_batches(db: sqlite3.Connection) -> list[dict]:
+    batches = []
+    for stamp, n in db.execute("select scanned_at, count(*) from photos where status = 'ok' "
+                               "and scanned_at is not null group by scanned_at order by scanned_at"):
+        t = datetime.strptime(stamp, TIME_FORMATS[0])
+        if batches and (t - batches[-1]["last"]).total_seconds() <= BATCH_GAP_S:
+            batches[-1].update(end=stamp, last=t, photos=batches[-1]["photos"] + n)
+        else:
+            batches.append({"start": stamp, "end": stamp, "photos": n, "last": t})
+    return [{k: b[k] for k in ("start", "end", "photos")} for b in reversed(batches)]
 
 
 def filter_mask(db: sqlite3.Connection, persons: Persons, filters: Filters | None) -> np.ndarray | None:

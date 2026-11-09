@@ -802,3 +802,46 @@ def test_matched_via_is_null_for_upload_bib_and_text_winners(tmp_path, monkeypat
     (tmp_path / "b").mkdir()
     c2, _, _ = bib_index(tmp_path / "b")
     assert set(via(client(c2).post("/api/search", json={"profile_id": ME, "start_bib": "2001"})).values()) == {None}
+
+
+B1 = "2026-11-01 10:00:00..2026-11-01 10:00:05"
+B2 = "2026-11-01 14:00:00..2026-11-01 14:00:05"
+
+
+def stamped_index(tmp_path):
+    c, conn, ids = filter_index(tmp_path)
+    conn.executemany("update photos set scanned_at = ? where relpath = ?", [
+        ("2026-11-01 10:00:00", "1.jpg"), ("2026-11-01 10:00:05", "2.jpg"),
+        ("2026-11-01 14:00:00", "3.jpg"), ("2026-11-01 14:00:05", "4.jpg")])
+    conn.commit()
+    return c, ids
+
+
+def test_facets_list_added_batches_newest_first(tmp_path):
+    c, _ = stamped_index(tmp_path)
+    assert client(c).get("/api/facets").json()["added"] == [
+        {"start": "2026-11-01 14:00:00", "end": "2026-11-01 14:00:05", "photos": 2},
+        {"start": "2026-11-01 10:00:00", "end": "2026-11-01 10:00:05", "photos": 2}]
+
+
+@pytest.mark.parametrize("added, expected", [
+    ([], ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]),
+    ([B1], ["1.jpg", "2.jpg"]),
+    ([B2], ["3.jpg", "4.jpg"]),
+    ([B1, B2], ["1.jpg", "2.jpg", "3.jpg", "4.jpg"]),
+    (["2026-11-01 10:00:05..2026-11-01 14:00:00"], ["2.jpg", "3.jpg"]),
+])
+def test_added_filter_restricts_search(tmp_path, added, expected):
+    c, ids = stamped_index(tmp_path)
+    res = client(c).post("/api/search", json={"profile_id": ME, "persons": [ids[1][0]], "added": added})
+    assert sorted(ranked_photos(res)) == expected
+
+
+@pytest.mark.parametrize("value", ["soon", "2026-11-01 10:00:00", "2026-11-01 10:00..2026-11-01 11:00:00",
+                                   "2026-11-01 14:00:00..2026-11-01 10:00:00", "2026-11-1 1:00:00..2026-11-01 11:00:00",
+                                   "a..b..c"])
+def test_bad_added_is_400_naming_field(tmp_path, value):
+    c, ids = stamped_index(tmp_path)
+    for path in ("/api/search", "/api/nearby"):
+        res = client(c).post(path, json={"profile_id": ME, "persons": [ids[1][0]], "added": [value]})
+        assert res.status_code == 400 and res.json()["detail"].startswith("added")

@@ -918,3 +918,48 @@ def test_all_invalid_negatives_leave_scores_unchanged(tmp_path):
     base = search.score(persons, refs)
     got = search.score(persons, refs, negatives=np.array([[float("nan")] * 4]))
     assert got.tolist() == base.tolist()
+
+
+def stamp_scans(conn, stamps):
+    conn.executemany("update photos set scanned_at = ? where relpath = ?",
+                     [(t, f"{i}.jpg") for i, t in stamps.items()])
+    conn.commit()
+
+
+def test_added_batches_group_one_scan_across_a_minute_boundary(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    stamp_scans(conn, {1: "2026-11-01 10:29:58", 2: "2026-11-01 10:30:03", 3: "2026-11-01 11:40:00",
+                       4: "2026-11-01 11:49:59"})
+    assert search.added_batches(conn) == [
+        {"start": "2026-11-01 11:40:00", "end": "2026-11-01 11:49:59", "photos": 2},
+        {"start": "2026-11-01 10:29:58", "end": "2026-11-01 10:30:03", "photos": 2}]
+
+
+def test_added_batches_split_on_gap_over_ten_minutes_and_skip_error_and_null(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    stamp_scans(conn, {1: "2026-11-01 10:00:00", 2: "2026-11-01 10:10:00", 3: "2026-11-01 10:20:01",
+                       4: "2026-11-01 10:20:02"})
+    assert [(b["start"], b["photos"]) for b in search.added_batches(conn)] == [
+        ("2026-11-01 10:20:01", 2), ("2026-11-01 10:00:00", 2)]
+    conn.execute("update photos set status = 'error' where relpath = '4.jpg'")
+    conn.execute("update photos set scanned_at = null where relpath = '1.jpg'")
+    assert [(b["start"], b["photos"]) for b in search.added_batches(conn)] == [
+        ("2026-11-01 10:20:01", 1), ("2026-11-01 10:10:00", 1)]
+
+
+def test_filters_with_only_added_is_truthy_and_restricts(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    stamp_scans(conn, {1: "2026-11-01 10:00:00", 2: "2026-11-01 10:00:05", 3: "2026-11-01 14:00:00",
+                       4: "2026-11-01 14:00:05"})
+    one = search.Filters(added=(("2026-11-01 14:00:00", "2026-11-01 14:00:05"),))
+    assert one
+    assert sorted(r.relpath for r in search.search(conn, {"osnet": np.array([A])}, filters=one)) == ["3.jpg", "4.jpg"]
+    both = search.Filters(added=(("2026-11-01 10:00:00", "2026-11-01 10:00:00"), ("2026-11-01 14:00:05", "2026-11-01 14:00:05")))
+    assert sorted(r.relpath for r in search.search(conn, {"osnet": np.array([A])}, filters=both)) == ["1.jpg", "4.jpg"]
+
+
+def test_added_batches_count_photos_sharing_one_second(tmp_path):
+    _, conn, _ = filter_index(tmp_path)
+    stamp_scans(conn, {1: "2026-11-01 10:00:00", 2: "2026-11-01 10:00:00", 3: "2026-11-01 10:00:01",
+                       4: "2026-11-01 10:00:01"})
+    assert search.added_batches(conn) == [{"start": "2026-11-01 10:00:00", "end": "2026-11-01 10:00:01", "photos": 4}]
