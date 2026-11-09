@@ -58,3 +58,9 @@
 - Scene embeddings (`scene_done_at`, optional separate stage) are deliberately not gated on.
 - Test fixture: `make_index` now sets `detected_at` on all photos (realistic; otherwise every fixture photo counts as pending).
 - Touches: web/app.py (`searchable_upto`), tests/test_search.py make_index, tests/test_web.py.
+
+## Gate close (orchestrator)
+- Re-check 2: RESOLVED. Residual applied by the orchestrator: `searchable_upto` now runs before `load_persons`, so photos embedded while a race loads can only fall above the cutoff (a warning), never below it with missing persons (a silent miss). Warning is singular for 1 photo.
+- Measured: `searchable_upto` 125–221 ms warm on the 4 real indexes (cutoff == max(id) on each, no false warning); `added_batches` 15–24 ms warm.
+- E2E (real 2026-utms index, worktree server on the main data root): Added lists 4 batches newest first with counts; Find more filtered to the newest batch returned 60 results, all in that batch; a 176-photo batch likewise; malformed value → 400; Clear unchecks.
+- Deferred: auto-reloading a race when its index grows (changes the race-load memory lifecycle); a CLI `--added` flag.

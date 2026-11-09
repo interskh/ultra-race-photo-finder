@@ -356,6 +356,7 @@ def searchable_upto(conn) -> int:
 def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher, hint: str | None = None) -> RaceState:
     directory = directory.resolve()
     with closing(db.connect(directory)) as conn:
+        photo_max = searchable_upto(conn)
         try:
             persons = search.load_persons(conn)
         except search.MissingEmbeddings as e:
@@ -365,7 +366,6 @@ def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher,
             scene_error = None
         except search.MissingEmbeddings as e:
             scene_error = str(e)
-        photo_max = searchable_upto(conn)
     return RaceState(slug, name, directory, persons, scene_error, originals.has_originals(directory),
                      originals.Job(fetcher), photo_max)
 
@@ -540,7 +540,7 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
                                        (profile_id,)))
             warnings = [st.scene_error or search.check_scenes(conn)]
             if later:
-                warnings.append(f"{later:,} photos aren't searchable yet; "
+                warnings.append(f"{later:,} {'photo isn' if later == 1 else 'photos aren'}'t searchable yet; "
                                 "restart photofinder serve after photofinder index finishes")
             try:
                 warnings.append(search.check_filters(conn, search.Filters(bib="facets")))

@@ -905,5 +905,5 @@ def test_person_missing_one_embedding_is_not_searchable(tmp_path, has):
     conn.commit()
     f = client(c).get("/api/facets").json()
     assert [w for w in f["warnings"] if "searchable" in w] == [
-        "1 photos aren't searchable yet; restart photofinder serve after photofinder index finishes"]
+        "1 photo isn't searchable yet; restart photofinder serve after photofinder index finishes"]
     assert [b["start"] for b in f["added"]] == ["2026-11-01 14:00:00", "2026-11-01 10:00:00"]
