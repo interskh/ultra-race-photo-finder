@@ -25,3 +25,24 @@
 - `search.py` (Filters.added, filter_where, added_batches, BATCH_GAP_S), `web/app.py` (SearchQuery/NearbyQuery.added, added_range, filters_of, facets `added`); tests in test_search.py, test_web.py, test_nearby.py.
 - Facet JSON: `"added": [{"start","end","photos"}, ...]` newest first. Query: `"added": ["<start>..<end>", ...]`.
 - Decision (fix): `added_batches` groups by `scanned_at` in SQL, then clusters the 16-29 distinct stamps in Python summing counts; per-row strptime cost 0.6-1.2 s on 50-100k photos, grouped version ~30 ms (coordinator-measured).
+
+## Task 2: UI + docs for the "Added" filter
+
+**Decisions**
+- Block mirrors Groups (`#f-ad`, checkbox name `ad`, value `start..end` echoed from the facet); wrapped in `#f-ad-block` so label and list hide together.
+- Label = `a.start.slice(0, 16)` (`YYYY-MM-DD HH:MM`, same as From/To); server order (newest first) kept.
+- Hidden when `added.length < 2`; `renderFacets` toggles it on every load, so an in-page race switch re-shows it. Reset path hides it too.
+- Enumeration sites: renderFacets, `filters()`, `countFilters`, `'filtered'` subtitle, `nearBody`, reset list (`f-ad` cleared). The search body spreads `filters()`; Back-history snapshot and Clear iterate all `#filter-form` checkboxes, so they need no change.
+
+**Rejected**
+- Showing a single-batch list: filters nothing, adds noise.
+- Time-range labels (start-end): longer, wouldn't fit the narrow list.
+
+**Assumptions**
+- Facets from an older server lack `added`; `f.added || []` hides the block.
+
+**Deferred**
+- No JS test harness (per brief); browser E2E by orchestrator.
+
+**Touches**
+- `src/photofinder/web/static/index.html`, `docs/usage.md`.

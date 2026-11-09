@@ -328,6 +328,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
         <div class="checks" id="f-al"></div>
         <label class="field" style="margin-top:12px">Groups</label>
         <div class="checks" id="f-gr"></div>
+        <div id="f-ad-block" hidden>
+          <label class="field" style="margin-top:12px">Added</label>
+          <div class="checks" id="f-ad"></div>
+        </div>
         <label class="field" for="f-bib" style="margin-top:12px">Bib contains</label>
         <input type="text" id="f-bib" placeholder="e.g. 20" autocomplete="off">
         <div class="row2" style="margin-top:12px">
@@ -764,17 +768,20 @@ function renderFacets() {
   checks($('#f-ph'), 'ph', f.photographers.map(p => ({value: p.uid || p.name, label: p.name || p.uid, photos: p.photos})));
   checks($('#f-al'), 'al', f.albums.map(a => ({value: a.name, label: a.name, photos: a.photos})));
   checks($('#f-gr'), 'gr', f.groups.map(g => ({value: g.name, label: g.name, photos: g.photos})));
+  const added = f.added || [];
+  $('#f-ad-block').hidden = added.length < 2;
+  checks($('#f-ad'), 'ad', added.length < 2 ? [] : added.map(a => ({value: `${a.start}..${a.end}`, label: a.start.slice(0, 16), photos: a.photos})));
 }
 
 function filters() {
   const checked = n => [...document.querySelectorAll(`input[name=${n}]:checked`)].map(i => i.value);
   const v = id => $('#' + id).value.trim() || null;
-  return {start: v('f-start'), end: v('f-end'), photographers: checked('ph'), albums: checked('al'), groups: checked('gr'), bib: v('f-bib')};
+  return {start: v('f-start'), end: v('f-end'), photographers: checked('ph'), albums: checked('al'), groups: checked('gr'), added: checked('ad'), bib: v('f-bib')};
 }
 
 function countFilters() {
   const f = filters();
-  const n = [f.start, f.end, f.bib].filter(Boolean).length + (f.photographers.length ? 1 : 0) + (f.albums.length ? 1 : 0) + (f.groups.length ? 1 : 0);
+  const n = [f.start, f.end, f.bib].filter(Boolean).length + (f.photographers.length ? 1 : 0) + (f.albums.length ? 1 : 0) + (f.groups.length ? 1 : 0) + (f.added.length ? 1 : 0);
   $('#f-count').textContent = n ? `· ${n} active` : '';
 }
 
@@ -937,7 +944,7 @@ function summary() {
   if (b.start_bib) sub.push('exact bib reads, in time order');
   if (b.mode === 'more') sub.push('marked photos hidden');
   if (b.mode === 'more' && S.hiddenN > 0) sub.push(`${fmt(S.hiddenN)} hidden (Not me: the other)`);
-  if (q.start || q.end || q.bib || q.photographers.length || q.albums.length || q.groups.length) sub.push('filtered');
+  if (q.start || q.end || q.bib || q.photographers.length || q.albums.length || q.groups.length || q.added.length) sub.push('filtered');
   if (b.start_bib && S.descIgnored) sub.push('description not used with a bib search');
   if (S.timing != null) sub.push(`took ${took(S.timing)}`);
   $('#summary').innerHTML = '';
@@ -949,7 +956,7 @@ const nearApplies = b => !!(b && (b.start_bib || b.mode === 'more'));
 function nearBody() {
   const q = S.query;
   return {profile_id: S.profile, span: S.nearSpan, anchors_bib: q.start_bib || null, start: q.start, end: q.end,
-    photographers: q.photographers, albums: q.albums, groups: q.groups, bib: q.bib, hide_hidden: S.base.mode === 'more'};
+    photographers: q.photographers, albums: q.albums, groups: q.groups, added: q.added, bib: q.bib, hide_hidden: S.base.mode === 'more'};
 }
 
 function takeNear(r) {
@@ -1802,7 +1809,8 @@ function clearRace(slug) {
   $('#f-start').placeholder = $('#f-end').placeholder = 'YYYY-MM-DD HH:MM';
   $('#q-scene').placeholder = 'e.g. finish arch, 雪山';
   $('#f-range').textContent = '';
-  for (const id of ['f-ph', 'f-al', 'f-gr', 'grid', 'near-grid', 'empty', 'me-grid', 'me-empty', 'up-frame', 'banners', 'prof']) $('#' + id).innerHTML = '';
+  $('#f-ad-block').hidden = true;
+  for (const id of ['f-ph', 'f-al', 'f-gr', 'f-ad', 'grid', 'near-grid', 'empty', 'me-grid', 'me-empty', 'up-frame', 'banners', 'prof']) $('#' + id).innerHTML = '';
   countFilters();
   renderStart();
   $('#up').hidden = $('#tail').hidden = $('#near').hidden = $('#ranked-h').hidden = $('#job').hidden = $('#zip').hidden = $('#orig-start').hidden = true;
