@@ -46,3 +46,9 @@
 
 **Touches**
 - `src/photofinder/web/static/index.html`, `docs/usage.md`.
+
+## Whole-run gate fix: index run while serve has the race loaded
+- Decision: `RaceState.photo_max` (max photos.id at race load, same connection as persons). `added_batches(db, max_id)` only counts `id <= max_id`, so Added lists only batches the loaded embeddings can search; `facets_of` adds a warning "N photos were indexed after this race was loaded; restart photofinder serve to search them" (existing warnings banner). docs/usage.md Added clause says so.
+- Rejected: auto-reloading the race on facets/load_race: changes the race-load memory lifecycle (models/persons ~1 GB per load cycle); deferred.
+- Assumption closed (verified): re-scan does not rewrite `scanned_at`; `stages.scan` skips existing relpaths and `race_import` never touches `scanned_at`.
+- Touches: web/app.py (RaceState gains defaulted `photo_max`), search.added_batches signature (optional `max_id`).

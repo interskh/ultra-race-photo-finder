@@ -338,6 +338,7 @@ class RaceState:
     scene_error: str | None
     has_originals: bool
     job: originals.Job
+    photo_max: int = 0
     uploads: OrderedDict = field(default_factory=OrderedDict)
 
 
@@ -353,8 +354,9 @@ def open_race(slug: str, name: str, directory: Path, fetcher: originals.Fetcher,
             scene_error = None
         except search.MissingEmbeddings as e:
             scene_error = str(e)
+        photo_max = conn.execute("select coalesce(max(id), 0) from photos").fetchone()[0]
     return RaceState(slug, name, directory, persons, scene_error, originals.has_originals(directory),
-                     originals.Job(fetcher))
+                     originals.Job(fetcher), photo_max)
 
 
 def path_race(directory: Path) -> races.Race:
@@ -520,10 +522,15 @@ def create_app(collection: Path | None = None, *, registry: Callable[[], races.R
             groups = [{"name": g, "photos": c} for g, c in conn.execute(
                 "select grp, count(*) from photos where status = 'ok' and grp is not null "
                 "group by grp order by count(*) desc, grp")]
-            added = search.added_batches(conn)
+            added = search.added_batches(conn, st.photo_max)
+            later = conn.execute("select count(*) from photos where status = 'ok' and id > ?",
+                                 (st.photo_max,)).fetchone()[0]
             labels = dict(conn.execute("select label, count(*) from labels where profile_id = ? group by label",
                                        (profile_id,)))
             warnings = [st.scene_error or search.check_scenes(conn)]
+            if later:
+                warnings.append(f"{later:,} photos were indexed after this race was loaded; "
+                                "restart photofinder serve to search them")
             try:
                 warnings.append(search.check_filters(conn, search.Filters(bib="facets")))
             except search.MissingEmbeddings as e:

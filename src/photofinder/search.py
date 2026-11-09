@@ -116,10 +116,11 @@ def filter_where(filters: Filters) -> tuple[list[str], list]:
     return where, args
 
 
-def added_batches(db: sqlite3.Connection) -> list[dict]:
+def added_batches(db: sqlite3.Connection, max_id: int | None = None) -> list[dict]:
     batches = []
     for stamp, n in db.execute("select scanned_at, count(*) from photos where status = 'ok' "
-                               "and scanned_at is not null group by scanned_at order by scanned_at"):
+                               "and scanned_at is not null and id <= coalesce(?, id) group by scanned_at "
+                               "order by scanned_at", (max_id,)):
         t = datetime.strptime(stamp, TIME_FORMATS[0])
         if batches and (t - batches[-1]["last"]).total_seconds() <= BATCH_GAP_S:
             batches[-1].update(end=stamp, last=t, photos=batches[-1]["photos"] + n)

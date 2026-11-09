@@ -845,3 +845,20 @@ def test_bad_added_is_400_naming_field(tmp_path, value):
     for path in ("/api/search", "/api/nearby"):
         res = client(c).post(path, json={"profile_id": ME, "persons": [ids[1][0]], "added": [value]})
         assert res.status_code == 400 and res.json()["detail"].startswith("added")
+
+
+def test_facets_hide_batches_indexed_after_the_race_was_loaded_and_warn(tmp_path):
+    c, _ = stamped_index(tmp_path)
+    api = client(c)
+    before = api.get("/api/facets").json()
+    assert not any("indexed after" in w for w in before["warnings"])
+    conn = db.connect(c)
+    for i in range(1200):
+        conn.execute("insert into photos(relpath, status, scanned_at) values (?, 'ok', '2026-11-02 09:00:00')",
+                     (f"late{i}.jpg",))
+    conn.execute("insert into photos(relpath, status, scanned_at) values ('err.jpg', 'error', '2026-11-02 09:00:01')")
+    conn.commit()
+    after = api.get("/api/facets").json()
+    assert after["added"] == before["added"]
+    assert [w for w in after["warnings"] if "indexed after" in w] == [
+        "1,200 photos were indexed after this race was loaded; restart photofinder serve to search them"]
