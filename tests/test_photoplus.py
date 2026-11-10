@@ -406,6 +406,7 @@ def test_download_then_scan_uses_the_catalog(data_root):
 def site(data_root, monkeypatch):
     site = FakePP([("A", pics(1, 2))], photos=pics(1, 2, 3))
     monkeypatch.setattr(cli, "album_client", lambda platform: client_for(site))
+    monkeypatch.setattr(photoplus, "PAGE_GAP", 0)
     races.add_race("2026-x", "X")
     return site
 
@@ -871,7 +872,8 @@ def test_a_moved_photo_makes_the_reconstruction_invalid_and_the_listing_is_re_re
     assert manifest(tmp_path).execute("select count(*) from gone").fetchone()[0] == 0
 
 
-def test_photos_uploaded_between_the_count_check_and_the_diff_are_still_listed(tmp_path):
+def test_photos_uploaded_between_the_count_check_and_the_diff_are_listed_and_not_stored_half_read(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
     site = big_site(1000)
     first_run(site, tmp_path)
     site.photos.insert(500, photo(7001))
@@ -888,11 +890,14 @@ def test_photos_uploaded_between_the_count_check_and_the_diff_are_still_listed(t
     assert d.run() == {"done": 1002}
     d.close()
     assert fetched(site) == [7001, 7002]
-    assert snapshot(tmp_path) == remote_ids(site)
+    assert len(snapshot(tmp_path)) == 1000
+    assert manifest(tmp_path).execute("select value from meta where key='count:list'").fetchone() == ("1000",)
+    assert any("not stored" in r.getMessage() for r in caplog.records)
     site.calls.clear()
     site.images.clear()
     assert run_full_or_quick(site, tmp_path) == {"done": 1002}
     assert not site.images
+    assert snapshot(tmp_path) == remote_ids(site)
     site.calls.clear()
     run_full_or_quick(site, tmp_path)
     assert listing_requests(site) == ["/album/albums", "/pic/list"]
@@ -1015,3 +1020,140 @@ def test_bisect_recovers_any_pure_add_or_pure_delete_exactly(seed):
     assert len(reads) <= max(1, math.ceil(len(remote) / size)) + (math.ceil(len(remote) / size) + 1 if "linear" in how else 0)
     if how == "bisect":
         assert len(reads) == len(set(reads)) <= math.ceil(len(remote) / size)
+
+
+def test_relisting_the_last_list_page_keeps_the_whole_snapshot(tmp_path):
+    site = FakePP(photos=pics(*range(253)))
+    site.expired_signs.add("L3")
+    assert run_full_or_quick(site, tmp_path) == {"done": 253}
+    assert len(snapshot(tmp_path)) == 253
+    assert manifest(tmp_path).execute("select count(*) from gone").fetchone()[0] == 0
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+
+
+def test_relisting_the_last_sub_album_page_keeps_the_whole_snapshot(tmp_path):
+    site = FakePP([("A", pics(*range(250)))])
+    site.expired_signs.add("L2")
+    assert run_full_or_quick(site, tmp_path) == {"done": 250}
+    assert len(snapshot(tmp_path, f"album:{site.albums[0][0]}")) == 250
+    assert len(snapshot(tmp_path)) == 250
+    assert manifest(tmp_path).execute("select count(*) from gone").fetchone()[0] == 0
+
+
+def test_a_full_listing_reserves_catalog_rows_before_it_seals(tmp_path):
+    site = quick_site()
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.attach(d.db, True, d.photos_dir)
+    cursor = None
+    while True:
+        rows, cursor, _ = d.adapter.list_page(cursor)
+        if cursor is None:
+            break
+    m = manifest(tmp_path)
+    assert m.execute("select count(*) from listing where list_key='list'").fetchone()[0] == 253
+    assert m.execute("select status from catalog where source_id=?", (sid(400),)).fetchone() == ("pending",)
+    d.close()
+
+
+def test_a_crashed_diff_page_leaves_its_new_photos_in_the_catalog(tmp_path):
+    site = big_site(300)
+    first_run(site, tmp_path)
+    site.photos.append(photo(7001))
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.attach(d.db, False, d.photos_dir)
+    cursor = None
+    while True:
+        rows, cursor, _ = d.adapter.list_page(cursor)
+        if cursor is None:
+            break
+    assert manifest(tmp_path).execute("select status from catalog where source_id=?", (sid(7001),)).fetchone() == ("pending",)
+    d.close()
+
+
+def test_a_shifting_linear_re_read_is_not_stored_or_sealed(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    site = big_site(300)
+    first_run(site, tmp_path)
+    site.photos.insert(250, photo(7001))
+    real = site.__call__
+
+    def shifting(req):
+        if req.url.path == "/pic/list" and req.url.params["page"] == "2":
+            site.photos.insert(0, site.photos[-1])
+        return real(req)
+    d = AlbumDownloader(client_for(shifting), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.client = client_for(shifting)
+    d.run()
+    d.close()
+    assert len(snapshot(tmp_path)) == 300
+    assert manifest(tmp_path).execute("select value from meta where key='count:list'").fetchone() == ("300",)
+
+
+def test_requests_are_spaced_by_the_page_gap_even_within_one_call(tmp_path):
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+    site = FakePP([("A", pics(*range(250)))], photos=pics(*range(250)))
+    first_run(site, tmp_path)
+    site.albums[0][2].insert(120, photo(7001))
+    site.photos.insert(120, photo(7001))
+    site.expire_next = 1
+    real = site.__call__
+    times = []
+
+    def recording(req):
+        if req.url.host != "pb.plusx.cn":
+            times.append(clock[0])
+        return real(req)
+    a = photoplus.Adapter(client_for(recording), ACTIVITY, sleep=sleep, clock=lambda: clock[0])
+    d = AlbumDownloader(client_for(recording), a, tmp_path, sleep=sleep)
+    d.run()
+    d.close()
+    assert len(times) >= 6
+    assert all(b - a >= photoplus.PAGE_GAP - 1e-9 for a, b in zip(times, times[1:]))
+
+
+def test_a_done_row_with_a_missing_or_truncated_file_is_downloaded_again(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    site = quick_site()
+    first_run(site, tmp_path)
+    (tmp_path / "photos" / f"{sid(3)}.jpg").unlink()
+    (tmp_path / "photos" / f"{sid(4)}.jpg").write_bytes(b"\xff\xd8 cut")
+    assert run_full_or_quick(site, tmp_path) == {"done": 253}
+    assert sorted(site.images) == [f"/plus/immediate/{ACTIVITY}/{i}.jpg" for i in (3, 4)]
+    assert "photoplus: 2 downloaded photos are missing or truncated on disk; listing everything" in [
+        r.getMessage() for r in caplog.records]
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+
+
+def test_an_empty_site_listing_is_not_recorded_as_every_photo_gone(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    site = big_site(300)
+    first_run(site, tmp_path)
+    site.photos.clear()
+    run_full_or_quick(site, tmp_path)
+    m = manifest(tmp_path)
+    assert m.execute("select count(*) from gone").fetchone()[0] == 0
+    assert len(snapshot(tmp_path)) == 300
+    assert m.execute("select value from meta where key='count:list'").fetchone() == ("300",)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_photos_without_an_id_do_not_force_a_linear_re_read(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    ps = pics(*range(300))
+    ps[10], ps[20] = dict(ps[10], id=None), dict(ps[20], id=None)
+    site = FakePP(photos=ps)
+    assert run_full_or_quick(site, tmp_path) == {"done": 298}
+    assert len(set(snapshot(tmp_path))) == 300
+    site.images.clear()
+    site.photos.insert(150, photo(7001))
+    run_full_or_quick(site, tmp_path)
+    assert fetched(site) == [7001]
+    assert any(r.getMessage().startswith("photoplus: list: 301 photos by bisect") for r in caplog.records)
+    assert manifest(tmp_path).execute("select count(*) from gone").fetchone()[0] == 0

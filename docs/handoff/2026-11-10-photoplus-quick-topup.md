@@ -3,7 +3,7 @@
 ## T1 - quick check + listing snapshots
 **Decisions**
 - Snapshots live in manifest table `listing(list_key,pos,source_id)` (created by `Adapter.attach`, not base SCHEMA, so other platforms are untouched); counts in meta `count:<list_key>`; set of sub-album keys in meta `listing:albums`.
-- `listing:albums` doubles as the "sealed/complete" marker: deleted when a full listing starts, written last after `list` finishes. Interrupted run => no marker => next run full. Each listing is staged in memory by page (relist-safe) and swapped in one transaction when read to its end.
+- `listing:albums` doubles as the "sealed/complete" marker: deleted when a full listing starts, written last after `list` finishes. Interrupted run => no marker => next run full. Each listing is staged in memory by page and swapped in one transaction when read to its end.
 - Seal is skipped if any count (album `pic_num`, list `pics_total` on page 1) is not a plain int, so such albums are always full-listed.
 - Quick check = reuse the cached `/album/albums` + `/pic/list` page 1; on change that page-1 request is repeated by the full listing (1 wasted request, no caching code).
 - `/pic/list` now always reads to ceil(pics_total/100) pages (dropped the `seen == total` early stop); `seen > total` warning + short-page paging unchanged.
@@ -36,3 +36,21 @@
 - Add+delete that cancel inside one unread span (or an unchanged-count listing) stay invisible until `--full` (documented in ROADMAP). No-anchor virtual ends assume the fetched run reaches page 1 / last page.
 **Touches**
 - sources/photoplus.py only (new table `gone`, helper functions `anchor`, `bisect_pages`, `bisect_listing`); tests/test_photoplus.py (FakePP `expire_next`; five T1 fallback tests rewritten); docs/usage.md, docs/ROADMAP.md, CLAUDE.md (layout word, test count 761).
+
+## Gate fix 1
+**Decisions**
+- T1 entry corrected: the "relist-safe" claim was wrong. `finish()` popped the staged pages, so a 403 relist of a listing's last page re-stored a one-page snapshot, recorded the rest as `gone` and sealed. Now `finish()` keeps staged pages (a relist overwrites its page, the re-store is idempotent).
+- Full mode reserves the finishing page's rows (`insert or ignore`, pending) before `finish`/`seal`, same as diff mode (`Adapter.reserve`).
+- Linear fallback is validated (length == count, no duplicates); invalid => not stored, `unsealed` flag skips the seal, warning logged; the old count stays so the next run diffs again. An empty `list` against a non-empty snapshot is ignored the same way (guard in `store`, also covers `--full`).
+- Pacing lives in `Adapter.get` (sleep `PAGE_GAP` since the last request via the injected sleep/clock), so every request, including count checks and relists, is spaced; no restructuring into one request per call. The test `site` fixture sets `PAGE_GAP=0` for CLI tests that use the real sleep.
+- Quick path: `bad_files()` scandirs `photos/` once and compares sizes with the done rows (missing or <= 1 KB => full). `attach(db, full, photos_dir)`; `base.run` passes `photos_dir`. 60k synthetic files: 0.23 s. A truncated JPEG above 1 KB is not caught.
+- Ids missing from a listing get a unique snapshot placeholder `!none:<key>:<page>:<i>`; never an anchor, never `gone`.
+- `scripts/download.sh`: race = first non-dash argument.
+**Rejected**
+- Reading `photos_dir` from `pragma database_list` (hacky). Full `jpeg_file_ok` per file (too slow at 60k). Keeping one request per call by splitting plan into its own call (more state than a gap sleep).
+**Assumptions**
+- Pacing on the injected clock (time.time) plus the downloader's own page delay is enough; the first changed call now takes about 7.5 s of gap sleeps once.
+**Deferred**
+- `test_a_crashed_diff_page_leaves_its_new_photos_in_the_catalog` only fails on HEAD through the new `attach` signature (diff mode already reserved rows).
+**Touches**
+- sources/photoplus.py, sources/base.py (`attach` gets `photos_dir`), scripts/download.sh, tests/test_photoplus.py, tests/test_download.py, docs/usage.md, docs/ROADMAP.md, CLAUDE.md.

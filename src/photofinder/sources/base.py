@@ -194,7 +194,7 @@ class AlbumDownloader:
         if self._lockfile is None:
             self.acquire_lock()
         if (attach := getattr(self.adapter, "attach", None)) is not None:
-            attach(self.db, full)
+            attach(self.db, full, self.photos_dir)
         meta = self.adapter.meta()
         expected = meta.get("total")
         self.save_meta({"title": meta.get("title"), **getattr(self.adapter, "meta_items", dict)()})

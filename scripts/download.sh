@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 [ $# -ge 1 ] || { echo "usage: scripts/download.sh <race> [album-key] [--full]" >&2; exit 1; }
 uv run --frozen python -c 'import sys; from photofinder import cli; cli.select_albums(*[a for a in sys.argv[1:] if not a.startswith("-")])' "$@"
-race="$1"
+for race in "$@"; do case "$race" in -*) ;; *) break ;; esac; done
 dir="${PHOTOFINDER_DATA_ROOT:-data}/races/$race"
 mkdir -p "$dir"
 nohup caffeinate -ims uv run --frozen photofinder download "$@" >> "$dir/download-console.log" 2>&1 &

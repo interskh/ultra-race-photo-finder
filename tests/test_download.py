@@ -279,6 +279,15 @@ def test_download_script_refuses_unregistered_race(data_root, tmp_path):
     assert not (tmp_path / "caffeinate-ran").exists()
 
 
+def test_download_script_takes_the_race_as_the_first_non_dash_argument(data_root, tmp_path):
+    race(YIPAI_URL)
+    r = subprocess.run(["bash", "scripts/download.sh", "--full", "2026-x"], cwd=REPO, env=shell_env(data_root, tmp_path),
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    assert (data_root / "races" / "2026-x").is_dir()
+    assert not (data_root / "races" / "--full").exists()
+
+
 @pytest.mark.parametrize("script", ["download.sh", "download_yipai.sh"])
 def test_scripts_parse(script):
     assert subprocess.run(["bash", "-n", REPO / "scripts" / script]).returncode == 0
