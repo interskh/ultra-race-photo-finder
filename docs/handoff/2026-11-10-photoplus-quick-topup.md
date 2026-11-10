@@ -56,8 +56,8 @@
 - sources/photoplus.py, sources/base.py (`attach` gets `photos_dir`), scripts/download.sh, tests/test_photoplus.py, tests/test_download.py, docs/usage.md, docs/ROADMAP.md, CLAUDE.md.
 
 ## E2E (orchestrator, 2026-11-10)
-- Real race, 4 photoplus albums (~60k photos, 26 sub-album listings + 4 `list` listings), run from this worktree with `PHOTOFINDER_DATA_ROOT` on the main data root.
+- Real race, 4 photoplus albums (~60k photos, 24 sub-album listings + 4 `list` listings), run from this worktree with `PHOTOFINDER_DATA_ROOT` on the main data root.
 - Seed run (no snapshots yet): every album logged "no complete listing snapshot yet; listing everything"; 4248 s; 0 new photos; 0 `gone`.
-- Every stored snapshot length equals its reported count (`pic_num` per sub-album, `pics_total` for `list`), 30/30 listings: the T1 assumption that `pic_num` equals what `/album/one` lists holds on these albums.
+- Every stored snapshot length equals its reported count (`pic_num` per sub-album, `pics_total` for `list`), 28/28 listings: the T1 assumption that `pic_num` equals what `/album/one` lists holds on these albums.
 - Quick run right after: every album logged "unchanged since last check"; 21 s for all 4 albums (vs about 1 h before).
 - Not exercised live: the bisect path (no album changed between the two runs). Covered by the fake-server tests only.
