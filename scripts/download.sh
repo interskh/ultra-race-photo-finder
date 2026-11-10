@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Usage: scripts/download.sh <race> [album-key]
+# Usage: scripts/download.sh <race> [album-key] [--full]
 # Downloads a registered race's albums one after another, detached, keeping the Mac awake (caffeinate).
 # Resumable: rerun the same command to top up.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[ $# -ge 1 ] || { echo "usage: scripts/download.sh <race> [album-key]" >&2; exit 1; }
-uv run --frozen python -c 'import sys; from photofinder import cli; cli.select_albums(*sys.argv[1:])' "$@"
+[ $# -ge 1 ] || { echo "usage: scripts/download.sh <race> [album-key] [--full]" >&2; exit 1; }
+uv run --frozen python -c 'import sys; from photofinder import cli; cli.select_albums(*[a for a in sys.argv[1:] if not a.startswith("-")])' "$@"
 race="$1"
 dir="${PHOTOFINDER_DATA_ROOT:-data}/races/$race"
 mkdir -p "$dir"

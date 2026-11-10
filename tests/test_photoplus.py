@@ -202,11 +202,10 @@ def test_list_phase_rows_carry_the_first_group_or_none():
     assert total == 4
 
 
-def test_list_phase_stops_once_every_photo_is_seen():
-    site = FakePP([("A", pics(*range(150)))], photos=pics(*range(150), *range(150, 450)))
-    site.pics_total = lambda page: 150
+def test_list_phase_reads_to_the_last_page_even_when_every_photo_is_seen():
+    site = FakePP([("A", pics(*range(150)))], photos=pics(*range(150)))
     walk(adapter(site))
-    assert [p for p in site.paths() if p[0] == "/pic/list"] == [("/pic/list", None, "1")]
+    assert [p[2] for p in site.paths() if p[0] == "/pic/list"] == ["1", "2"]
 
 
 def test_more_photos_than_pics_total_pages_the_list_to_a_short_page(caplog, tmp_path):
@@ -325,7 +324,7 @@ def test_downloader_fetches_every_photo_once_and_a_rerun_fetches_nothing(tmp_pat
             d.close()
     assert sum(site.images.values()) == 252 and set(site.images.values()) == {1}
     m = sqlite3.connect(tmp_path / "manifest.sqlite")
-    assert dict(m.execute("select key, value from meta")) == {"title": TITLE}
+    assert dict(m.execute("select key, value from meta where key = 'title'")) == {"title": TITLE}
     assert dict(m.execute(f"select source_id, group_name from catalog where source_id in "
                           f"('{sid(5)}', '{sid(300)}', '{sid(400)}')")) == {sid(5): "A", sid(300): "B", sid(400): None}
 
@@ -428,3 +427,218 @@ def test_cli_download_runs_the_photoplus_album(data_root, site, monkeypatch):
     cli.main(["download", "2026-x"])
     photos = races.album_dir("2026-x", KEY) / "photos"
     assert sorted(p.name for p in photos.iterdir()) == sorted(f"{sid(i)}.jpg" for i in (1, 2, 3))
+
+
+def run_full_or_quick(site, out, full=False, **kw):
+    d = AlbumDownloader(client_for(site), adapter(site), out, sleep=lambda s: None, **kw)
+    try:
+        return d.run(full=full)
+    finally:
+        d.close()
+
+
+def listing_requests(site):
+    return [p for p, _ in site.calls if p in ("/album/albums", "/album/one", "/pic/list")]
+
+
+def manifest(out):
+    return sqlite3.connect(out / "manifest.sqlite")
+
+
+def quick_site():
+    return FakePP([("A", pics(*range(250))), ("B", pics(300, 301))], photos=pics(*range(250), 300, 301, 400))
+
+
+def test_full_run_stores_complete_snapshots_and_counts(tmp_path):
+    site = quick_site()
+    assert run_full_or_quick(site, tmp_path) == {"done": 253}
+    m = manifest(tmp_path)
+    a, b = (f"album:{site.albums[i][0]}" for i in (0, 1))
+    assert dict(m.execute("select key, value from meta where key like 'count:%'")) == {
+        f"count:{a}": "250", f"count:{b}": "2", "count:list": "253"}
+    assert json.loads(m.execute("select value from meta where key='listing:albums'").fetchone()[0]) == [a, b]
+
+    def ids(key):
+        return [r[0] for r in m.execute("select source_id from listing where list_key=? order by pos", (key,))]
+    assert ids(a) == [sid(i) for i in range(250)] and ids(b) == [sid(300), sid(301)]
+    assert ids("list") == [p["id"] and str(p["id"]) for p in site.photos]
+    assert [p[2] for p in site.paths() if p[0] == "/pic/list"] == ["1", "2", "3"]
+
+
+def test_unchanged_second_run_makes_two_listing_requests_and_downloads_nothing(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    site.images.clear()
+    assert run_full_or_quick(site, tmp_path) == {"done": 253}
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+    assert [q["page"] for p, q in site.calls if p == "/pic/list"] == ["1"]
+    assert not site.images
+    assert "photoplus: unchanged since last check: 3 listings, 253 photos" in [r.getMessage() for r in caplog.records]
+
+
+def test_a_changed_sub_album_count_lists_everything_and_refreshes_the_snapshot(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    site.albums[1][2].append(photo(302))
+    site.photos.append(photo(302))
+    assert run_full_or_quick(site, tmp_path) == {"done": 254}
+    assert len(listing_requests(site)) > 5
+    assert f"photoplus: album:{site.albums[1][0]} changed 2 -> 3" in [r.getMessage() for r in caplog.records]
+    assert "photoplus: list changed 253 -> 254" in [r.getMessage() for r in caplog.records]
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+
+
+def test_a_changed_list_count_alone_lists_everything(tmp_path):
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    site.photos.append(photo(500))
+    assert run_full_or_quick(site, tmp_path) == {"done": 254}
+    assert len(listing_requests(site)) > 5
+
+
+def test_a_new_sub_album_lists_everything(tmp_path):
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    site.albums.append((site.albums[-1][0] + 1, "C", []))
+    assert run_full_or_quick(site, tmp_path) == {"done": 253}
+    assert ("/album/one" in listing_requests(site)) and len(listing_requests(site)) > 5
+    m = manifest(tmp_path)
+    assert len(json.loads(m.execute("select value from meta where key='listing:albums'").fetchone()[0])) == 3
+
+
+def test_a_removed_sub_album_lists_everything_and_drops_its_snapshot(tmp_path):
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    gone = f"album:{site.albums[1][0]}"
+    site.calls.clear()
+    del site.albums[1]
+    run_full_or_quick(site, tmp_path)
+    assert len(listing_requests(site)) > 3
+    m = manifest(tmp_path)
+    assert m.execute("select count(*) from listing where list_key=?", (gone,)).fetchone()[0] == 0
+    assert m.execute("select count(*) from meta where key=?", (f"count:{gone}",)).fetchone()[0] == 0
+
+
+def test_a_failed_catalog_row_forces_a_full_listing(tmp_path):
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    m = manifest(tmp_path)
+    m.execute("update catalog set status='failed', error='HTTP 403', file=null where source_id=?", (sid(7),))
+    m.commit()
+    (tmp_path / "photos" / f"{sid(7)}.jpg").unlink()
+    site.calls.clear()
+    assert run_full_or_quick(site, tmp_path) == {"done": 253}
+    assert len(listing_requests(site)) > 5
+    assert site.images[f"/plus/immediate/{ACTIVITY}/7.jpg"] == 2
+
+
+def test_full_flag_lists_everything_even_when_unchanged(tmp_path):
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path, full=True)
+    assert len(listing_requests(site)) > 5
+
+
+def test_an_interrupted_full_run_leaves_no_current_snapshot(tmp_path):
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    site.photos.append(photo(500))
+    real = site.__call__
+    state = {"list_pages": 0}
+
+    def flaky(req):
+        if req.url.path == "/pic/list":
+            state["list_pages"] += 1
+            if state["list_pages"] == 3:
+                raise RuntimeError("network down")
+        return real(req)
+    d = AlbumDownloader(client_for(flaky), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.client = client_for(flaky)
+    with pytest.raises(Exception):
+        d.run()
+    d.close()
+    m = manifest(tmp_path)
+    assert m.execute("select count(*) from meta where key='listing:albums'").fetchone()[0] == 0
+    site.calls.clear()
+    assert run_full_or_quick(site, tmp_path) == {"done": 254}
+    assert len(listing_requests(site)) > 5
+    assert m.execute("select value from meta where key='count:list'").fetchone()[0] == "254"
+
+
+def test_a_partial_listing_never_replaces_a_complete_snapshot(tmp_path):
+    site = quick_site()
+    run_full_or_quick(site, tmp_path)
+    m = manifest(tmp_path)
+    before = m.execute("select count(*) from listing where list_key='list'").fetchone()[0]
+    real = site.__call__
+
+    def flaky(req):
+        if req.url.path == "/pic/list" and req.url.params["page"] == "2":
+            raise RuntimeError("network down")
+        return real(req)
+    site.photos.append(photo(500))
+    d = AlbumDownloader(client_for(flaky), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.client = client_for(flaky)
+    with pytest.raises(Exception):
+        d.run(full=True)
+    d.close()
+    assert m.execute("select count(*) from listing where list_key='list'").fetchone()[0] == before
+
+
+def test_a_first_run_interrupted_before_the_end_has_no_snapshot_marker(tmp_path):
+    site = quick_site()
+    real = site.__call__
+
+    def flaky(req):
+        if req.url.path == "/pic/list" and req.url.params["page"] == "3":
+            raise RuntimeError("network down")
+        return real(req)
+    d = AlbumDownloader(client_for(flaky), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.client = client_for(flaky)
+    with pytest.raises(Exception):
+        d.run()
+    d.close()
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert len(listing_requests(site)) > 5
+
+
+def test_a_listing_with_an_unusable_count_is_never_skipped(tmp_path):
+    site = quick_site()
+    site.pics_total = lambda page: None
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert len(listing_requests(site)) > 5
+
+
+def test_cli_download_full_flag_is_parsed_and_passed_through(data_root, site, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "download_album", lambda album, out_dir, full=False: seen.append(full) or {"done": 1})
+    races.add_album("2026-x", URL, TITLE)
+    cli.main(["download", "2026-x"])
+    cli.main(["download", "2026-x", KEY, "--full"])
+    assert seen == [False, True]
+
+
+def test_cli_download_full_reaches_the_photoplus_run(data_root, site, monkeypatch):
+    monkeypatch.setattr(cli, "album_downloader",
+                        lambda client, adapter, out_dir: AlbumDownloader(client, adapter, out_dir, sleep=lambda s: None))
+    races.add_album("2026-x", URL, TITLE)
+    cli.main(["download", "2026-x"])
+    site.calls.clear()
+    cli.main(["download", "2026-x"])
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+    site.calls.clear()
+    cli.main(["download", "2026-x", "--full"])
+    assert len(listing_requests(site)) > 2

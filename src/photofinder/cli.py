@@ -361,7 +361,7 @@ def album_downloader(client, adapter, out_dir: Path):
                            max_consecutive_failures=20)
 
 
-def download_album(album: races.Album, out_dir: Path) -> dict[str, int]:
+def download_album(album: races.Album, out_dir: Path, full: bool = False) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(out_dir / "download.log")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -372,7 +372,7 @@ def download_album(album: races.Album, out_dir: Path) -> dict[str, int]:
             dl = (yipai_downloader(client, album.site_id, out_dir) if yip else
                   album_downloader(client, album_adapter(album.platform, client, album.site_id), out_dir))
             try:
-                counts = dl.run()
+                counts = dl.run() if yip else dl.run(full=full)
             except AlreadyRunning as e:
                 sys.exit(str(e))
             except MissingSiteKey as e:
@@ -397,7 +397,7 @@ def cmd_download(args):
         if album.platform != "yipai" and album.platform not in ADAPTERS:
             print(f"skipping {album.key}: {album.platform} downloads are not supported yet", flush=True)
             continue
-        if set(download_album(album, races.album_dir(args.race, album.key))) - {"done"}:
+        if set(download_album(album, races.album_dir(args.race, album.key), args.full)) - {"done"}:
             unfinished.append(album.key)
     if unfinished:
         sys.exit(f"not every photo downloaded in {', '.join(unfinished)}; rerun later to resume")
@@ -461,6 +461,8 @@ def main(argv=None):
     p = sub.add_parser("download", help="download a race's albums into data/races/<race>/albums/ (resumable)")
     p.add_argument("race", help="registered race slug")
     p.add_argument("album_key", nargs="?", help="only this album, e.g. yipai-<orderId> (default: every album)")
+    p.add_argument("--full", action="store_true",
+                   help="list every page again even if the site's counts are unchanged (photoplus; default: quick check)")
     p.set_defaults(func=cmd_download)
     p = sub.add_parser("race", help="manage the race registry (data/races.json)")
     rsub = p.add_subparsers(dest="race_command", required=True)

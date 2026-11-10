@@ -190,9 +190,11 @@ class AlbumDownloader:
     def _todo(self, rows: list[CatalogRow]) -> list[CatalogRow]:
         return [r for r in rows if not self.is_done(r.source_id)]
 
-    def run(self) -> dict[str, int]:
+    def run(self, full=False) -> dict[str, int]:
         if self._lockfile is None:
             self.acquire_lock()
+        if (attach := getattr(self.adapter, "attach", None)) is not None:
+            attach(self.db, full)
         meta = self.adapter.meta()
         expected = meta.get("total")
         self.save_meta({"title": meta.get("title"), **getattr(self.adapter, "meta_items", dict)()})

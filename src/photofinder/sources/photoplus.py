@@ -23,7 +23,13 @@ MAX_PAGE_REQUESTS = 24
 SHOT_TIME = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 SAFE_ID = re.compile(r"[A-Za-z0-9_-]+")
 
+SEALED = "listing:albums"
+
 log = logging.getLogger("download")
+
+
+def count_of(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def sign(params: dict, t: int) -> dict:
@@ -69,6 +75,74 @@ class Adapter:
         self.total = None
         self.skipped = set()
         self.warned = False
+        self.db = None
+        self.full = True
+        self.mode = None
+        self.staged = {}
+        self.list_count = None
+
+    def attach(self, db, full: bool):
+        self.db, self.full, self.mode, self.staged = db, full, None, {}
+        db.execute("create table if not exists listing(list_key text not null, pos integer not null, "
+                   "source_id text not null, primary key(list_key, pos))")
+        db.commit()
+
+    def stored(self, key: str):
+        row = self.db.execute("select value from meta where key=?", (key,)).fetchone()
+        return None if row is None else row[0]
+
+    def unchanged(self) -> bool:
+        raw = self.stored(SEALED)
+        if raw is None:
+            log.info("photoplus: no complete listing snapshot yet; listing everything")
+            return False
+        if self.db.execute("select 1 from catalog where status != 'done' limit 1").fetchone():
+            log.info("photoplus: some photos are not downloaded yet; listing everything for fresh URLs")
+            return False
+        result = self.get("/pic/list", {"activityNo": self.activity, "key": "", "isNew": False, "count": LIST_PAGE,
+                                         "page": 1, "size": 2000, "ppSign": ""}) or {}
+        now = {f"album:{a['album_id']}": count_of(a.get("pic_num")) for a in self.albums}
+        now["list"] = count_of(result.get("pics_total"))
+        old = {k: self.stored(f"count:{k}") for k in [*json.loads(raw), "list"]}
+        changed = [(k, old.get(k), now.get(k)) for k in [*old, *(k for k in now if k not in old)]
+                   if now.get(k) is None or old.get(k) != str(now[k])]
+        for k, before, after in changed:
+            log.info("photoplus: %s changed %s -> %s", k, before, after)
+        if changed:
+            return False
+        log.info("photoplus: unchanged since last check: %d listings, %s photos", len(now), now["list"])
+        return True
+
+    def stage(self, key: str, page: int, pics: list):
+        if self.db is not None:
+            self.staged.setdefault(key, {})[page] = [str(p.get("id")) for p in pics]
+
+    def finish(self, key: str, count):
+        if self.db is None:
+            return
+        pages = self.staged.pop(key, {})
+        ids = [i for n in sorted(pages) for i in pages[n]]
+        self.db.execute("delete from listing where list_key=?", (key,))
+        self.db.executemany("insert into listing values (?,?,?)", [(key, n, i) for n, i in enumerate(ids)])
+        if count is None:
+            self.db.execute("delete from meta where key=?", (f"count:{key}",))
+        else:
+            self.db.execute("insert or replace into meta values (?,?)", (f"count:{key}", str(count)))
+        self.db.commit()
+
+    def seal(self):
+        if self.db is None:
+            return
+        keys = [f"album:{a['album_id']}" for a in self.albums]
+        counts = [count_of(a.get("pic_num")) for a in self.albums] + [self.list_count]
+        if any(c is None for c in counts):
+            return
+        marks = ",".join("?" * (len(keys) + 1))
+        self.db.execute(f"delete from listing where list_key not in ({marks})", [*keys, "list"])
+        self.db.execute(f"delete from meta where key like 'count:%' and substr(key, 7) not in ({marks})",
+                        [*keys, "list"])
+        self.db.execute("insert or replace into meta values (?,?)", (SEALED, json.dumps(keys)))
+        self.db.commit()
 
     def get(self, path: str, params: dict):
         return fetch_json(self.client, "GET", f"{API}{path}", check=ok, tries=self.tries, sleep=self.sleep,
@@ -92,6 +166,14 @@ class Adapter:
     def list_page(self, cursor):
         if self.albums is None:
             self.albums = self.get("/album/albums", {"activityNo": self.activity, "count": 1000}) or []
+        if self.mode is None:
+            if self.db is not None and not self.full and self.unchanged():
+                self.mode = "unchanged"
+                return [], None, None
+            self.mode = "full"
+            if self.db is not None:
+                self.db.execute("delete from meta where key=?", (SEALED,))
+                self.db.commit()
         cursor = cursor or (("album", 0, 1) if self.albums else ("list", 1))
         if cursor[0] == "album":
             _, i, page = cursor
@@ -99,6 +181,9 @@ class Adapter:
             pics = (self.get("/album/one", {"albumId": album["album_id"], "count": ALBUM_PAGE, "size": ALBUM_PAGE,
                                             "page": page, "ppSign": "", "picUpIndex": ""}) or {}).get("pics") or []
             rows = self.rows(pics, album.get("name") or None)
+            self.stage(f"album:{album['album_id']}", page, pics)
+            if len(pics) < ALBUM_PAGE:
+                self.finish(f"album:{album['album_id']}", count_of(album.get("pic_num")))
             nxt = (("album", i, page + 1) if len(pics) >= ALBUM_PAGE else
                    ("album", i + 1, 1) if i + 1 < len(self.albums) else ("list", 1))
         else:
@@ -106,15 +191,16 @@ class Adapter:
             result = self.get("/pic/list", {"activityNo": self.activity, "key": "", "isNew": False,
                                              "count": LIST_PAGE, "page": page, "size": 2000, "ppSign": ""}) or {}
             count = result.get("pics_total")
+            if page == 1:
+                self.list_count = count_of(count)
             if self.total is None and isinstance(count, int) and not isinstance(count, bool) and count > 0:
                 self.total = count
             pics = result.get("pics_array") or []
             rows = self.rows(pics, None)
+            self.stage("list", page, pics)
             seen = len(self.group_of) + len(self.skipped)
             if self.total is None:
                 more = len(pics) >= LIST_PAGE
-            elif seen == self.total:
-                more = False
             elif seen > self.total:
                 if not self.warned:
                     self.warned = True
@@ -124,6 +210,9 @@ class Adapter:
             else:
                 more = page < math.ceil(self.total / LIST_PAGE)
             nxt = ("list", page + 1) if more else None
+            if nxt is None:
+                self.finish("list", self.list_count)
+                self.seal()
         return rows, nxt, None if self.total is None else self.total - len(self.skipped)
 
     def preview_url(self, row: CatalogRow) -> str:
