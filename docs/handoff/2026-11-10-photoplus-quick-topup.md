@@ -18,3 +18,21 @@
 - Bisect of changed listings (T2). Snapshot ids include unusable/skipped ids exactly as listed.
 **Touches**
 - sources/photoplus.py, sources/base.py (`run(full)`), cli.py (`--full`, `download_album`), scripts/download.sh, tests/test_photoplus.py, docs/usage.md. Manifest meta keys `count:*`, `listing:albums` and table `listing` are new shared surface for T2.
+
+## T2 - bisect changed listings against their snapshots
+**Decisions**
+- Mode `diff` in `Adapter.list_page` (plan() replaced unchanged()): changed listings in order (sub-albums, then `list`), driven by generator `bisect_listing(old_ids, m, page_size)` that yields page numbers and gets id lists back; one remote request per `list_page` call (the cached plan-time `/pic/list` page 1 is consumed once, free).
+- Gap test uses unread slots: anchors found by scanning the contiguous fetched run left/right of an unread region (virtual anchors -1 / n at the ends), resolved when `len(S between anchors) == unread_pages * page_size`. The brief's `r_b-r_a == s_b-s_a` is wrong when the fetched pages have non-anchor (new) items next to the region; this form handles all-new pages at the top/middle too (measured: 5 adds mid-list of 3000 = 3 `/pic/list` reads incl. plan page 1).
+- Validation: length == count and no duplicate; else linear read of that listing (refetched, stops at a short page, max npages+1 pages). Stored count is the count seen at plan time, so uploads during a run self-heal on the next run.
+- New rows are inserted into the catalog (pending, `insert or ignore`) inside `list_page` before the snapshot is stored, so a crash before the downloader's upsert leaves a non-done row and the next run lists everything.
+- Relist (same cursor, incl. first call's `None`): refetches the pages the previous call consumed, re-emits only the previously emitted ids with fresh URLs, does not touch bisect state.
+- `gone(source_id, noticed_at)` created in `attach`; `store("list")` records old-minus-new ids (also on full runs, so `--full` keeps it honest) and clears reappeared ones; sub-album stores never touch it. Seal rewritten at the end of every diff run (drops removed sub-albums).
+- Diff mode returns `total=None` (no false "missing" warning; skipped ids never seen would skew it).
+**Rejected**
+- Relying on r/s index equality (see above). Storing snapshots when the diff validates but before rows reach the catalog (crash window). Reusing fetched pages for the linear fallback (the inconsistency may be a mid-run upload). Clearing `gone` from sub-album pages (list is authoritative).
+**Assumptions**
+- Page order is stable between requests (validated, not trusted); live `/album/one` page 200 and `/pic/list` page 100 as stated in the brief; not run against the live site.
+**Deferred**
+- Add+delete that cancel inside one unread span (or an unchanged-count listing) stay invisible until `--full` (documented in ROADMAP). No-anchor virtual ends assume the fetched run reaches page 1 / last page.
+**Touches**
+- sources/photoplus.py only (new table `gone`, helper functions `anchor`, `bisect_pages`, `bisect_listing`); tests/test_photoplus.py (FakePP `expire_next`; five T1 fallback tests rewritten); docs/usage.md, docs/ROADMAP.md, CLAUDE.md (layout word, test count 761).

@@ -3,6 +3,7 @@ import io
 import itertools
 import json
 import logging
+import math
 import sqlite3
 import threading
 from collections import Counter
@@ -55,6 +56,8 @@ class FakePP:
         self.listings = 0
         self.expire_first_listing = False
         self.upload_on_expiry = None
+        self.expire_next = 0
+        self.expired_signs = set()
         self.images = Counter()
         self._lock = threading.Lock()
 
@@ -66,6 +69,13 @@ class FakePP:
         if req.url.host == "pb.plusx.cn":
             with self._lock:
                 self.images[req.url.path] += 1
+            with self._lock:
+                sign = req.url.params["sign"]
+                if sign not in self.expired_signs and self.expire_next:
+                    self.expire_next -= 1
+                    self.expired_signs.add(sign)
+            if sign in self.expired_signs:
+                return httpx.Response(403)
             if self.expire_first_listing and req.url.params["sign"] == "L1":
                 with self._lock:
                     if self.upload_on_expiry is not None:
@@ -478,53 +488,73 @@ def test_unchanged_second_run_makes_two_listing_requests_and_downloads_nothing(t
     assert "photoplus: unchanged since last check: 3 listings, 253 photos" in [r.getMessage() for r in caplog.records]
 
 
-def test_a_changed_sub_album_count_lists_everything_and_refreshes_the_snapshot(tmp_path, caplog):
+def test_a_changed_sub_album_count_diffs_only_the_changed_listings(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="download")
     site = quick_site()
     run_full_or_quick(site, tmp_path)
     site.calls.clear()
+    site.images.clear()
     site.albums[1][2].append(photo(302))
     site.photos.append(photo(302))
     assert run_full_or_quick(site, tmp_path) == {"done": 254}
-    assert len(listing_requests(site)) > 5
-    assert f"photoplus: album:{site.albums[1][0]} changed 2 -> 3" in [r.getMessage() for r in caplog.records]
-    assert "photoplus: list changed 253 -> 254" in [r.getMessage() for r in caplog.records]
+    assert site.paths()[1:] == [("/album/albums", None, None), ("/pic/list", None, "1"),
+                                ("/album/one", str(site.albums[1][0]), "1"), ("/pic/list", None, "3")]
+    assert list(site.images) == [f"/plus/immediate/{ACTIVITY}/302.jpg"]
+    messages = [r.getMessage() for r in caplog.records]
+    assert f"photoplus: album:{site.albums[1][0]} changed 2 -> 3" in messages
+    assert "photoplus: list changed 253 -> 254" in messages
+    assert any(m.startswith(f"photoplus: album:{site.albums[1][0]}: 3 photos by linear read") or
+               m.startswith(f"photoplus: album:{site.albums[1][0]}: 3 photos by bisect") for m in messages)
+    assert manifest(tmp_path).execute("select group_name from catalog where source_id=?", (sid(302),)).fetchone() == ("B",)
     site.calls.clear()
     run_full_or_quick(site, tmp_path)
     assert listing_requests(site) == ["/album/albums", "/pic/list"]
 
 
-def test_a_changed_list_count_alone_lists_everything(tmp_path):
+def test_a_changed_list_count_alone_diffs_the_list(tmp_path):
     site = quick_site()
     run_full_or_quick(site, tmp_path)
     site.calls.clear()
     site.photos.append(photo(500))
     assert run_full_or_quick(site, tmp_path) == {"done": 254}
-    assert len(listing_requests(site)) > 5
+    assert listing_requests(site) == ["/album/albums", "/pic/list", "/pic/list"]
+    assert manifest(tmp_path).execute("select group_name from catalog where source_id=?", (sid(500),)).fetchone() == (None,)
 
 
-def test_a_new_sub_album_lists_everything(tmp_path):
+def test_a_new_sub_album_is_read_linearly_and_grouped(tmp_path):
     site = quick_site()
     run_full_or_quick(site, tmp_path)
     site.calls.clear()
-    site.albums.append((site.albums[-1][0] + 1, "C", []))
-    assert run_full_or_quick(site, tmp_path) == {"done": 253}
-    assert ("/album/one" in listing_requests(site)) and len(listing_requests(site)) > 5
+    site.albums.append((site.albums[-1][0] + 1, "C", pics(600, 601, 602)))
+    site.photos.extend(pics(600, 601, 602))
+    assert run_full_or_quick(site, tmp_path) == {"done": 256}
+    assert listing_requests(site) == ["/album/albums", "/pic/list", "/album/one", "/pic/list"]
     m = manifest(tmp_path)
     assert len(json.loads(m.execute("select value from meta where key='listing:albums'").fetchone()[0])) == 3
+    assert [r[0] for r in m.execute("select group_name from catalog where source_id in (?,?,?)",
+                                    (sid(600), sid(601), sid(602)))] == ["C"] * 3
+    assert m.execute("select count(*) from listing where list_key=?", (f"album:{site.albums[2][0]}",)).fetchone()[0] == 3
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
 
 
-def test_a_removed_sub_album_lists_everything_and_drops_its_snapshot(tmp_path):
+def test_a_removed_sub_album_drops_its_snapshot(tmp_path):
     site = quick_site()
     run_full_or_quick(site, tmp_path)
     gone = f"album:{site.albums[1][0]}"
     site.calls.clear()
     del site.albums[1]
     run_full_or_quick(site, tmp_path)
-    assert len(listing_requests(site)) > 3
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
     m = manifest(tmp_path)
     assert m.execute("select count(*) from listing where list_key=?", (gone,)).fetchone()[0] == 0
     assert m.execute("select count(*) from meta where key=?", (f"count:{gone}",)).fetchone()[0] == 0
+    assert json.loads(m.execute("select value from meta where key='listing:albums'").fetchone()[0]) == [
+        f"album:{site.albums[0][0]}"]
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
 
 
 def test_a_failed_catalog_row_forces_a_full_listing(tmp_path):
@@ -565,7 +595,7 @@ def test_an_interrupted_full_run_leaves_no_current_snapshot(tmp_path):
     d = AlbumDownloader(client_for(flaky), adapter(site), tmp_path, sleep=lambda s: None)
     d.adapter.client = client_for(flaky)
     with pytest.raises(Exception):
-        d.run()
+        d.run(full=True)
     d.close()
     m = manifest(tmp_path)
     assert m.execute("select count(*) from meta where key='listing:albums'").fetchone()[0] == 0
@@ -642,3 +672,346 @@ def test_cli_download_full_reaches_the_photoplus_run(data_root, site, monkeypatc
     site.calls.clear()
     cli.main(["download", "2026-x", "--full"])
     assert len(listing_requests(site)) > 2
+
+
+def big_site(n=3000, albums=()):
+    return FakePP(albums, photos=pics(*range(n)))
+
+
+def first_run(site, tmp_path):
+    run_full_or_quick(site, tmp_path)
+    site.calls.clear()
+    site.images.clear()
+
+
+def fetched(site):
+    return sorted(int(p.rsplit("/", 1)[1].split(".")[0]) for p in site.images)
+
+
+def list_pages_read(site):
+    return [int(q["page"]) for p, q in site.calls if p == "/pic/list"]
+
+
+def snapshot(tmp_path, key="list"):
+    return [r[0] for r in manifest(tmp_path).execute("select source_id from listing where list_key=? order by pos", (key,))]
+
+
+def remote_ids(site):
+    return [str(p["id"]) for p in site.photos]
+
+
+def test_a_cluster_of_adds_in_a_long_list_costs_a_few_page_reads(tmp_path):
+    site = big_site()
+    first_run(site, tmp_path)
+    site.photos[1500:1500] = pics(*range(5000, 5005))
+    assert run_full_or_quick(site, tmp_path) == {"done": 3005}
+    assert fetched(site) == list(range(5000, 5005))
+    assert len(list_pages_read(site)) <= 2 + 2 * 5
+    assert snapshot(tmp_path) == remote_ids(site)
+
+
+@pytest.mark.parametrize("at", [0, 1, 99, 100, 1500, 2999, 3000])
+def test_adds_at_the_top_middle_and_bottom(tmp_path, at):
+    site = big_site()
+    first_run(site, tmp_path)
+    site.photos[at:at] = pics(7001, 7002)
+    assert run_full_or_quick(site, tmp_path) == {"done": 3002}
+    assert fetched(site) == [7001, 7002]
+    assert len(list_pages_read(site)) <= 12
+    assert snapshot(tmp_path) == remote_ids(site)
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+
+
+def test_a_whole_page_of_adds_at_the_top_still_bisects(tmp_path):
+    site = big_site()
+    first_run(site, tmp_path)
+    site.photos[0:0] = pics(*range(8000, 8100))
+    run_full_or_quick(site, tmp_path)
+    assert fetched(site) == list(range(8000, 8100))
+    assert len(list_pages_read(site)) <= 4
+    assert snapshot(tmp_path) == remote_ids(site)
+
+
+def test_a_whole_page_of_adds_in_the_middle_bisects(tmp_path):
+    site = big_site()
+    first_run(site, tmp_path)
+    site.photos[1500:1500] = pics(*range(8000, 8100))
+    run_full_or_quick(site, tmp_path)
+    assert fetched(site) == list(range(8000, 8100))
+    assert len(list_pages_read(site)) <= 2 + 2 * 5
+    assert snapshot(tmp_path) == remote_ids(site)
+
+
+def test_scattered_adds_never_cost_more_than_reading_every_page(tmp_path):
+    site = big_site()
+    first_run(site, tmp_path)
+    new = []
+    for k, at in enumerate(range(2950, 0, -150)):
+        site.photos.insert(at, photo(9000 + k))
+        new.append(9000 + k)
+    run_full_or_quick(site, tmp_path)
+    assert fetched(site) == sorted(new)
+    reads = list_pages_read(site)
+    assert len(reads) <= 1 + math.ceil(len(site.photos) / 100)
+    assert len(set(reads[1:])) == len(reads) - 1
+    assert snapshot(tmp_path) == remote_ids(site)
+
+
+def test_a_deleted_photo_is_recorded_and_kept_locally(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    site = big_site(500)
+    first_run(site, tmp_path)
+    removed = site.photos.pop(250)
+    assert run_full_or_quick(site, tmp_path) == {"done": 500}
+    m = manifest(tmp_path)
+    assert [r[0] for r in m.execute("select source_id from gone")] == [str(removed["id"])]
+    assert m.execute("select status from catalog where source_id=?", (str(removed["id"]),)).fetchone() == ("done",)
+    assert (tmp_path / "photos" / f"{removed['id']}.jpg").exists()
+    assert not site.images
+    assert snapshot(tmp_path) == remote_ids(site)
+    assert "photoplus: 1 photos were removed from the album since the last check; kept locally" in [
+        r.getMessage() for r in caplog.records]
+    site.photos.insert(250, removed)
+    run_full_or_quick(site, tmp_path)
+    assert m.execute("select count(*) from gone").fetchone()[0] == 0
+    assert not site.images
+
+
+def test_deletions_in_a_sub_album_alone_are_not_recorded(tmp_path):
+    site = FakePP([("A", pics(*range(300)))], photos=pics(*range(300)))
+    first_run(site, tmp_path)
+    site.albums[0][2].pop(10)
+    run_full_or_quick(site, tmp_path)
+    assert manifest(tmp_path).execute("select count(*) from gone").fetchone()[0] == 0
+    assert manifest(tmp_path).execute("select count(*) from listing where list_key=?",
+                                      (f"album:{site.albums[0][0]}",)).fetchone()[0] == 299
+
+
+def test_an_add_and_a_delete_in_different_spans(tmp_path):
+    site = big_site()
+    first_run(site, tmp_path)
+    removed = site.photos.pop(2000)
+    site.photos[500:500] = pics(7001, 7002)
+    assert run_full_or_quick(site, tmp_path) == {"done": 3002}
+    assert fetched(site) == [7001, 7002]
+    assert [r[0] for r in manifest(tmp_path).execute("select source_id from gone")] == [str(removed["id"])]
+    assert snapshot(tmp_path) == remote_ids(site)
+
+
+def test_an_add_and_a_delete_with_the_same_count_are_skipped_until_full(tmp_path):
+    site = big_site(300)
+    first_run(site, tmp_path)
+    site.photos.pop(100)
+    site.photos.insert(50, photo(7001))
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+    run_full_or_quick(site, tmp_path, full=True)
+    assert fetched(site) == [7001]
+
+
+def test_a_sub_album_with_non_monotonic_shot_times_diffs_the_same(tmp_path):
+    ps = pics(*range(900))
+    ps = ps[::3] + ps[1::3] + ps[2::3]
+    for k, p in enumerate(ps):
+        p["relate_time"] = f"2026-01-01 {(k * 7919) % 24:02d}:{(k * 31) % 60:02d}:00"
+    site = FakePP([("A", ps)], photos=list(ps))
+    first_run(site, tmp_path)
+    site.albums[0][2][500:500] = pics(7001, 7002)
+    site.photos[400:400] = pics(7001, 7002)
+    assert run_full_or_quick(site, tmp_path) == {"done": 902}
+    assert fetched(site) == [7001, 7002]
+    one = [q["page"] for p, q in site.calls if p == "/album/one"]
+    assert 2 <= len(one) <= 5
+    assert snapshot(tmp_path, f"album:{site.albums[0][0]}") == [str(p["id"]) for p in site.albums[0][2]]
+
+
+def test_groups_of_new_photos(tmp_path):
+    site = FakePP([("A", pics(*range(250))), ("B", pics(300, 301))], photos=pics(*range(250), 300, 301, 400, 401))
+    first_run(site, tmp_path)
+    m = manifest(tmp_path)
+    assert m.execute("select group_name from catalog where source_id=?", (sid(400),)).fetchone() == (None,)
+    site.albums[0][2].append(photo(250))
+    site.albums[1][2].append(photo(302))
+    site.albums[1][2].append(photo(250))
+    site.photos.extend(pics(250, 302, 500))
+    run_full_or_quick(site, tmp_path)
+    got = dict(m.execute("select source_id, group_name from catalog where source_id in (?,?,?)",
+                         (sid(250), sid(302), sid(500))))
+    assert got == {sid(250): "A", sid(302): "B", sid(500): None}
+
+
+def test_a_known_photo_with_no_group_gets_the_sub_album_it_appears_in(tmp_path):
+    site = FakePP([("A", pics(*range(250)))], photos=pics(*range(250), 400))
+    first_run(site, tmp_path)
+    m = manifest(tmp_path)
+    site.albums[0][2].append(photo(400))
+    m.execute("update catalog set group_name='Other' where source_id=?", (sid(5),))
+    m.commit()
+    site.albums[0][2].append(photo(5))
+    run_full_or_quick(site, tmp_path)
+    assert m.execute("select group_name from catalog where source_id=?", (sid(400),)).fetchone() == ("A",)
+    assert m.execute("select group_name from catalog where source_id=?", (sid(5),)).fetchone() == ("Other",)
+    assert not site.images
+
+
+def test_a_moved_photo_makes_the_reconstruction_invalid_and_the_listing_is_re_read(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="download")
+    site = big_site()
+    first_run(site, tmp_path)
+    moved = site.photos.pop(2000)
+    site.photos.insert(10, moved)
+    site.photos.insert(2500, photo(7001))
+    assert run_full_or_quick(site, tmp_path) == {"done": 3001}
+    assert fetched(site) == [7001]
+    assert snapshot(tmp_path) == remote_ids(site)
+    assert any("by linear read (inconsistent listing)" in r.getMessage() for r in caplog.records)
+    assert len(list_pages_read(site)) >= 31
+    assert manifest(tmp_path).execute("select count(*) from gone").fetchone()[0] == 0
+
+
+def test_photos_uploaded_between_the_count_check_and_the_diff_are_still_listed(tmp_path):
+    site = big_site(1000)
+    first_run(site, tmp_path)
+    site.photos.insert(500, photo(7001))
+    real = site.__call__
+    state = {"uploaded": False}
+
+    def uploading(req):
+        if req.url.path == "/pic/list" and req.url.params["page"] != "1" and not state["uploaded"]:
+            state["uploaded"] = True
+            site.photos.insert(100, photo(7002))
+        return real(req)
+    d = AlbumDownloader(client_for(uploading), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.client = client_for(uploading)
+    assert d.run() == {"done": 1002}
+    d.close()
+    assert fetched(site) == [7001, 7002]
+    assert snapshot(tmp_path) == remote_ids(site)
+    site.calls.clear()
+    site.images.clear()
+    assert run_full_or_quick(site, tmp_path) == {"done": 1002}
+    assert not site.images
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+
+
+def test_expired_urls_on_a_diff_page_are_re_listed_and_the_bisect_continues(tmp_path):
+    site = big_site()
+    first_run(site, tmp_path)
+    site.photos[1500:1500] = pics(7001, 7002)
+    site.photos[2500:2500] = pics(7003)
+    site.expire_next = 1
+    assert run_full_or_quick(site, tmp_path) == {"done": 3003}
+    assert fetched(site) == [7001, 7002, 7003]
+    assert snapshot(tmp_path) == remote_ids(site)
+    assert max(Counter(list_pages_read(site)).values()) >= 2
+
+
+def test_a_relisted_diff_page_returns_the_same_rows_and_the_same_cursor(tmp_path):
+    site = big_site()
+    first_run(site, tmp_path)
+    site.photos[1500:1500] = pics(7001, 7002)
+    d = AlbumDownloader(client_for(site), adapter(site), tmp_path, sleep=lambda s: None)
+    a = d.adapter
+    a.attach(d.db, False)
+    cursor = None
+    while True:
+        rows, nxt, _ = a.list_page(cursor)
+        if rows:
+            break
+        cursor = nxt
+    again = a.list_page(cursor)
+    assert [r.source_id for r in again[0]] == [r.source_id for r in rows] and again[1] == nxt
+    assert again[0][0].url != rows[0].url
+    d.close()
+
+
+def test_an_interrupted_diff_leaves_the_next_run_correct(tmp_path):
+    site = FakePP([("A", pics(*range(250)))], photos=pics(*range(250)))
+    first_run(site, tmp_path)
+    site.albums[0][2].append(photo(7001))
+    site.photos.extend([photo(7001)])
+    site.photos[100:100] = pics(7002)
+    real = site.__call__
+    state = {"n": 0}
+
+    def flaky(req):
+        if req.url.path == "/pic/list":
+            state["n"] += 1
+            if state["n"] == 3:
+                raise RuntimeError("network down")
+        return real(req)
+    d = AlbumDownloader(client_for(flaky), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.client = client_for(flaky)
+    with pytest.raises(RuntimeError):
+        d.run()
+    d.close()
+    seen = Counter(site.images)
+    site.calls.clear()
+    assert run_full_or_quick(site, tmp_path) == {"done": 252}
+    assert snapshot(tmp_path) == remote_ids(site)
+    assert site.images[f"/plus/immediate/{ACTIVITY}/7001.jpg"] == 1
+    assert site.images[f"/plus/immediate/{ACTIVITY}/7002.jpg"] == 1
+    site.calls.clear()
+    run_full_or_quick(site, tmp_path)
+    assert listing_requests(site) == ["/album/albums", "/pic/list"]
+
+
+def test_an_interrupted_sub_album_diff_is_seen_as_changed_again(tmp_path):
+    site = FakePP([("A", pics(*range(250))), ("B", pics(300, 301))], photos=pics(*range(250), 300, 301))
+    first_run(site, tmp_path)
+    site.albums[0][2].append(photo(7001))
+    site.albums[1][2].append(photo(7002))
+    site.photos.extend(pics(7001, 7002))
+    real = site.__call__
+
+    def flaky(req):
+        if req.url.path == "/album/one" and req.url.params["albumId"] == str(site.albums[1][0]):
+            raise RuntimeError("network down")
+        return real(req)
+    d = AlbumDownloader(client_for(flaky), adapter(site), tmp_path, sleep=lambda s: None)
+    d.adapter.client = client_for(flaky)
+    with pytest.raises(RuntimeError):
+        d.run()
+    d.close()
+    m = manifest(tmp_path)
+    assert m.execute("select value from meta where key=?", (f"count:album:{site.albums[1][0]}",)).fetchone() == ("2",)
+    assert m.execute("select value from meta where key=?", (f"count:album:{site.albums[0][0]}",)).fetchone() == ("251",)
+    assert run_full_or_quick(site, tmp_path) == {"done": 254}
+    assert snapshot(tmp_path, f"album:{site.albums[1][0]}") == [sid(300), sid(301), sid(7002)]
+    assert snapshot(tmp_path) == remote_ids(site)
+
+
+def drive(old, remote, size):
+    gen = photoplus.bisect_listing(old, len(remote), size)
+    reads = []
+    try:
+        page = next(gen)
+        while True:
+            reads.append(page)
+            page = gen.send(remote[(page - 1) * size:page * size])
+    except StopIteration as done:
+        return done.value, reads
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_bisect_recovers_any_pure_add_or_pure_delete_exactly(seed):
+    import random
+    rng = random.Random(seed)
+    size = rng.choice([3, 5, 10])
+    old = [f"o{i}" for i in range(rng.randint(1, 120))]
+    remote = list(old)
+    if rng.random() < 0.5:
+        for k in range(rng.randint(1, 12)):
+            remote.insert(rng.randint(0, len(remote)), f"n{k}")
+    else:
+        for _ in range(rng.randint(1, min(12, len(remote)))):
+            remote.pop(rng.randrange(len(remote)))
+    (new, how), reads = drive(old, remote, size)
+    assert new == remote
+    assert len(reads) <= max(1, math.ceil(len(remote) / size)) + (math.ceil(len(remote) / size) + 1 if "linear" in how else 0)
+    if how == "bisect":
+        assert len(reads) == len(set(reads)) <= math.ceil(len(remote) / size)

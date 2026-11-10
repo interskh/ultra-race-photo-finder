@@ -24,12 +24,66 @@ SHOT_TIME = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 SAFE_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 SEALED = "listing:albums"
+UNSET = object()
 
 log = logging.getLogger("download")
 
 
 def count_of(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def anchor(pages, pos, p, step, last, n):
+    while p in pages:
+        for i in (pages[p] if step > 0 else reversed(pages[p])):
+            if i in pos:
+                return pos[i]
+        p += step
+    return -1 if p < 1 else n if p > last else None
+
+
+def bisect_pages(old, m, size, npages):
+    n, pos, pages, gaps = len(old), {i: k for k, i in enumerate(old)}, {}, {}
+    for p in sorted({1, npages}):
+        pages[p] = yield p
+    while True:
+        got = sorted(pages)
+        open_region = None
+        for a, b in zip(got, got[1:]):
+            if b == a + 1 or (a, b) in gaps:
+                continue
+            left, right = anchor(pages, pos, a, -1, npages, n), anchor(pages, pos, b, 1, npages, n)
+            if left is not None and right is not None and right - left - 1 == (b - a - 1) * size:
+                gaps[(a, b)] = old[left + 1:right]
+            elif open_region is None:
+                open_region = (a, b)
+        if open_region is None:
+            break
+        mid = sum(open_region) // 2
+        pages[mid] = yield mid
+    new = []
+    for a, b in zip(got, got[1:]):
+        new += pages[a] + gaps.get((a, b), [])
+    new += pages[got[-1]]
+    return new if len(new) == m and len(set(new)) == len(new) else None
+
+
+def bisect_listing(old, m, size):
+    npages = math.ceil(m / size) if m else 0
+    why = "no snapshot"
+    if old and npages and len(set(old)) == len(old):
+        new = yield from bisect_pages(old, m, size, npages)
+        if new is not None:
+            return new, "bisect"
+        why = "inconsistent listing"
+    new, page = [], 1
+    while page <= npages + 1:
+        ids = yield page
+        new += ids
+        if len(ids) < size:
+            break
+        page += 1
+    return new, f"linear read ({why})"
 
 
 def sign(params: dict, t: int) -> dict:
@@ -80,25 +134,34 @@ class Adapter:
         self.mode = None
         self.staged = {}
         self.list_count = None
+        self.reset_diff()
+
+    def reset_diff(self):
+        self.keys, self.cur, self.gen, self.want = [], None, None, None
+        self.counts, self.by_key, self.sealed = {}, {}, []
+        self.preload, self.entry, self.last, self.step = None, UNSET, None, 0
+        self.requests = {}
 
     def attach(self, db, full: bool):
         self.db, self.full, self.mode, self.staged = db, full, None, {}
+        self.reset_diff()
         db.execute("create table if not exists listing(list_key text not null, pos integer not null, "
                    "source_id text not null, primary key(list_key, pos))")
+        db.execute("create table if not exists gone(source_id text primary key, noticed_at text not null)")
         db.commit()
 
     def stored(self, key: str):
         row = self.db.execute("select value from meta where key=?", (key,)).fetchone()
         return None if row is None else row[0]
 
-    def unchanged(self) -> bool:
+    def plan(self) -> str:
         raw = self.stored(SEALED)
         if raw is None:
             log.info("photoplus: no complete listing snapshot yet; listing everything")
-            return False
+            return "full"
         if self.db.execute("select 1 from catalog where status != 'done' limit 1").fetchone():
             log.info("photoplus: some photos are not downloaded yet; listing everything for fresh URLs")
-            return False
+            return "full"
         result = self.get("/pic/list", {"activityNo": self.activity, "key": "", "isNew": False, "count": LIST_PAGE,
                                          "page": 1, "size": 2000, "ppSign": ""}) or {}
         now = {f"album:{a['album_id']}": count_of(a.get("pic_num")) for a in self.albums}
@@ -108,10 +171,108 @@ class Adapter:
                    if now.get(k) is None or old.get(k) != str(now[k])]
         for k, before, after in changed:
             log.info("photoplus: %s changed %s -> %s", k, before, after)
-        if changed:
-            return False
-        log.info("photoplus: unchanged since last check: %d listings, %s photos", len(now), now["list"])
-        return True
+        if not changed:
+            log.info("photoplus: unchanged since last check: %d listings, %s photos", len(now), now["list"])
+            return "unchanged"
+        if any(c is None for c in now.values()):
+            log.info("photoplus: a listing has no usable count; listing everything")
+            return "full"
+        self.sealed = json.loads(raw)
+        self.counts, self.list_count = now, now["list"]
+        self.by_key = {f"album:{a['album_id']}": a for a in self.albums}
+        self.preload = result.get("pics_array") or []
+        names = {k for k, _, _ in changed}
+        self.keys = [k for k in now if k in names]
+        self.start_next()
+        return "diff"
+
+    def start_next(self):
+        self.cur = None
+        if not self.keys:
+            return
+        key = self.keys.pop(0)
+        stored = self.stored(f"count:{key}") is not None and key in [*self.sealed, "list"]
+        old = [r[0] for r in self.db.execute("select source_id from listing where list_key=? order by pos",
+                                              (key,))] if stored else None
+        self.cur = key
+        self.requests[key] = 0
+        self.gen = bisect_listing(old, self.counts[key], LIST_PAGE if key == "list" else ALBUM_PAGE)
+        self.want = next(self.gen)
+
+    def fetch(self, key: str, page: int) -> list:
+        self.requests[key] += 1
+        if key == "list":
+            result = self.get("/pic/list", {"activityNo": self.activity, "key": "", "isNew": False,
+                                             "count": LIST_PAGE, "page": page, "size": 2000, "ppSign": ""})
+            return (result or {}).get("pics_array") or []
+        result = self.get("/album/one", {"albumId": self.by_key[key]["album_id"], "count": ALBUM_PAGE,
+                                         "size": ALBUM_PAGE, "page": page, "ppSign": "", "picUpIndex": ""})
+        return (result or {}).get("pics") or []
+
+    def take(self, key: str, pics: list) -> list[CatalogRow]:
+        name = (self.by_key[key].get("name") or None) if key != "list" else None
+        out = []
+        for p in pics:
+            sid = p.get("id")
+            if sid is None or not SAFE_ID.fullmatch(str(sid)):
+                self.skipped.add((str(sid), p.get("pic_name")))
+                log.warning("skipping photoplus photo with unusable id %r (%s)", sid, p.get("pic_name"))
+                continue
+            sid = str(sid)
+            group = self.group_of.setdefault(sid, name) if key != "list" else self.group_of.get(sid)
+            known = self.db.execute("select group_name from catalog where source_id=?", (sid,)).fetchone()
+            if known is None:
+                row = to_row(p, group)
+                self.db.execute("insert or ignore into catalog(source_id, fname, photographer_uid, photographer, "
+                                "group_name, taken_at, width, height) values (?,?,?,?,?,?,?,?)",
+                                (row.source_id, row.fname, row.photographer_uid, row.photographer, row.group_name,
+                                 row.taken_at, row.width, row.height))
+                out.append(row)
+            elif known[0] is None and name:
+                self.db.execute("update catalog set group_name=? where source_id=? and group_name is null",
+                                (name, sid))
+        self.db.commit()
+        return out
+
+    def advance(self, ids: list):
+        try:
+            self.want = self.gen.send(ids)
+        except StopIteration as done:
+            new, how = done.value
+            removed = self.store(self.cur, new, self.counts[self.cur])
+            log.info("photoplus: %s: %d photos by %s, %d requests", self.cur, len(new), how,
+                     self.requests[self.cur])
+            if removed:
+                log.info("photoplus: %d photos were removed from the album since the last check; kept locally",
+                         removed)
+            self.start_next()
+
+    def diff_page(self, cursor):
+        if self.last is not None and cursor == self.entry:
+            rows = []
+            for key, page in self.last["pages"]:
+                rows += [to_row(p, self.last["groups"][str(p.get("id"))]) for p in self.fetch(key, page)
+                         if str(p.get("id")) in self.last["groups"]]
+            return rows, self.last["nxt"], None
+        self.entry = cursor
+        rows, pages, requested = [], [], False
+        while self.cur is not None and not requested:
+            key, page = self.cur, self.want
+            if key == "list" and page == 1 and self.preload is not None:
+                pics, self.preload = self.preload, None
+            else:
+                pics, requested = self.fetch(key, page), True
+            pages.append((key, page))
+            rows += self.take(key, pics)
+            self.advance([str(p.get("id")) for p in pics])
+        if self.cur is None:
+            self.seal()
+            nxt = None
+        else:
+            self.step += 1
+            nxt = ("diff", self.step)
+        self.last = {"pages": pages, "groups": {r.source_id: r.group_name for r in rows}, "nxt": nxt}
+        return rows, nxt, None
 
     def stage(self, key: str, page: int, pics: list):
         if self.db is not None:
@@ -121,7 +282,19 @@ class Adapter:
         if self.db is None:
             return
         pages = self.staged.pop(key, {})
-        ids = [i for n in sorted(pages) for i in pages[n]]
+        self.store(key, [i for n in sorted(pages) for i in pages[n]], count)
+
+    def store(self, key: str, ids: list, count) -> int:
+        removed = 0
+        if key == "list":
+            before = [r[0] for r in self.db.execute("select source_id from listing where list_key='list'")]
+            now = set(ids)
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.clock()))
+            lost = [(i, stamp) for i in before if i not in now]
+            removed = len(lost)
+            self.db.executemany("insert or ignore into gone values (?,?)", lost)
+            back = now.intersection(r[0] for r in self.db.execute("select source_id from gone"))
+            self.db.executemany("delete from gone where source_id=?", [(i,) for i in back])
         self.db.execute("delete from listing where list_key=?", (key,))
         self.db.executemany("insert into listing values (?,?,?)", [(key, n, i) for n, i in enumerate(ids)])
         if count is None:
@@ -129,6 +302,7 @@ class Adapter:
         else:
             self.db.execute("insert or replace into meta values (?,?)", (f"count:{key}", str(count)))
         self.db.commit()
+        return removed
 
     def seal(self):
         if self.db is None:
@@ -167,13 +341,14 @@ class Adapter:
         if self.albums is None:
             self.albums = self.get("/album/albums", {"activityNo": self.activity, "count": 1000}) or []
         if self.mode is None:
-            if self.db is not None and not self.full and self.unchanged():
-                self.mode = "unchanged"
-                return [], None, None
-            self.mode = "full"
-            if self.db is not None:
+            self.mode = self.plan() if self.db is not None and not self.full else "full"
+            if self.mode == "full" and self.db is not None:
                 self.db.execute("delete from meta where key=?", (SEALED,))
                 self.db.commit()
+        if self.mode == "unchanged":
+            return [], None, None
+        if self.mode == "diff":
+            return self.diff_page(cursor)
         cursor = cursor or (("album", 0, 1) if self.albums else ("list", 1))
         if cursor[0] == "album":
             _, i, page = cursor
